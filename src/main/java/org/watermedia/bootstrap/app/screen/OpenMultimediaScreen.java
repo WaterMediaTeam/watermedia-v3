@@ -24,6 +24,7 @@ import org.watermedia.bootstrap.app.element.ListRow;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.Text;
+import org.watermedia.bootstrap.app.element.TextField;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.Spacing;
@@ -94,8 +95,6 @@ public class OpenMultimediaScreen extends Screen {
     private long loadStartTime;
     private volatile MRL previewMRL;
     private String previewUrl = "";
-    // THE LINK OR QUERY BEING TYPED; THE SCREEN OUTLIVES ITS VISITS, SO IT IS STILL THERE ON THE NEXT ONE
-    private String urlText = "";
 
     // THE PlatformSearch HANDLE FILLS IN OFF-THREAD AND onUpdate POLLS IT EVERY FRAME;
     // searchRenderedDone GUARANTEES ONE FINAL FRAME ONCE IT COMPLETES
@@ -120,7 +119,8 @@ public class OpenMultimediaScreen extends Screen {
     private boolean rowsBuilt;
 
     // TREE ELEMENTS BOUND FROM LIVE STATE IN onUpdate
-    private InputField field;
+    // THE LINK OR QUERY BEING TYPED; THE SCREEN OUTLIVES ITS VISITS, SO THE TEXT IS STILL THERE ON THE NEXT ONE
+    private TextField field;
     private Button reload;
     private Button save;
     private Button play;
@@ -150,7 +150,22 @@ public class OpenMultimediaScreen extends Screen {
 
     @Override
     protected Element<?> build() {
-        this.field = new InputField().size(Element.MAX_PARENT, 40);
+        // EVERY EDIT FEEDS THE SEARCH DEBOUNCE AND THE PREVIEW; onUpdate SWAPS THE LINK AND SEARCH ICONS
+        this.field = new TextField()
+                .placeholder("search, or paste a URL / path...")
+                .unicode(true)
+                .maxLength(Integer.MAX_VALUE)
+                .scale(AppTheme.TEXT_BUTTON)
+                .accent(AppTheme.NEON)
+                .frame(AppTheme.BG_2, AppTheme.STROKE_BRIGHT, null, 1f, 1f)
+                .focusGlow(0.28f, true)
+                .caret(AppTheme.NEON_LIGHT, 2, true)
+                .onChange(v -> {
+                    this.lastEditMs = System.currentTimeMillis();
+                    this.ensurePreviewMRL();
+                })
+                .padding(new Spacing(0, 14, 0, 32))
+                .size(Element.MAX_PARENT, 40);
         this.reload = new Button("RELOAD").icon("reload")
                 .accent(AppTheme.NEON_LIGHT).textColor(AppTheme.NEON_LIGHT)
                 .size(112, 40).onClick(b -> this.reloadPreviewMRL());
@@ -290,13 +305,15 @@ public class OpenMultimediaScreen extends Screen {
         if (this.loading) this.checkLoadingState();
         this.syncLoadDialog();
 
-        final String url = this.urlText != null ? this.urlText : "";
+        final String url = this.field.value();
         if (this.loading) {
             this.loadDialog.title("Loading" + ".".repeat((int) ((System.currentTimeMillis() / 500) % 4)));
             this.loadUrl.text(url.isEmpty() ? "(empty)" : url);
         }
 
         final boolean search = this.searchMode();
+        // A LOADING LINK IS READ-ONLY; THE GLYPH SAYS WHETHER THE TEXT IS A SEARCH OR A LINK
+        this.field.enabled(!this.loading).icon(search ? "search" : "link", search ? AppTheme.CYAN : AppTheme.TEXT_FAINT, 10);
 
         // AUTO-SEARCH THE QUERY ONCE TYPING SETTLES
         if (search) {
@@ -352,7 +369,7 @@ public class OpenMultimediaScreen extends Screen {
         // TREE FIRST: THE LOADING DIALOG (FULLY MODAL) AND THE FOCUSED FIELD (BACKSPACE/DELETE) CONSUME THEIRS
         if (super.dispatchKey(key, action)) return true;
         if (action == GLFW_RELEASE) {
-            final String url = this.urlText != null ? this.urlText : "";
+            final String url = this.field.value();
             switch (key) {
                 // ONLY WHILE THE FIELD IS BLURRED: A TYPED SPACE IS INPUT, NOT THE SAVE SHORTCUT
                 case GLFW_KEY_SPACE -> {
@@ -391,7 +408,7 @@ public class OpenMultimediaScreen extends Screen {
         try {
             final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
             if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
-                this.urlText = ((String) clipboard.getData(DataFlavor.stringFlavor)).trim().replace("\"", "");
+                this.field.value(((String) clipboard.getData(DataFlavor.stringFlavor)).trim().replace("\"", ""));
                 this.lastEditMs = System.currentTimeMillis();
                 this.ensurePreviewMRL();
             }
@@ -401,7 +418,7 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void reloadPreviewMRL() {
-        final String url = this.urlText == null ? "" : this.urlText.trim();
+        final String url = this.field.value().trim();
         if (url.isEmpty()) return;
         if (this.previewMRL == null || !url.equals(this.previewUrl)) {
             this.previewUrl = "";
@@ -417,17 +434,16 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void saveCustomUrl() {
-        if (this.urlText == null || this.urlText.isEmpty()) return;
-        final String name = this.urlText.length() > 40
-                ? this.urlText.substring(0, 37) + "..."
-                : this.urlText;
-        this.ctx.catalog.customTests.add(new MediaCatalog.TestURI(name, this.urlText, false));
-        this.urlText = "";
+        final String url = this.field.value();
+        if (url.isEmpty()) return;
+        final String name = url.length() > 40 ? url.substring(0, 37) + "..." : url;
+        this.ctx.catalog.customTests.add(new MediaCatalog.TestURI(name, url, false));
+        this.field.value("");
         this.navigator.accept(HomeScreen.Action.BACK);
     }
 
     private void playCustomUrl() {
-        if (this.urlText == null || this.urlText.isEmpty()) return;
+        if (this.field.value().isEmpty()) return;
 
         this.ensurePreviewMRL();
         if (this.previewMRL == null) return;
@@ -465,7 +481,7 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void ensurePreviewMRL() {
-        final String url = this.urlText == null ? "" : this.urlText.trim();
+        final String url = this.field.value().trim();
         if (url.isEmpty()) {
             this.clearPreview();
             return;
@@ -501,7 +517,7 @@ public class OpenMultimediaScreen extends Screen {
     // TRUE WHEN THE INPUT IS NOT loadable(); MEMOIZED ON THE INPUT TEXT BECAUSE IT RUNS EVERY FRAME
     // AND loadable() BLOCKS ON A FILE SYSTEM STAT
     private boolean searchMode() {
-        final String text = this.urlText == null ? "" : this.urlText.trim();
+        final String text = this.field.value().trim();
         if (!text.equals(this.searchModeText)) {
             this.searchModeText = text;
             this.searchMode = !text.isEmpty() && !loadable(text);
@@ -536,7 +552,7 @@ public class OpenMultimediaScreen extends Screen {
 
     // PlatformAPI SUPERSEDES ANY PREVIOUS SEARCH; onUpdate POLLS THE NEW HANDLE AS RESULTS LAND
     private void doSearch() {
-        final String query = this.urlText == null ? "" : this.urlText.trim();
+        final String query = this.field.value().trim();
         if (query.isEmpty()) return;
         this.releaseThumbs();
         this.searchRenderedDone = false;
@@ -548,7 +564,7 @@ public class OpenMultimediaScreen extends Screen {
     // THE RESULT'S URL REPLACES THE INPUT, WHICH LEAVES SEARCH MODE SO IT CAN BE PLAYED
     private void selectResult(final PlatformResult result) {
         if (result == null || result.uri() == null) return;
-        this.urlText = result.uri().toString();
+        this.field.value(result.uri().toString());
         this.clearSearch();
         this.field.focused(true);
         this.ensurePreviewMRL();
@@ -561,7 +577,7 @@ public class OpenMultimediaScreen extends Screen {
         if (row.kind() == ROW_RESULT) {
             this.selectResult(row.result());
         } else if (row.kind() == ROW_HISTORY) {
-            this.urlText = row.text();
+            this.field.value(row.text());
             this.doSearch();
         }
     }
@@ -829,14 +845,6 @@ public class OpenMultimediaScreen extends Screen {
         return best == MediaQuality.UNKNOWN ? null : best.name();
     }
 
-    private String deleteLastWord(final String value) {
-        int i = value.length();
-        while (i > 0 && Character.isWhitespace(value.charAt(i - 1))) i--;
-        while (i > 0 && !Character.isWhitespace(value.charAt(i - 1)) && "/\\?&=#.:_-".indexOf(value.charAt(i - 1)) < 0) i--;
-        if (i > 0 && "/\\?&=#.:_-".indexOf(value.charAt(i - 1)) >= 0) i--;
-        return value.substring(0, Math.max(0, i));
-    }
-
     // ==========================================================================
     // TREE — BODY (SCRIM + CENTERED DIALOG PANEL)
     // ==========================================================================
@@ -1090,87 +1098,6 @@ public class OpenMultimediaScreen extends Screen {
                 canvas.glow(chipX, y, chipW, 22, 0f, AppTheme.NEON, 0.34f);
                 canvas.text(chipLabel, chipX + 9, y + 5, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY, false);
             }
-        }
-    }
-
-    // ==========================================================================
-    // TREE — URL/SEARCH FIELD
-    // ==========================================================================
-
-    // EDITS urlText DIRECTLY, FEEDING THE SEARCH DEBOUNCE AND THE PREVIEW ON EVERY EDIT;
-    // CTRL+BACKSPACE DELETES A WORD
-    private final class InputField extends Element<InputField> {
-
-        @Override
-        public boolean textInputActive() {
-            return this.focused;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int x = this.left;
-            final int y = this.top;
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            final boolean search = OpenMultimediaScreen.this.searchMode();
-            final String value = OpenMultimediaScreen.this.urlText != null ? OpenMultimediaScreen.this.urlText : "";
-            if (this.focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.28f);
-            canvas.fill(x, y, w, h, AppTheme.BG_2);
-            canvas.stroke(x, y, w, h, this.focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
-            PixelIcon.draw(search ? "search" : "link", x + 10, y + (h - 14) / 2, 14,
-                    search ? AppTheme.CYAN : AppTheme.TEXT_FAINT);
-
-            final float scale = AppTheme.TEXT_BUTTON;
-            final int textX = x + 32;
-            final int textY = y + Math.max(0, (h - canvas.textHeight(scale, false)) / 2);
-            final String draw = canvas.text().truncateToWidth(value, w - 46, scale);
-            final boolean empty = draw.isEmpty();
-            canvas.text(empty ? "search, or paste a URL / path..." : draw, textX, textY,
-                    empty ? AppTheme.TEXT_FAINT : AppTheme.TEXT, scale, false);
-            if (this.focused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
-                final int caretW = empty ? 0 : canvas.textWidth(draw, scale, false);
-                final int caretX = Math.min(x + w - 10, textX + caretW + (empty ? -5 : 1));
-                canvas.fill(caretX, textY, 2, canvas.textHeight(scale, false), AppTheme.NEON_LIGHT);
-            }
-        }
-
-        @Override
-        public boolean dispatchClick(final double mx, final double my) {
-            if (this.contains(mx, my)) {
-                if (!this.focused) {
-                    this.focused = true;
-                    this.invalidate();
-                }
-                return true;
-            }
-            this.focused = false;
-            return false;
-        }
-
-        @Override
-        public boolean dispatchChar(final int codepoint) {
-            if (!this.focused || OpenMultimediaScreen.this.loading || OpenMultimediaScreen.this.ctx.ctrlDown) return false;
-            if (codepoint < 32 || codepoint == 127) return false;
-            OpenMultimediaScreen.this.urlText = (OpenMultimediaScreen.this.urlText == null ? "" : OpenMultimediaScreen.this.urlText)
-                    + new String(Character.toChars(codepoint));
-            OpenMultimediaScreen.this.lastEditMs = System.currentTimeMillis();
-            OpenMultimediaScreen.this.ensurePreviewMRL();
-            return true;
-        }
-
-        @Override
-        public boolean dispatchKey(final int key, final int action) {
-            // BACKSPACE/DELETE ARE FIELD KEYS ONLY WHILE FOCUSED (EDIT ON PRESS+REPEAT, RELEASE SWALLOWED);
-            // EVERYTHING ELSE FALLS THROUGH TO THE SCREEN SHORTCUTS
-            if (!this.focused || (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE)) return false;
-            if (action != GLFW_RELEASE && OpenMultimediaScreen.this.urlText != null && !OpenMultimediaScreen.this.urlText.isEmpty()) {
-                OpenMultimediaScreen.this.urlText = OpenMultimediaScreen.this.ctx.ctrlDown
-                        ? OpenMultimediaScreen.this.deleteLastWord(OpenMultimediaScreen.this.urlText)
-                        : OpenMultimediaScreen.this.urlText.substring(0, OpenMultimediaScreen.this.urlText.length() - 1);
-                OpenMultimediaScreen.this.lastEditMs = System.currentTimeMillis();
-                OpenMultimediaScreen.this.ensurePreviewMRL();
-            }
-            return true;
         }
     }
 }

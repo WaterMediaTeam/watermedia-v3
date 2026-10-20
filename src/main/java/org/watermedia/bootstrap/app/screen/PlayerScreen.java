@@ -755,16 +755,6 @@ public final class PlayerScreen extends Screen {
                 target.focused(true).invalidate();
                 return true;
             }
-            case GLFW_KEY_DELETE -> {
-                // THE FIELD HANDLES BACKSPACE; DELETE ALSO REMOVES THE LAST DIGIT
-                final TextField field = this.focusedResField();
-                if (field != null && !field.value().isEmpty()) {
-                    final String next = field.value().substring(0, field.value().length() - 1);
-                    field.value(next).invalidate();
-                    this.resEdit(field, field == this.resWidthField, next);
-                }
-                return true;
-            }
             case GLFW_KEY_UP -> {
                 this.selectVideoLod(this.lodSelectedIndex - 1);
                 return true;
@@ -785,12 +775,6 @@ public final class PlayerScreen extends Screen {
                 return false;
             }
         }
-    }
-
-    private TextField focusedResField() {
-        if (this.resWidthField != null && this.resWidthField.focused()) return this.resWidthField;
-        if (this.resHeightField != null && this.resHeightField.focused()) return this.resHeightField;
-        return null;
     }
 
     private void clearResFocus() {

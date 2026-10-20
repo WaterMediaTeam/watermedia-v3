@@ -20,6 +20,7 @@ import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.SectionHead;
 import org.watermedia.bootstrap.app.element.Text;
+import org.watermedia.bootstrap.app.element.TextField;
 import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Gravity;
@@ -67,7 +68,7 @@ public final class MRLSelectorScreen extends Screen {
     private MediaCatalog.TestURI pendingUri;
 
     private Header header;
-    private SearchField search;
+    private TextField search;
     private ListView<MediaCatalog.TestURI> list;
     private PreviewPane preview;
     // HEADER ROW, REFRESHED EACH FRAME WITH THE GROUP NAME, ITEM COUNT AND FAILED COUNT
@@ -92,8 +93,26 @@ public final class MRLSelectorScreen extends Screen {
 
     @Override
     protected Element<?> build() {
-        this.search = new SearchField()
+        // THE FILTER FOCUSES ON HOVER, BLURS ON ENTER AND CLEARS ON ESC; BLURRED, THOSE KEYS DRIVE THE LIST
+        this.search = new TextField()
+                .placeholder("filter...")
+                .unicode(true)
+                .maxLength(Integer.MAX_VALUE)
+                .accent(AppTheme.NEON)
+                .frame(AppTheme.BG_2, AppTheme.STROKE_BRIGHT, null, 1f, 1f)
+                .focusGlow(0.24f, false)
+                .caret(AppTheme.NEON_LIGHT, 2, true)
+                .icon("search", AppTheme.TEXT_FAINT, 8)
+                .focusOnHover(true)
                 .onChange(v -> this.applyFilter())
+                .onSubmit(() -> this.search.focused(false))
+                .onEscape(() -> {
+                    this.search.focused(false);
+                    if (this.search.value().isEmpty()) return;
+                    this.search.value("");
+                    this.applyFilter();
+                })
+                .padding(new Spacing(0, 8, 0, 30))
                 .width(Element.MAX_PARENT)
                 .height(30);
 
@@ -145,7 +164,7 @@ public final class MRLSelectorScreen extends Screen {
         this.stopLoad();
         this.groupSubscriptions.clear();
         this.thumbSubscribed.clear();
-        this.search.clear().focused(false);
+        this.search.value("").focused(false);
         this.applyFilter();
         this.list.selection(0);
         this.subscribeGroupMRLs();
@@ -826,118 +845,5 @@ public final class MRLSelectorScreen extends Screen {
                 .trail((canvas, row, x, y, w, h) -> pip(canvas, x + w - 19, y + 25, 8, Previews.color(this.mrlOf(uri)), false))
                 .place(new CrtOverlay().size(58, 34), 12, 14)
                 .tag(uri);
-    }
-
-    // FILTER FIELD WITH A SEARCH GLYPH, FOCUS ON HOVER AND CLEAR ON ESC, WHICH TextField DOES NOT OFFER
-    private static final class SearchField extends Element<SearchField> {
-
-        private String value = "";
-        private Consumer<String> onChange;
-
-        private SearchField onChange(final Consumer<String> handler) {
-            this.onChange = handler;
-            return this;
-        }
-
-        private SearchField clear() {
-            this.value = "";
-            return this;
-        }
-
-        private String value() {
-            return this.value;
-        }
-
-        @Override
-        public boolean textInputActive() {
-            return this.focused;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int x = this.left;
-            final int y = this.top;
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            final float scale = AppTheme.TEXT_BODY;
-            canvas.fill(x, y, w, h, AppTheme.BG_2);
-            canvas.stroke(x, y, w, h, this.focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
-            if (this.focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.24f);
-            PixelIcon.draw("search", x + 8, y + (h - 14) / 2, 14, AppTheme.TEXT_FAINT);
-            final boolean empty = this.value.isEmpty();
-            final int textX = x + 30;
-            final int textH = canvas.textHeight(scale, false);
-            final int textY = y + Math.max(0, (h - textH) / 2);
-            canvas.text(empty ? "filter..." : this.value, textX, textY, empty ? AppTheme.TEXT_FAINT : AppTheme.TEXT, scale, false);
-            if (this.focused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
-                final int textW = empty ? 0 : canvas.textWidth(this.value, scale, false);
-                final int caretX = Math.min(x + w - 8, textX + textW + (empty ? -5 : 1));
-                canvas.fill(caretX, textY, 2, textH, AppTheme.NEON_LIGHT);
-            }
-        }
-
-        @Override
-        public boolean dispatchHover(final double mx, final double my) {
-            // HOVER FOCUSES THE FIELD; LEAVING DOES NOT BLUR IT
-            final boolean inside = this.contains(mx, my);
-            this.hovered = inside;
-            if (inside && !this.focused) {
-                this.focused = true;
-                this.invalidate();
-            }
-            return inside;
-        }
-
-        @Override
-        public boolean dispatchClick(final double mx, final double my) {
-            if (this.contains(mx, my)) {
-                this.focused = true;
-                this.invalidate();
-                return true;
-            }
-            this.focused = false;
-            return false;
-        }
-
-        @Override
-        public boolean dispatchChar(final int codepoint) {
-            if (!this.focused || codepoint < 32 || codepoint == 127) return false;
-            this.value += new String(Character.toChars(codepoint));
-            this.invalidate();
-            if (this.onChange != null) this.onChange.accept(this.value);
-            return true;
-        }
-
-        @Override
-        public boolean dispatchKey(final int key, final int action) {
-            if (!this.focused) return false; // ARROWS/SLASH/ENTER/ESC FALL THROUGH TO SCREEN NAV WHEN BLURRED
-            switch (key) {
-                case GLFW_KEY_BACKSPACE -> {
-                    if (action != GLFW_RELEASE && !this.value.isEmpty()) {
-                        this.value = this.value.substring(0, this.value.length() - 1);
-                        this.invalidate();
-                        if (this.onChange != null) this.onChange.accept(this.value);
-                    }
-                    return true;
-                }
-                case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
-                    if (action == GLFW_RELEASE) this.focused = false;
-                    return true;
-                }
-                case GLFW_KEY_ESCAPE -> {
-                    if (action == GLFW_RELEASE) {
-                        this.focused = false;
-                        if (!this.value.isEmpty()) {
-                            this.value = "";
-                            if (this.onChange != null) this.onChange.accept(this.value);
-                        }
-                    }
-                    return true;
-                }
-                default -> {
-                    return false;
-                }
-            }
-        }
     }
 }
