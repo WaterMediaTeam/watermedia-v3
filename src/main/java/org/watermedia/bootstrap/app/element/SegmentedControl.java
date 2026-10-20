@@ -21,8 +21,6 @@ public final class SegmentedControl extends Element<SegmentedControl> {
     private Color accent = AppTheme.NEON;
     private Consumer<Integer> onSelect;
     private float scale = AppTheme.TEXT_BUTTON;
-    // PER-SEGMENT AVAILABILITY (null = ALL ENABLED). A DISABLED SEGMENT RENDERS DIMMED AND IGNORES CLICKS.
-    private boolean[] disabled;
     // THUMB SLIDE — animStart 0 MEANS IDLE; WHILE RUNNING THE THUMB EASES FROM animFrom (CELL INDEX
     // DOMAIN) TO THE SELECTED CELL. ONLY ANIMATES AFTER THE FIRST DRAW, SO A FRESH REBIND SNAPS.
     private long animStart;
@@ -58,12 +56,6 @@ public final class SegmentedControl extends Element<SegmentedControl> {
 
     public SegmentedControl scale(final float value) {
         this.scale = value;
-        return this;
-    }
-
-    /** Marks segments as disabled (dimmed, unclickable); {@code null} or a shorter array enables the rest. */
-    public SegmentedControl disabled(final boolean[] mask) {
-        this.disabled = mask;
         return this;
     }
 
@@ -131,15 +123,11 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         for (int i = 0; i < n; i++) {
             final int x0 = base + (int) ((long) w * i / n);
             final int x1 = base + (int) ((long) w * (i + 1) / n);
-            final boolean off = this.disabled != null && i < this.disabled.length && this.disabled[i];
-            canvas.fill(x0, y, x1 - x0, h, AppTheme.alpha(this.accent, off ? 8 : 22));
+            canvas.fill(x0, y, x1 - x0, h, AppTheme.alpha(this.accent, 22));
         }
 
-        // THE SLIDING THUMB HIDES WHILE THE SELECTED SEGMENT IS DISABLED
-        final boolean targetOff = this.disabled != null && this.selectedIndex >= 0
-                && this.selectedIndex < this.disabled.length && this.disabled[this.selectedIndex];
         float center = -1f;
-        if (!targetOff && this.selectedIndex >= 0 && this.selectedIndex < n) {
+        if (this.selectedIndex >= 0 && this.selectedIndex < n) {
             final float p = this.thumbPos(System.currentTimeMillis());
             final int tx0 = base + Math.round(w * p / n);
             final int tx1 = base + Math.round(w * (p + 1f) / n);
@@ -154,9 +142,8 @@ public final class SegmentedControl extends Element<SegmentedControl> {
             if (label == null || label.isEmpty()) continue;
             final int x0 = base + (int) ((long) w * i / n);
             final int x1 = base + (int) ((long) w * (i + 1) / n);
-            final boolean off = this.disabled != null && i < this.disabled.length && this.disabled[i];
             final boolean under = center >= x0 && center < x1;
-            final Color tc = off ? AppTheme.TEXT_FAINT : under ? AppTheme.BG_0 : AppTheme.TEXT_SOFT;
+            final Color tc = under ? AppTheme.BG_0 : AppTheme.TEXT_SOFT;
             final int tw = canvas.textWidth(label, this.scale, false);
             final int th = canvas.textHeight(this.scale, false);
             canvas.text(label, x0 + (x1 - x0 - tw) / 2, y + (h - th) / 2, tc, this.scale, false);
@@ -170,9 +157,7 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         final int n = this.segments.length;
         if (n == 0 || !this.contains(mx, my)) return false;
         final int segW = this.innerWidth() / n;
-        int idx = segW > 0 ? (int) ((mx - this.innerLeft()) / segW) : 0;
-        idx = MathUtil.clamp(idx, 0, n - 1);
-        if (this.disabled != null && idx < this.disabled.length && this.disabled[idx]) return true;
+        final int idx = MathUtil.clamp(segW > 0 ? (int) ((mx - this.innerLeft()) / segW) : 0, 0, n - 1);
         if (idx != this.selectedIndex) {
             // THE LOGICAL SELECTION FLIPS IMMEDIATELY; ONLY THE THUMB DRAW TRAILS BEHIND WITH THE EASE
             this.slide();

@@ -77,13 +77,6 @@ public final class IconButton extends Element<IconButton> {
                 this.filled, this.hovered, this.enabled, this.bordered);
     }
 
-    /** Paints a bordered icon button into ({@code x,y,w,h}). */
-    public static void render(final Canvas canvas, final int x, final int y, final int w, final int h, final String icon,
-                              final int iconSize, final Color accent, final Color iconColor,
-                              final boolean filled, final boolean hover, final boolean enabled) {
-        render(canvas, x, y, w, h, icon, iconSize, accent, iconColor, filled, hover, enabled, true);
-    }
-
     /** Paints an icon button into ({@code x,y,w,h}); {@code bordered=false} draws only the centered icon. */
     public static void render(final Canvas canvas, final int x, final int y, final int w, final int h, final String icon,
                               final int iconSize, final Color accent, final Color iconColor,

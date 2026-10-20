@@ -13,6 +13,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.lwjgl.glfw.GLFW.glfwPostEmptyEvent;
 import static org.lwjgl.openal.AL10.alSourcePlay;
@@ -42,7 +43,7 @@ public final class AppContext implements Executor {
     public int windowHeight = 720;
     public long windowHandle;
     public boolean windowMaximized;
-    private volatile boolean renderRequested = true;
+    private final AtomicBoolean renderRequested = new AtomicBoolean(true);
     // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX)
     public volatile float uiScale = 1f;
 
@@ -163,22 +164,17 @@ public final class AppContext implements Executor {
     }
 
     public void requestRender() {
-        // ONLY THE FIRST REQUEST AFTER A CONSUMED FRAME WAKES THE LOOP; LATER ONES FIND THE FLAG ALREADY RAISED
-        if (this.renderRequested) return;
-        this.renderRequested = true;
-        if (this.windowHandle != 0L) glfwPostEmptyEvent();
+        // ONLY THE REQUEST THAT RAISES THE FLAG WAKES THE LOOP; A RAISED FLAG IS STILL UNCONSUMED, SO ITS FRAME
+        // RUNS AFTER THIS CALLER'S CHANGES
+        if (this.renderRequested.compareAndSet(false, true) && this.windowHandle != 0L) glfwPostEmptyEvent();
     }
 
     public boolean renderRequested() {
-        return this.renderRequested;
+        return this.renderRequested.get();
     }
 
     public boolean consumeRenderRequest() {
-        // ONLY THE RENDER THREAD CLEARS THE FLAG AND WRITERS ONLY SET IT, SO A RACING REQUEST IS
-        // RE-DELIVERED BY glfwPostEmptyEvent()
-        final boolean requested = this.renderRequested;
-        this.renderRequested = false;
-        return requested;
+        return this.renderRequested.getAndSet(false);
     }
 
     public boolean processExecutor() {

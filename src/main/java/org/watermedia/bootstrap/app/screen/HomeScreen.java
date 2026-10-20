@@ -1,5 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MathUtil;
@@ -41,6 +43,7 @@ import static org.lwjgl.glfw.GLFW.*;
  * to {@code ctx.upload} and {@code ctx.cleanup}. Flow logic stays in the app; this screen only fires actions.
  */
 public class HomeScreen extends Screen {
+    private static final Marker IT = MarkerManager.getMarker(HomeScreen.class.getSimpleName());
 
     public enum Action {
         OPEN_MULTIMEDIA, UPLOAD_LOGS, CLEANUP,
@@ -117,6 +120,7 @@ public class HomeScreen extends Screen {
     // CACHES). rebuildMenu() READS THE LAST PUBLISHED VALUE; cacheWalking COALESCES OVERLAPPING WALKS.
     private volatile String cacheLabel = "--";
     private volatile boolean cacheWalking;
+    private volatile boolean cacheWarned;
 
     public HomeScreen(final TextRenderer text, final AppContext ctx, final Consumer<Action> navigator) {
         super(text, ctx);
@@ -529,8 +533,10 @@ public class HomeScreen extends Screen {
             long bytes = 0L;
             try {
                 bytes = CleanupState.scan()[1];
-            } catch (final IOException | RuntimeException ignored) {
-                // AN UNREADABLE CACHE SHOWS AS EMPTY; THE CLEANUP DIALOG REPORTS THE ERROR WHEN OPENED
+            } catch (final IOException | RuntimeException e) {
+                // THE WALK REPEATS ON EVERY HOME ENTRY AND THE CLEANUP DIALOG REPORTS THE ERROR AGAIN WHEN OPENED
+                if (!this.cacheWarned) WaterMedia.LOGGER.warn(IT, "Cannot measure the media cache; showing it as empty", e);
+                this.cacheWarned = true;
             } finally {
                 // RESET IN finally: A THROWN WALK MUST NOT LEAVE cacheWalking LATCHED (WHICH WOULD FREEZE THE LABEL FOREVER)
                 this.cacheLabel = MathUtil.displayBytes(bytes);
@@ -853,11 +859,11 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            SectionHead.draw(canvas, "ACTIONS", HomeScreen.this.actions.size() + " AVAILABLE", this.innerLeft(), this.innerTop(), this.innerWidth());
-            SectionHead.draw(canvas, "MEDIA TESTS", HomeScreen.this.mediaTests.size() + " CATEGORIES", this.rightXAbs, this.innerTop(), this.innerWidth());
-            if (this.entHeadVisible) {
-                SectionHead.draw(canvas, "ENTERTAINMENT", HomeScreen.this.entertainment.size() + " AVAILABLE", this.rightXAbs, this.entYAbs, this.innerWidth());
-            }
+            // EACH HEAD IS CUT TO ITS OWN COLUMN; THE 18 px GAP SEPARATES THEM
+            final int rightW = this.innerWidth() - this.rightXRel;
+            SectionHead.draw(canvas, "ACTIONS", HomeScreen.this.actions.size() + " AVAILABLE", this.innerLeft(), this.innerTop(), this.rightXRel - 18);
+            SectionHead.draw(canvas, "MEDIA TESTS", HomeScreen.this.mediaTests.size() + " CATEGORIES", this.rightXAbs, this.innerTop(), rightW);
+            if (this.entHeadVisible) SectionHead.draw(canvas, "ENTERTAINMENT", HomeScreen.this.entertainment.size() + " AVAILABLE", this.rightXAbs, this.entYAbs, rightW);
             super.onDraw(canvas); // TILES, THEN THE TOOLTIP ON TOP
         }
 

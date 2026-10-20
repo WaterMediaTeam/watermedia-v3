@@ -161,11 +161,11 @@ public final class SettingsScreen extends Screen {
                 .size(SIDEBAR_W, MAX_PARENT)
                 .padding(new Spacing(8, 4, 8, 4))
                 .background(AppTheme.alpha(AppTheme.BG_1, 150))
-                .add(new SectionHead("Sections"))
+                .add(new SectionHead("Sections").compact())
                 .add(new ParentScroll().scrollbarWidth(3).size(MAX_PARENT, MAX_PARENT).add(this.sectionColumn));
 
         // SETTINGS PANE — A SECTION HEAD WITH THE SECTION'S DETAIL OVER THE OPEN ROW LIST
-        this.paneHead = new SectionHead();
+        this.paneHead = new SectionHead().compact();
         this.list = new ListView<Setting>()
                 .rowHeight(ROW_H)
                 .spacing(8)

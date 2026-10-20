@@ -382,7 +382,7 @@ public final class RenderEngine {
         final float r = glow.getRed() / 255f;
         final float g = glow.getGreen() / 255f;
         final float b = glow.getBlue() / 255f;
-        final float a = alpha * this.pulse; // MODULATED BY A SLOW RANDOM HEARTBEAT
+        final float a = alpha * this.pulse;
         if (this.backend.supportsSoftRect()) {
             // ONE SDF QUAD INSTEAD OF 10 STACKED FILLS — SAME HALO, A FRACTION OF THE OVERDRAW
             this.flush();

@@ -614,9 +614,7 @@ public class WaterMediaApp {
 
             // ON-DEMAND FRAMES RENDER ONLY WHEN SOMETHING ASKED FOR ONE; A STILL DRAG-HOLD FALLS THROUGH
             // HERE TOO AND SKIPS THE REDUNDANT REPAINT UNTIL THE POINTER MOVES AGAIN
-            if (!continuous && !ctx.consumeRenderRequest()) {
-                continue;
-            }
+            if (!continuous && !ctx.consumeRenderRequest()) continue;
 
             RenderSystem.beginFrame();
             RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);

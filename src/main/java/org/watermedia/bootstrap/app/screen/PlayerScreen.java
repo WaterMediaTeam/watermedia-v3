@@ -481,7 +481,7 @@ public final class PlayerScreen extends Screen {
         this.qualList.rowHeight(34).spacing(6).scrollbarWidth(3)
                 .selectionColor(null).hoverColor(null)
                 .rowFactory((q, i) -> {
-                    final PickRow row = new PickRow(q.name(), q.height() + "p", null);
+                    final PickRow row = new PickRow(q.name(), q.height() + "p", null, false);
                     row.onHover(r -> {
                         if (this.qualList.selectedIndex() != i) {
                             this.qualList.selection(i);
@@ -498,9 +498,9 @@ public final class PlayerScreen extends Screen {
                 .width(MAX_PARENT);
 
         final SectionHead srcHead = new SectionHead("Sources");
-        srcHead.count(this.ctx.availableSources.length + " items");
+        srcHead.count(this.ctx.availableSources.length + " ITEMS");
         this.qualHead = new SectionHead("Quality");
-        this.qualHead.count(this.ctx.availableQualities.length + " available");
+        this.qualHead.count(this.ctx.availableQualities.length + " AVAILABLE");
 
         this.qualLeftCol = Parent.column().spacing(12).add(srcHead).add(this.srcList);
         this.qualLeftCol.margin(new Spacing(0, 24, 0, 4));
@@ -635,7 +635,7 @@ public final class PlayerScreen extends Screen {
     private void refreshQualityList() {
         if (this.qualList == null || this.ctx.availableQualities == null) return;
         this.qualList.items(Arrays.asList(this.ctx.availableQualities)).selection(this.qualitySelectedIndex);
-        if (this.qualHead != null) this.qualHead.count(this.ctx.availableQualities.length + " available");
+        if (this.qualHead != null) this.qualHead.count(this.ctx.availableQualities.length + " AVAILABLE");
     }
 
     private void applyQuality(final int index) {
@@ -670,7 +670,7 @@ public final class PlayerScreen extends Screen {
         this.activeMaxText = new Text().scale(AppTheme.TEXT_BODY).color(AppTheme.CYAN).margin(new Spacing(14, 0, 0, 0));
 
         this.videoLeftCol = Parent.column()
-                .add(new SectionHead("Resolution").count("custom px"))
+                .add(new SectionHead("Resolution").count("CUSTOM PX"))
                 .add(new Text("WIDTH").scale(AppTheme.TEXT_SUBTITLE).color(AppTheme.TEXT_FAINT).margin(new Spacing(12, 0, 0, 0)))
                 .add(this.resWidthField)
                 .add(new Text("HEIGHT").scale(AppTheme.TEXT_SUBTITLE).color(AppTheme.TEXT_FAINT).margin(new Spacing(20, 0, 0, 0)))
@@ -683,7 +683,7 @@ public final class PlayerScreen extends Screen {
         final Parent lodCol = Parent.column().spacing(6).margin(new Spacing(10, 0, 0, 0)).width(MAX_PARENT);
         for (int i = 0; i < lods.length; i++) {
             final int idx = i;
-            lodCol.add(new PickRow(lods[idx].name(), lods[idx].percent() + "%", () -> this.lodSelectedIndex == idx)
+            lodCol.add(new PickRow(lods[idx].name(), lods[idx].percent() + "%", () -> this.lodSelectedIndex == idx, true)
                     .size(MAX_PARENT, 34)
                     .onClick(r -> {
                         this.clearResFocus();
@@ -691,7 +691,7 @@ public final class PlayerScreen extends Screen {
                     }));
         }
         this.videoRightCol = Parent.column()
-                .add(new SectionHead("Level of Detail").count(lods.length + " levels"))
+                .add(new SectionHead("Level of Detail").count(lods.length + " LEVELS"))
                 .add(lodCol);
         this.videoRightCol.margin(new Spacing(0, 2, 0, 23));
         this.videoDivider = new Box().background(AppTheme.STROKE_BRIGHT);
@@ -901,18 +901,21 @@ public final class PlayerScreen extends Screen {
         }
     }
 
-    // A PICKABLE DIALOG ROW (QUALITY OR LOD): PIP, BOLD LABEL AND A RIGHT-ALIGNED DETAIL THAT LIGHT UP WHILE PICKED
+    // A PICKABLE DIALOG ROW (QUALITY OR LOD): PIP, BOLD LABEL AND A DETAIL THAT LIGHT UP WHILE PICKED
     private static final class PickRow extends Element<PickRow> {
 
         private final String label;
         private final String detail;
         // null FOR A ROW INSIDE A ListView, WHICH STAMPS selected ITSELF
         private final BooleanSupplier picked;
+        // THE LOD LOOK: A HOVER TINT, A 2 px PICKED BORDER AND A RIGHT-ALIGNED DETAIL; QUALITY ROWS PUT IT 62 px FROM THE EDGE
+        private final boolean strong;
 
-        PickRow(final String label, final String detail, final BooleanSupplier picked) {
+        PickRow(final String label, final String detail, final BooleanSupplier picked, final boolean strong) {
             this.label = label.toUpperCase(Locale.ROOT);
             this.detail = detail;
             this.picked = picked;
+            this.strong = strong;
         }
 
         @Override
@@ -922,14 +925,14 @@ public final class PlayerScreen extends Screen {
             final int h = this.measuredHeight;
             canvas.fill(this.left, this.top, w, h,
                     sel ? AppTheme.alpha(AppTheme.NEON_DARK, 88)
-                            : this.hovered ? AppTheme.alpha(AppTheme.NEON_DARK, 44) : AppTheme.alpha(AppTheme.BG_1, 148));
+                            : this.strong && this.hovered ? AppTheme.alpha(AppTheme.NEON_DARK, 44) : AppTheme.alpha(AppTheme.BG_1, 148));
             canvas.stroke(this.left, this.top, w, h,
-                    sel ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, sel ? 2f : 1f);
+                    sel ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, sel && this.strong ? 2f : 1f);
             canvas.fill(this.left + 8, this.top + Math.max(0, (h - 8) / 2), 8, 8, sel ? AppTheme.AMBER : AppTheme.TEXT_FAINT);
             canvas.text(this.label, this.left + 28,
                     this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, true)) / 2),
                     sel ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, true);
-            canvas.text(this.detail, this.left + w - canvas.textWidth(this.detail, AppTheme.TEXT_BODY, false) - 12,
+            canvas.text(this.detail, this.left + w - (this.strong ? canvas.textWidth(this.detail, AppTheme.TEXT_BODY, false) + 12 : 62),
                     this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2),
                     sel ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
         }

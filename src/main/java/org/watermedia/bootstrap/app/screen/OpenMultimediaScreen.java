@@ -93,12 +93,15 @@ public class OpenMultimediaScreen extends Screen {
     // searchRenderedDone GUARANTEES ONE FINAL FRAME ONCE IT COMPLETES
     private PlatformSearch search;
     private boolean searchRenderedDone = true;
-    private long lastEditMs;                // DRIVES THE AUTO-SEARCH DEBOUNCE
-    private boolean searchMode;             // CACHED searchMode() RESULT
-    private String searchModeText;          // TRIMMED INPUT BEHIND THE CACHED RESULT (null = NOT COMPUTED YET)
+    // TIME OF THE LAST KEYSTROKE, WHICH THE AUTO-SEARCH DEBOUNCE WAITS ON
+    private long lastEditMs;
+    // searchMode() CACHED FOR searchModeText, THE TRIMMED INPUT IT WAS COMPUTED FROM (null = NOT COMPUTED YET)
+    private boolean searchMode;
+    private String searchModeText;
     private float animPreviewH;
     private float animPreviewFrom;
-    private int animPreviewTarget = -1;     // -1 = UNINITIALIZED
+    // -1 MAKES THE NEXT PREVIEW HEIGHT SNAP INSTEAD OF EASING
+    private int animPreviewTarget = -1;
     private long animPreviewStart;
 
     // STATE BEHIND THE CURRENT DROPDOWN ROWS; syncDropdown REBUILDS THEM ONLY WHEN IT CHANGES

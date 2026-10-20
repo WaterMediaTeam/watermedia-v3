@@ -238,18 +238,13 @@ public final class Canvas {
 
     /** Clips every following draw to the rectangle intersected with the active clip; balance it with {@link #popClip}. */
     public void pushClip(final int x, final int y, final int w, final int h) {
-        int left = x;
-        int top = y;
-        int right = x + Math.max(0, w);
-        int bottom = y + Math.max(0, h);
-        if (this.clipDepth > 0) {
-            // A SATURATED STACK INTERSECTS WITH ITS DEEPEST RECORDED CLIP, LIKE THE ALPHA STACK
-            final int at = Math.min(this.clipDepth, CLIP_LEVELS) * 4 - 4;
-            left = Math.max(left, this.clipStack[at]);
-            top = Math.max(top, this.clipStack[at + 1]);
-            right = Math.max(left, Math.min(right, this.clipStack[at + 2]));
-            bottom = Math.max(top, Math.min(bottom, this.clipStack[at + 3]));
-        }
+        // A SATURATED STACK INTERSECTS WITH ITS DEEPEST RECORDED CLIP, LIKE THE ALPHA STACK; AN EMPTY ONE WITH NOTHING
+        final int parent = Math.min(this.clipDepth, CLIP_LEVELS) * 4 - 4;
+        final boolean nested = this.clipDepth > 0;
+        final int left = nested ? Math.max(x, this.clipStack[parent]) : x;
+        final int top = nested ? Math.max(y, this.clipStack[parent + 1]) : y;
+        final int right = Math.max(left, nested ? Math.min(x + Math.max(0, w), this.clipStack[parent + 2]) : x + Math.max(0, w));
+        final int bottom = Math.max(top, nested ? Math.min(y + Math.max(0, h), this.clipStack[parent + 3]) : y + Math.max(0, h));
         if (this.clipDepth < CLIP_LEVELS) {
             final int at = this.clipDepth * 4;
             this.clipStack[at] = left;

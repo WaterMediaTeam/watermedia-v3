@@ -57,9 +57,11 @@ public final class AppTheme {
     public static Color alpha(final Color color, final int alpha) {
         final int a = alpha < 0 ? 0 : Math.min(alpha, 255);
         final Color[] row = ALPHA_CACHE.computeIfAbsent(color, base -> new Color[256]);
-        Color cached = row[a];
-        if (cached == null) row[a] = cached = new Color(color.getRed(), color.getGreen(), color.getBlue(), a);
-        return cached;
+        final Color cached = row[a];
+        if (cached != null) return cached;
+        final Color made = new Color(color.getRed(), color.getGreen(), color.getBlue(), a);
+        row[a] = made;
+        return made;
     }
 
     private static float textScale(final int px) {

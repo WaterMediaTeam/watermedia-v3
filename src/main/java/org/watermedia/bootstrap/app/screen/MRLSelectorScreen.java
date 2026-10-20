@@ -95,12 +95,12 @@ public final class MRLSelectorScreen extends Screen {
                 .width(Element.MAX_PARENT)
                 .height(30);
 
-        this.headerHead = new SectionHead().weight(1f);
+        this.headerHead = new SectionHead().compact().weight(1f);
         this.headerFailed = new Badge().gravity(Gravity.CENTER);
         final Parent headRow = Parent.row()
                 .spacing(8)
                 .width(Element.MAX_PARENT)
-                .height(SectionHead.HEIGHT)
+                .height(SectionHead.COMPACT_HEIGHT)
                 .add(this.headerHead)
                 .add(this.headerFailed);
 
@@ -266,9 +266,8 @@ public final class MRLSelectorScreen extends Screen {
         if (this.ctx.selectedGroup == null) return;
         for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
             final MRL mrl = this.ctx.groupMRLs.get(uri.name());
-            if (mrl != null && !Previews.loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
+            if (mrl != null && !Previews.loaded(mrl) && this.groupSubscriptions.add(uri.name()))
                 mrl.subscribe(done -> this.ctx.requestRender());
-            }
         }
     }
 
@@ -286,9 +285,7 @@ public final class MRLSelectorScreen extends Screen {
         if (mrl != null) return mrl;
         mrl = MediaAPI.mrl(uri.uri());
         this.ctx.groupMRLs.put(uri.name(), mrl);
-        if (!Previews.loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
-            mrl.subscribe(done -> this.ctx.requestRender());
-        }
+        if (!Previews.loaded(mrl) && this.groupSubscriptions.add(uri.name())) mrl.subscribe(done -> this.ctx.requestRender());
         this.ctx.requestRender();
         return mrl;
     }
@@ -442,9 +439,7 @@ public final class MRLSelectorScreen extends Screen {
         if (thumbnail != null) Previews.release(this.ctx, List.of(thumbnail));
         this.thumbAttempted.remove(name);
         this.groupSubscriptions.remove(name);
-        if (!Previews.loaded(mrl) && this.groupSubscriptions.add(name)) {
-            mrl.subscribe(done -> this.ctx.requestRender());
-        }
+        if (!Previews.loaded(mrl) && this.groupSubscriptions.add(name)) mrl.subscribe(done -> this.ctx.requestRender());
         this.ctx.selectedMRLName = name;
         this.ctx.selectedMRL = mrl;
         this.ctx.requestRender();
@@ -599,9 +594,7 @@ public final class MRLSelectorScreen extends Screen {
         final String label = failed ? (mini ? "[" + statusLabel(mrl) + "]" : statusLabel(mrl))
                 : ready ? "[ media thumbnail ]" : "LOADING...";
         final Color color = failed ? Previews.color(mrl) : ready ? AppTheme.TEXT_SOFT : AppTheme.NEON;
-        if (!mini && failed) {
-            PixelIcon.draw("warn", x + w / 2 - 14, y + h / 2 - 36, 28, Previews.color(mrl));
-        }
+        if (!mini && failed) PixelIcon.draw("warn", x + w / 2 - 14, y + h / 2 - 36, 28, Previews.color(mrl));
         final float scale = mini ? AppTheme.TEXT_TINY : AppTheme.TEXT_BUTTON;
         final float textY = mini
                 ? y + (h - canvas.textHeight(scale, false)) / 2f
