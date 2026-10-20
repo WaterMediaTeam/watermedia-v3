@@ -763,9 +763,7 @@ public class OpenMultimediaScreen extends Screen {
         if (!Previews.loaded(mrl)) {
             final int generation = this.loadGeneration;
             mrl.subscribe(done -> {
-                if (this.loading && this.loadGeneration == generation && this.ctx.media.selectedMRL == done) {
-                    this.ctx.requestRender();
-                }
+                if (this.loading && this.loadGeneration == generation && this.ctx.media.selectedMRL == done) this.ctx.requestRender();
             });
             this.scheduleLoadTimeout(generation);
         }

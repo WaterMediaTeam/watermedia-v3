@@ -158,9 +158,7 @@ public class HomeScreen extends Screen {
             final String label = "CUSTOM (" + this.ctx.catalog.customTests.size() + ")";
             this.mediaTests.add(new MenuEntry(label, "custom", null, -2));
         }
-        if (this.ctx.catalog.iptvChannels.length > 0) {
-            this.entertainment.add(new MenuEntry("Television", "", Action.REGION_SELECTOR, -1));
-        }
+        if (this.ctx.catalog.iptvChannels.length > 0) this.entertainment.add(new MenuEntry("Television", "", Action.REGION_SELECTOR, -1));
 
         // THE KEYBOARD SELECTION MUST NEVER POINT AT A TILE THE FRESH LISTS DROPPED
         this.selectedAction = MathUtil.clamp(this.selectedAction, 0, this.actions.size() - 1);
@@ -608,7 +606,7 @@ public class HomeScreen extends Screen {
         final String wmUrl = this.ctx.upload.issueUrl != null ? this.ctx.upload.issueUrl : "https://github.com/" + LogUploader.REPO + "/issues/new";
         final List<RepoTarget> repos = new ArrayList<>();
         repos.add(new RepoTarget("WaterMedia", LogUploader.REPO, wmUrl, AppTheme.GREEN));
-        // ONLY LIST SUSPECT MODS WHOSE JAR WAS ACTUALLY FOUND IN THE INSTANCE (SEE WaterMediaApp.scanSuspectMods)
+        // ONLY LIST SUSPECT MODS WHOSE JAR WAS ACTUALLY FOUND IN THE INSTANCE (SEE LogUploader.scanSuspectMods)
         int idx = 0;
         for (final LogUploader.SuspectMod mod: LogUploader.SUSPECT_MODS) {
             if (this.ctx.upload.suspectModIds.contains(mod.id())) {

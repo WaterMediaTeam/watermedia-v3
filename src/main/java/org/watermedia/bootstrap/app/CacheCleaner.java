@@ -29,23 +29,6 @@ public final class CacheCleaner {
         this.repaint = repaint;
     }
 
-    /** Returns the dialog to its first stage, before a new scan. */
-    public void reset() {
-        this.working = false;
-        this.done = false;
-        this.error = false;
-        this.stage = 1;
-        this.state = "SCAN";
-        this.fileCount = 0;
-        this.sizeLabel = "0 B";
-        this.progress = 0;
-    }
-
-    /** Returns the media cache folder the dialog cleans. */
-    public static Path dir() {
-        return WaterMedia.tmp().resolve("cache");
-    }
-
     /** Counts the files and bytes in the media cache, as {@code {files, bytes}}. */
     public static long[] scan() throws IOException {
         final long[] stats = new long[2];
@@ -71,7 +54,7 @@ public final class CacheCleaner {
             this.reset();
             this.visible = true;
             this.working = true;
-            ThreadTool.thread("WaterMediaApp-CacheScan", this::count);
+            ThreadTool.thread("CacheCleaner-Scan", this::count);
             return;
         }
         if (this.working) {
@@ -81,11 +64,11 @@ public final class CacheCleaner {
         if (this.stage <= 1) {
             if (this.fileCount <= 0) return;
             this.working = true;
-            ThreadTool.thread("WaterMediaApp-CacheCleanup", this::clean);
+            ThreadTool.thread("CacheCleaner-Wipe", this::clean);
         } else {
             // DIALOG ALREADY HIDDEN — REFRESH THE COUNTS FOR THE NEXT OPEN OFF THE RENDER THREAD
             this.visible = false;
-            ThreadTool.thread("WaterMediaApp-CacheScan", this::count);
+            ThreadTool.thread("CacheCleaner-Scan", this::count);
         }
     }
 
@@ -133,5 +116,24 @@ public final class CacheCleaner {
             this.working = false;
             this.repaint.run();
         }
+    }
+
+    // RETURNS THE DIALOG TO ITS FIRST STAGE, BEFORE A NEW SCAN
+    private void reset() {
+        this.working = false;
+        this.done = false;
+        this.error = false;
+        this.stage = 1;
+        this.state = "SCAN";
+        this.fileCount = 0;
+        this.sizeLabel = "0 B";
+        this.progress = 0;
+    }
+
+    // UTILITY
+
+    // THE MEDIA CACHE FOLDER THE DIALOG COUNTS AND WIPES
+    private static Path dir() {
+        return WaterMedia.tmp().resolve("cache");
     }
 }

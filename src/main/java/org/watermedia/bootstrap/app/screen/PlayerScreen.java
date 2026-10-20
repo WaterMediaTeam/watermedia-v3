@@ -244,11 +244,8 @@ public final class PlayerScreen extends Screen {
         this.hideVideoDialog();
         this.ctx.media.releasePlayer();
 
-        if (this.ctx.media.selectedMRL == null || this.ctx.media.selectedGroup == null) {
-            this.navigator.accept(HomeScreen.Action.BACK);
-        } else {
-            this.navigator.accept(HomeScreen.Action.MRL_SELECTOR);
-        }
+        if (this.ctx.media.selectedMRL == null || this.ctx.media.selectedGroup == null) this.navigator.accept(HomeScreen.Action.BACK);
+        else this.navigator.accept(HomeScreen.Action.MRL_SELECTOR);
     }
 
     private void navigateSource(final int delta) {
@@ -627,9 +624,8 @@ public final class PlayerScreen extends Screen {
         this.loadQualitiesForSource(sourceIndex);
         this.refreshQualityList();
         if (!apply || sourceIndex == this.ctx.media.selectedSourceIndex) return;
-        if (this.ctx.media.availableQualities != null && this.ctx.media.availableQualities.length > 0) {
+        if (this.ctx.media.availableQualities != null && this.ctx.media.availableQualities.length > 0)
             this.ctx.media.selectedQuality = this.ctx.media.availableQualities[this.qualitySelectedIndex];
-        }
         this.ctx.media.selectedSourceIndex = sourceIndex;
         this.ctx.media.selectedSource = this.ctx.media.availableSources[sourceIndex];
         this.startPlayer();
@@ -941,9 +937,7 @@ public final class PlayerScreen extends Screen {
 
             y = this.head(canvas, "ENGINE", x, y);
             y = this.metric(canvas, "Engine", player.getClass().getSimpleName(), x, y, AppTheme.NEON_LIGHT);
-            if (ctx.media.selectedMRL != null) {
-                y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.media.selectedMRL.uri().toString(), x, y);
-            }
+            if (ctx.media.selectedMRL != null) y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.media.selectedMRL.uri().toString(), x, y);
             y = this.metric(canvas, "Source", (ctx.media.selectedSourceIndex + 1) + "/" +
                     (ctx.media.availableSources != null ? ctx.media.availableSources.length : 1), x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "FPS", this.fpsStr, x, y, AppTheme.GREEN);

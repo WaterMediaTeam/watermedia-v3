@@ -212,14 +212,15 @@ public final class TextRenderer {
         final int ellipsisW = this.width(ellipsis, scale, style);
         if (maxWidth <= ellipsisW) return "";
 
-        // RESOLVE THE RUN ONCE AND MEASURE EACH CHAR FROM IT, WITHOUT A String OR FontRun PER CHAR
+        // RESOLVE THE RUN ONCE AND MEASURE EACH CHAR FROM IT, WITHOUT A String OR FontRun PER CHAR; EVERY KEPT CHAR IS
+        // FOLLOWED BY THE TRACKING GAP render() DRAWS BEFORE THE NEXT GLYPH, THE ELLIPSIS INCLUDED
         final FontRun run = this.fontRun(scale, style);
         final StringBuilder sb = new StringBuilder();
         float currentW = 0f;
         final int n = text.length();
         for (int i = 0; i < n; i++) {
             final char c = text.charAt(i);
-            final float advance = run.atlas.glyph(c).advance() * run.drawScale;
+            final float advance = (run.atlas.glyph(c).advance() + DEFAULT_TRACKING) * run.drawScale;
             if (currentW + advance + ellipsisW > maxWidth) break;
             sb.append(c);
             currentW += advance;

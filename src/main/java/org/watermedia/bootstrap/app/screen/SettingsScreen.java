@@ -368,11 +368,8 @@ public final class SettingsScreen extends Screen {
         TextField focused = null;
         for (final TextField field: this.textFields) {
             if (!field.focused()) continue;
-            if (focused == null && inList && field.contains(mx, my)) {
-                focused = field;
-            } else {
-                field.focused(false);
-            }
+            if (focused == null && inList && field.contains(mx, my)) focused = field;
+            else field.focused(false);
         }
         if (focused != this.editField) {
             if (focused == null) {

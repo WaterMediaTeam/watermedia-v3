@@ -91,21 +91,6 @@ public final class LogUploader {
         this.repaint = repaint;
     }
 
-    /** Returns the dialog to its first stage, before a new scan. */
-    public void reset() {
-        this.working = false;
-        this.done = false;
-        this.error = false;
-        this.uploadsDone = false;
-        this.issueCopied = false;
-        this.issueOpened = false;
-        this.stage = 1;
-        this.status = "SCAN";
-        this.issueUrl = null;
-        this.repoUrl = null;
-        this.files.clear();
-    }
-
     // RUNS THE DIALOG'S NEXT ACTION ON A WORKER: OPEN AND SCAN, UPLOAD THE LOGS, BUILD THE REPORT OR OPEN THE PICKED
     // REPOSITORY; A STAGE STILL WORKING JUST KEEPS THE DIALOG OPEN
     void step() {
@@ -118,7 +103,7 @@ public final class LogUploader {
             this.reset();
             this.visible = true;
             this.working = true;
-            ThreadTool.thread("WaterMediaApp-UploadScan", this::scan);
+            ThreadTool.thread("LogUploader-Scan", this::scan);
             return;
         }
         if (this.working) {
@@ -128,13 +113,13 @@ public final class LogUploader {
         if (this.stage <= 1) {
             if (!this.hasUploadCandidate()) return;
             this.working = true;
-            ThreadTool.thread("WaterMediaApp-UploadLogs", this::upload);
+            ThreadTool.thread("LogUploader-Upload", this::upload);
         } else if (this.stage == 2) {
             if (!this.hasUploadedLog()) return;
-            ThreadTool.thread("WaterMediaApp-UploadIssueReport", this::issueReport);
+            ThreadTool.thread("LogUploader-IssueReport", this::issueReport);
         } else {
             if (this.repoUrl == null || this.repoUrl.isBlank()) return;
-            ThreadTool.thread("WaterMediaApp-OpenRepoPage", this::openRepoPage);
+            ThreadTool.thread("LogUploader-OpenRepo", this::openRepoPage);
         }
     }
 
@@ -365,8 +350,23 @@ public final class LogUploader {
     }
 
     // ==========================================================================
-    // STATE QUERIES
+    // STATE
     // ==========================================================================
+
+    // RETURNS THE DIALOG TO ITS FIRST STAGE, BEFORE A NEW SCAN
+    private void reset() {
+        this.working = false;
+        this.done = false;
+        this.error = false;
+        this.uploadsDone = false;
+        this.issueCopied = false;
+        this.issueOpened = false;
+        this.stage = 1;
+        this.status = "SCAN";
+        this.issueUrl = null;
+        this.repoUrl = null;
+        this.files.clear();
+    }
 
     private void status(final String status) {
         this.status = status;
