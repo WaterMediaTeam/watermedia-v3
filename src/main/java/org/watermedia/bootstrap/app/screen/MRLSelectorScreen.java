@@ -93,10 +93,12 @@ public final class MRLSelectorScreen extends Screen {
 
     @Override
     protected Element<?> build() {
-        // THE FILTER FOCUSES ON HOVER, BLURS ON ENTER AND CLEARS ON ESC; BLURRED, THOSE KEYS DRIVE THE LIST
+        // THE FILTER FOCUSES ON HOVER, BLURS ON ENTER, ESC OR AN OPENED ROW, AND CLEARS ON ESC; BLURRED, THOSE KEYS DRIVE
+        // THE LIST. A CLICK ON THE PREVIEW KEEPS IT FOCUSED
         this.search = new TextField()
                 .placeholder("filter...")
                 .unicode(true)
+                .keepFocus(true)
                 .maxLength(Integer.MAX_VALUE)
                 .accent(AppTheme.NEON)
                 .frame(AppTheme.BG_2, AppTheme.STROKE_BRIGHT, null, 1f, 1f)

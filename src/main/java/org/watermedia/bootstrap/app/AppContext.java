@@ -40,6 +40,8 @@ public final class AppContext implements Executor {
     public boolean mousePressed;
     public boolean mouseClicked;
     public boolean ctrlDown;
+    // WINDOWS REPORTS ALTGR AS CTRL+ALT, SO CTRL ONLY MAKES A SHORTCUT WITHOUT ALT
+    public boolean altDown;
 
     public TextRenderer text;
 

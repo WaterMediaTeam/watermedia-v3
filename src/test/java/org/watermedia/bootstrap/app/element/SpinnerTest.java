@@ -49,6 +49,30 @@ public class SpinnerTest {
         }
 
         @Test
+        @DisplayName("a spinner scrolled out of its list still takes the release of the ESC that ended its edit")
+        void releaseOutOfView() {
+            final List<Spinner> built = new ArrayList<>();
+            final ListView<String> list = new ListView<String>().rowHeight(40).rowFactory((item, index) -> {
+                final Spinner spinner = new Spinner();
+                built.add(spinner);
+                return spinner;
+            }).items(List.of("a", "b", "c", "d", "e", "f", "g", "h")).size(200, 80);
+            settle(list);
+            final Spinner first = built.get(0);
+            first.dispatchClick(100, 20);
+            assertTrue(first.textInputActive());
+
+            list.selection(0).moveSelection(7);
+            settle(list);
+            assertTrue(list.dispatchKey(GLFW_KEY_ESCAPE, GLFW_PRESS));
+            settle(list);
+            assertTrue(list.children().contains(first), "the row left its list before the release arrived");
+            assertTrue(list.dispatchKey(GLFW_KEY_ESCAPE, GLFW_RELEASE), "the release would leave the screen");
+            settle(list);
+            assertFalse(list.children().contains(first), "with the key released the row leaves the window again");
+        }
+
+        @Test
         @DisplayName("BACKSPACE and DELETE both erase the last typed character")
         void erases() {
             final List<Double> changes = new ArrayList<>();
@@ -74,6 +98,12 @@ public class SpinnerTest {
     }
 
     // UTILITY
+
+    private static void settle(final ListView<String> list) {
+        list.update();
+        list.measure(200, 80);
+        list.layout(0, 0);
+    }
 
     private static Spinner laidOut(final Spinner spinner) {
         spinner.size(200, 30);

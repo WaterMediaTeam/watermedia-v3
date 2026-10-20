@@ -71,6 +71,21 @@ public class TextFieldTest {
         }
 
         @Test
+        @DisplayName("CTRL with ALT is AltGr on Windows: it types characters and erases one at a time")
+        void altGr() {
+            final AppContext ctx = new AppContext();
+            final TextField field = focused(new TextField().unicode(true).value("a/b"));
+            field.attach(ctx);
+            ctx.ctrlDown = true;
+            ctx.altDown = true;
+            assertTrue(field.dispatchChar('@'));
+            assertTrue(field.dispatchChar('\\'));
+            assertEquals("a/b@\\", field.value());
+            field.dispatchKey(GLFW_KEY_BACKSPACE, GLFW_PRESS);
+            assertEquals("a/b@", field.value());
+        }
+
+        @Test
         @DisplayName("a disabled or blurred field ignores keys and characters")
         void inactive() {
             final TextField blurred = new TextField();
@@ -113,6 +128,24 @@ public class TextFieldTest {
             assertTrue(field.focused());
             assertFalse(field.dispatchClick(300, 300), "a click elsewhere blurs it");
             assertFalse(field.focused());
+        }
+
+        @Test
+        @DisplayName("a click another element takes blurs a plain field, but not one that keeps its focus")
+        void clickTakenElsewhere() {
+            final TextField plain = focused(new TextField().size(100, 30));
+            final Box button = new Box().size(100, 30).consumeTouch(true);
+            final Parent row = Parent.row().size(200, 30).add(plain).add(button);
+            row.measure(200, 30);
+            row.layout(0, 0);
+            assertTrue(row.dispatchClick(150, 15), "the button takes the click");
+            assertFalse(plain.focused(), "the consumed click swept the plain field");
+
+            final TextField kept = focused(new TextField().keepFocus(true));
+            kept.clearFocus();
+            assertTrue(kept.focused(), "typing goes on after pressing a button or picking a row");
+            assertFalse(kept.size(100, 30).dispatchClick(300, 300), "a click that reaches it outside still blurs it");
+            assertFalse(kept.focused());
         }
     }
 

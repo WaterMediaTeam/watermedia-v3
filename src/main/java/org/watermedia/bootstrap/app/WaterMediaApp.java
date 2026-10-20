@@ -651,6 +651,9 @@ public class WaterMediaApp {
         ctx.ctrlDown = (mods & GLFW_MOD_CONTROL) != 0
                 || glfwGetKey(ctx.windowHandle, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
                 || glfwGetKey(ctx.windowHandle, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+        ctx.altDown = (mods & GLFW_MOD_ALT) != 0
+                || glfwGetKey(ctx.windowHandle, GLFW_KEY_LEFT_ALT) == GLFW_PRESS
+                || glfwGetKey(ctx.windowHandle, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
 
         // CRT TOGGLE, EXCEPT IN A FOCUSED TEXT FIELD WHERE THE C IS TYPED TEXT
         if (action == GLFW_RELEASE && key == GLFW_KEY_C && !root.textInputFocused()) {

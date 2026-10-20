@@ -150,10 +150,12 @@ public class OpenMultimediaScreen extends Screen {
 
     @Override
     protected Element<?> build() {
-        // EVERY EDIT FEEDS THE SEARCH DEBOUNCE AND THE PREVIEW; onUpdate SWAPS THE LINK AND SEARCH ICONS
+        // EVERY EDIT FEEDS THE SEARCH DEBOUNCE AND THE PREVIEW; onUpdate SWAPS THE LINK AND SEARCH ICONS. PASTE, A RESULT
+        // OR THE HISTORY KEEP IT FOCUSED, SO SPACE AND R STAY TEXT INSTEAD OF SAVE AND RELOAD
         this.field = new TextField()
                 .placeholder("search, or paste a URL / path...")
                 .unicode(true)
+                .keepFocus(true)
                 .maxLength(Integer.MAX_VALUE)
                 .scale(AppTheme.TEXT_BUTTON)
                 .accent(AppTheme.NEON)
@@ -383,7 +385,7 @@ public class OpenMultimediaScreen extends Screen {
                 }
                 case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
                 case GLFW_KEY_V -> {
-                    if (this.ctx.ctrlDown) this.pasteFromClipboard();
+                    if (this.ctx.ctrlDown && !this.ctx.altDown) this.pasteFromClipboard();
                 }
                 // ONLY WHILE THE FIELD IS BLURRED: AN R TYPED INTO A URL MUST NOT TRIGGER A NETWORK RELOAD
                 case GLFW_KEY_R -> {
@@ -754,6 +756,8 @@ public class OpenMultimediaScreen extends Screen {
         this.ctx.media.selectedMRL = mrl;
         this.ctx.media.selectedMRLName = this.previewTitle();
         this.loading = true;
+        // KEYS LEFT IN THIS INPUT BATCH AFTER THE ENTER MUST NOT EDIT THE LINK; onUpdate ONLY CATCHES UP NEXT FRAME
+        this.field.enabled(false);
         this.loadGeneration++;
         this.loadStartTime = System.currentTimeMillis();
         if (!Previews.loaded(mrl)) {

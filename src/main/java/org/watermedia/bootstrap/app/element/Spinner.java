@@ -82,7 +82,8 @@ public final class Spinner extends Element<Spinner> {
 
     @Override
     public boolean textInputActive() {
-        return this.editing;
+        // A KEY THE EDIT TOOK COUNTS UNTIL ITS RELEASE, SO A LIST KEEPS THIS ROW (EVEN SCROLLED AWAY) TO RECEIVE IT
+        return this.editing || this.heldKey != -1;
     }
 
     @Override

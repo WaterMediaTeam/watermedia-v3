@@ -34,6 +34,7 @@ public final class TextField extends Element<TextField> {
     private Runnable onSubmit;
     private Runnable onEscape;
     private boolean focusOnHover;
+    private boolean keepFocus;
     private float scale = AppTheme.TEXT_BODY;
     private Color fill = AppTheme.alpha(AppTheme.BG_1, 200);
     private Color stroke = AppTheme.STROKE;
@@ -106,6 +107,12 @@ public final class TextField extends Element<TextField> {
         return this;
     }
 
+    /** Keeps the focus when another element takes a click, so typing goes on after pressing a button or picking a row. */
+    public TextField keepFocus(final boolean value) {
+        this.keepFocus = value;
+        return this;
+    }
+
     public TextField scale(final float value) {
         this.scale = value;
         return this;
@@ -156,7 +163,7 @@ public final class TextField extends Element<TextField> {
     @Override
     public void clearFocus() {
         // A CONSUMED CLICK LANDED ELSEWHERE — DROP THE CARET AND STOP SUPPRESSING GLOBAL SHORTCUTS
-        if (this.focused) {
+        if (this.focused && !this.keepFocus) {
             this.focused = false;
             this.invalidate();
         }
@@ -229,7 +236,8 @@ public final class TextField extends Element<TextField> {
             case GLFW_KEY_BACKSPACE, GLFW_KEY_DELETE -> {
                 // EDITS ON PRESS AND REPEAT; THE RELEASE IS SWALLOWED TOO SO IT NEVER FIRES A SCREEN SHORTCUT
                 if (action != GLFW_RELEASE && !this.value.isEmpty()) {
-                    this.value = this.ctx != null && this.ctx.ctrlDown ? withoutLastWord(this.value) : this.value.substring(0, this.value.length() - 1);
+                    final boolean word = this.ctx != null && this.ctx.ctrlDown && !this.ctx.altDown;
+                    this.value = word ? withoutLastWord(this.value) : this.value.substring(0, this.value.length() - 1);
                     this.changed();
                 }
                 return true;
@@ -252,8 +260,8 @@ public final class TextField extends Element<TextField> {
 
     @Override
     public boolean dispatchChar(final int codepoint) {
-        // CTRL COMBINATIONS ARE SHORTCUTS SUCH AS PASTE, NEVER TEXT
-        if (!this.focused || !this.enabled || (this.ctx != null && this.ctx.ctrlDown)) return false;
+        // CTRL COMBINATIONS ARE SHORTCUTS SUCH AS PASTE, NEVER TEXT; WINDOWS SENDS ALTGR AS CTRL+ALT, AND IT TYPES @, \ OR #
+        if (!this.focused || !this.enabled || (this.ctx != null && this.ctx.ctrlDown && !this.ctx.altDown)) return false;
         final boolean accepted = this.unicode ? codepoint >= 32 && codepoint != 127 : codepoint >= 32 && codepoint < 127;
         if (!accepted || this.value.length() >= this.maxLength) return false;
         this.value += new String(Character.toChars(codepoint));
