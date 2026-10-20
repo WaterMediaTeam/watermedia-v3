@@ -195,7 +195,7 @@ El escalado y el nivel de detalle afectan los formatos de píxeles compatibles. 
 
 ## Selección de motores
 
-El desarrollo da prioridad a Vulkan; OpenGL sigue disponible como motor secundario. Las decisiones sobre motores pertenecen a la capa de renderizado. Esta preferencia de desarrollo no cambia el valor inicial OpenGL del launcher ni la selección que haya guardado el usuario.
+El desarrollo da prioridad a Vulkan; OpenGL sigue disponible como motor secundario. Las decisiones sobre motores pertenecen a la capa de renderizado. Esta preferencia de desarrollo no cambia el valor inicial OpenGL del launcher ni la selección que haya guardado el usuario, que la aplicación guarda en `config/app.properties` dentro de su directorio de trabajo.
 
 | Fábrica | Responsabilidad de la aplicación anfitriona |
 | --- | --- |

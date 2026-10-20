@@ -2,107 +2,105 @@ package org.watermedia.bootstrap.app;
 
 import me.srrapero720.waterconfig.ConfigSpec;
 import me.srrapero720.waterconfig.WaterConfig;
+import me.srrapero720.waterconfig.api.Control;
 import me.srrapero720.waterconfig.api.IConfigField;
 import me.srrapero720.waterconfig.api.annotations.Comment;
 import me.srrapero720.waterconfig.api.annotations.Spec;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
+import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.tools.ThreadTool;
 
 /**
- * Annotated WaterConfig spec for the bootstrap shell settings, persisted through WaterConfig's native
- * mechanism as {@code config/watermedia-app.toml} — the same directory and format family as the core
- * {@code watermedia.toml} spec. The settings screen reflects this spec through the exact same path it
- * uses for the instance config.
- *
- * <p>The render engine and the UI scale are deliberately NOT part of this spec: their stores
- * ({@code engine.cfg} / {@code uiscale.cfg}) are read by the {@code AppBootstrap} launcher JVM and by
- * the early window boot before WaterConfig ever loads, so those two remain runtime settings backed by
- * their own files. The settings screen still lists them inside an {@code engines} section of this
- * spec's tab. Keeping a second copy here would desync the two stores.</p>
- *
- * <p>Values load off-thread on the WaterConfig IO pool; {@link #applyBoot(AppContext)} waits (bounded)
- * for the load and dumps them into the live {@link AppContext} state, and the settings screen re-dumps
- * them on every edit so changes apply live.</p>
+ * WaterConfig spec of the standalone app preferences, saved as {@code config/app.properties}. The launcher reads the
+ * same file before WaterConfig exists, to relaunch the app on the saved engine.
  */
-@Spec(value = AppConfig.ID, format = WaterConfig.FORMAT_TOML)
-@Comment("WATERMeDIA standalone app shell settings")
+@Spec(value = AppConfig.ID, format = WaterConfig.FORMAT_PROPERTIES)
+@Comment("WATERMeDIA standalone app preferences")
 public class AppConfig {
+    private static final Marker IT = MarkerManager.getMarker(AppConfig.class.getSimpleName());
+    /** Spec identifier and base name of the {@code app.properties} file. */
+    public static final String ID = "app";
+    /** Key of {@link #engine}, shared with the launcher. */
+    public static final String ENGINE = "engine";
+    private static final long LOAD_TIMEOUT_MS = 2_000;
 
-    /** Spec identifier — also the config file base name ({@code watermedia-app.toml}). */
-    public static final String ID = "watermedia-app";
+    @Spec.Field(value = ENGINE, control = Control.SEGMENTED)
+    @Comment("Render engine. Applies live")
+    public static RenderSystem.Engine engine = RenderSystem.Engine.OPENGL;
+
+    @Spec.Field(control = Control.DROPDOWN)
+    @Comment("Interface size: AUTO follows the monitor; NORMAL, LARGE, LARGER and LARGEST are 100%, 125%, 150% and 200%")
+    public static UiScale scale = UiScale.AUTO;
 
     @Spec.Field
-    @Comment("Global CRT overlay (scanlines + neon bands). Keyboard shortcut: C")
-    public static boolean crtOverlay = true;
+    @Comment("CRT overlay with scanlines and neon bands. Keyboard shortcut: C")
+    public static boolean crt = true;
 
     @Spec.Field
-    @Comment("UI tick sound used by menu and settings navigation")
-    public static boolean selectionSound = true;
+    @Comment("Tick sound on menu and settings navigation")
+    public static boolean sound = true;
 
-    // REGISTERED SPEC — null WHEN REGISTRATION FAILED (THE APP THEN RUNS ON THE FIELD DEFAULTS)
+    // null WHEN REGISTRATION FAILED: THE APP THEN RUNS ON THE FIELD DEFAULTS
     private static volatile ConfigSpec spec;
 
-    /**
-     * The registered WaterConfig spec backing this class, or {@code null} when registration failed.
-     * @return the spec, possibly {@code null}
-     */
+    /** Returns the registered spec, or {@code null} when registration failed. */
     public static ConfigSpec spec() {
         return spec;
     }
 
-    /**
-     * Registers this class as a WaterConfig spec. The file load/create runs asynchronously on the
-     * WaterConfig IO pool, so calling this early overlaps the disk IO with the window boot. Safe to
-     * call only from the app JVM (never from the launcher's early phase). A failure is logged and
-     * leaves the spec unregistered — the app keeps running on the field defaults.
-     */
+    /** Registers the spec; WaterConfig loads the file on its IO pool while the window boots. */
     public static void register() {
         try {
             WaterConfig.init();
             spec = WaterConfig.register(AppConfig.class);
         } catch (final Throwable t) {
-            WaterMedia.LOGGER.warn("Failed to register the app shell config spec", t);
+            WaterMedia.LOGGER.warn(IT, "Failed to register the app config spec", t);
         }
     }
 
-    /**
-     * Waits (bounded) for the async spec load kicked off by {@link #register()} and then dumps the
-     * loaded values into the live app state via {@link #apply(AppContext)}. Call once at boot, before
-     * the first frame, so the shell starts with the persisted CRT and sound choices.
-     * @param ctx the app context receiving the values
-     */
-    public static void applyBoot(final AppContext ctx) {
+    /** Waits up to two seconds for the load started by {@link #register()}. */
+    public static void await() {
         final ConfigSpec s = spec;
-        if (s != null) {
-            final long deadline = System.currentTimeMillis() + 2000;
-            while (!s.isLoaded() && System.currentTimeMillis() < deadline) {
-                ThreadTool.sleep(5);
-            }
-        }
+        if (s == null) return;
+        final long deadline = System.currentTimeMillis() + LOAD_TIMEOUT_MS;
+        while (!s.isLoaded() && System.currentTimeMillis() < deadline) ThreadTool.sleep(5);
+    }
+
+    /** Waits for the load, keeps {@link #engine} on the engine that runs and applies every value before the first frame. */
+    public static void applyBoot(final AppContext ctx) {
+        await();
+        // A VULKAN FALLBACK OR A -Dwatermedia.engine OVERRIDE BECOMES THE SAVED CHOICE, SO THE SETTINGS ROW SHOWS WHAT RUNS
+        if (engine != RenderSystem.engineKind()) engine(RenderSystem.engineKind());
         apply(ctx);
     }
 
-    /**
-     * Dumps the current spec values into the live app state ({@code ctx.crt} and
-     * {@code ctx.selectionSoundEnabled}). The settings screen calls this after
-     * every edit of the shell spec so changes apply live, exactly like the old runtime settings did.
-     * @param ctx the app context receiving the values
-     */
+    /** Applies the current values to the running app; the settings screen calls it after every edit of this spec. */
     public static void apply(final AppContext ctx) {
-        ctx.crt = crtOverlay;
-        ctx.selectionSoundEnabled = selectionSound;
+        ctx.crt = crt;
+        ctx.selectionSoundEnabled = sound;
+        WaterMediaApp.reapplyUiScale();
+        if (engine != RenderSystem.engineKind()) WaterMediaApp.requestEngineSwap(engine);
     }
 
-    /**
-     * Syncs the CRT overlay field from the global keyboard toggle and marks the spec dirty so the
-     * WaterConfig worker persists it. A no-op (beyond the field write) when the spec is unavailable.
-     * @param on the new CRT overlay state
-     */
+    /** Saves the CRT overlay state toggled by the keyboard shortcut. */
     public static void crt(final boolean on) {
-        crtOverlay = on;
+        crt = on;
+        dirty("crt");
+    }
+
+    /** Saves the engine the app runs on after a fallback. */
+    public static void engine(final RenderSystem.Engine running) {
+        engine = running;
+        dirty(ENGINE);
+    }
+
+    // THE WATERCONFIG WORKER SAVES A SPEC ONCE ONE OF ITS FIELDS IS MARKED DIRTY
+    private static void dirty(final String key) {
         final ConfigSpec s = spec;
         if (s == null) return;
-        final IConfigField<?, ?> field = s.findField("crtOverlay");
+        final IConfigField<?, ?> field = s.findField(key);
         if (field != null) s.markDirty(field);
     }
 }

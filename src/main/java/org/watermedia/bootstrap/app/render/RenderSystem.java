@@ -7,8 +7,6 @@ import org.watermedia.bootstrap.app.render.vulkan.VulkanRenderBackend;
 
 import java.awt.Color;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
@@ -26,14 +24,8 @@ public final class RenderSystem {
     /** The render backends the app can run on. */
     public enum Engine { OPENGL, VULKAN }
 
-    private static final String ENGINE_PROP = "watermedia.engine";
     // A GL DEBUG CONTEXT ADDS PER-CALL DRIVER VALIDATION OVERHEAD — OFF BY DEFAULT, OPT IN WITH -Dwatermedia.gldebug=true
     public static final boolean GL_DEBUG = Boolean.getBoolean("watermedia.gldebug");
-    // PERSISTED IN THE PROCESS CWD (DEV `run/`), SHARED WITH THE AppBootstrap LAUNCHER THAT READS IT BEFORE
-    // RELAUNCHING WITH -Dwatermedia.engine — KEEP THE PATH IN SYNC WITH AppBootstrap.ENGINE_FILE.
-    private static final Path ENGINE_PREF_FILE = Path.of("watermedia", "engine.cfg");
-    // GLOBAL UI SCALE PREFERENCE — PERSISTED NEXT TO engine.cfg AS EITHER "auto" OR A FLOAT FACTOR
-    private static final Path UI_SCALE_PREF_FILE = Path.of("watermedia", "uiscale.cfg");
 
     // VOLATILE: deviceName()/engineKind() AND FRIENDS ARE READ OFF THE RENDER THREAD, AND THE ENGINE IS
     // SWAPPED ON A GL<->VK HOTSWAP — READERS MUST SEE THE PUBLISHED VALUE, NOT A STALE/NULL CACHE.
@@ -45,57 +37,9 @@ public final class RenderSystem {
     private RenderSystem() {
     }
 
-    // READS A TRIMMED PREFERENCE FILE, OR null WHEN ABSENT/EMPTY/UNREADABLE.
-    private static String pref(final Path file) {
-        try {
-            if (Files.exists(file)) {
-                final String value = Files.readString(file).trim();
-                if (!value.isEmpty()) return value;
-            }
-        } catch (final Exception ignored) {
-        }
-        return null;
-    }
-
-    // WRITES A PREFERENCE FILE, CREATING ITS PARENT; A FAILURE IS NON-FATAL AND JUST WARNED.
-    private static void savePref(final Path file, final String value, final String warn) {
-        try {
-            final Path parent = file.getParent();
-            if (parent != null) Files.createDirectories(parent);
-            Files.writeString(file, value);
-        } catch (final Exception e) {
-            WaterMedia.LOGGER.warn(warn, e);
-        }
-    }
-
-    /** The engine the user picked in Settings for the next launch, or {@code null} if unset/unreadable. */
-    public static Engine enginePreference() {
-        final String value = pref(ENGINE_PREF_FILE);
-        if ("vulkan".equalsIgnoreCase(value)) return Engine.VULKAN;
-        if ("opengl".equalsIgnoreCase(value)) return Engine.OPENGL;
-        return null;
-    }
-
-    /** Persists the engine to use on the next launch (written from the Settings screen). */
-    public static void saveEnginePreference(final Engine choice) {
-        savePref(ENGINE_PREF_FILE, choice == Engine.VULKAN ? "vulkan" : "opengl", "Failed to save the render engine preference");
-    }
-
-    /** The persisted UI scale preference: {@code "auto"} or a float factor; {@code "auto"} when unset/unreadable. */
-    public static String uiScalePreference() {
-        final String value = pref(UI_SCALE_PREF_FILE);
-        return value != null ? value : "auto";
-    }
-
-    /** Persists the UI scale preference ({@code "auto"} or a float factor), written from the Settings screen. */
-    public static void saveUiScalePreference(final String value) {
-        savePref(UI_SCALE_PREF_FILE, value == null || value.isBlank() ? "auto" : value.trim(), "Failed to save the UI scale preference");
-    }
-
-    /** Resolves the engine from {@code -Dwatermedia.engine}, downgrading to OpenGL when Vulkan is unsupported. */
-    public static void chooseEngine() {
-        kind = "vulkan".equalsIgnoreCase(System.getProperty(ENGINE_PROP, "opengl")) && glfwVulkanSupported()
-                ? Engine.VULKAN : Engine.OPENGL;
+    /** Selects the engine for the next window, downgrading Vulkan to OpenGL when no Vulkan loader is present. */
+    public static void chooseEngine(final Engine requested) {
+        kind = requested == Engine.VULKAN && glfwVulkanSupported() ? Engine.VULKAN : Engine.OPENGL;
     }
 
     /** Applies the GLFW window hints the chosen engine needs. Call right after {@code glfwDefaultWindowHints()}. */

@@ -21,5 +21,4 @@ hs_err_pid*
 # STANDALONE APP RUNTIME DATA (DEV WORKING DIR = run/)
 /run/config/
 /run/logs/
-/run/watermedia/*.cfg
 /run/watermedia/files/.server.lock

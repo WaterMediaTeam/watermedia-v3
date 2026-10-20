@@ -135,13 +135,8 @@ public class WaterMediaApp {
         initWindow();
         ctx.text = new TextRenderer();
         ctx.text.margin(6);
-        // ACTIVATE THE UI SCALE BEFORE ANY FRAME: RESOLVES THE PERSISTED PREFERENCE (OR THE MONITOR-DERIVED
-        // AUTO FACTOR) AND PUSHES IT INTO THE ENGINE + TEXT RENDERER. THE WINDOW AND ENGINE EXIST BY NOW.
-        // uiscale.cfg/engine.cfg STAY OUTSIDE THE SHELL SPEC ON PURPOSE — THE LAUNCHER AND THIS EARLY
-        // BOOT READ THEM BEFORE ANY SPEC EXISTS.
-        reapplyUiScale();
-        // DUMP THE PERSISTED SHELL SETTINGS (CRT/SOUND/AUDIO ENGINE) INTO THE LIVE STATE BEFORE THE
-        // FIRST FRAME SO THE LOADING SCREEN ALREADY RESPECTS THEM.
+        // THE UI SCALE NEEDS THE WINDOW'S MONITOR AND THE TEXT RENDERER, SO THE PREFERENCES APPLY ONLY NOW; THE
+        // WINDOW IS STILL HIDDEN AND THE LOADING SCREEN'S FIRST FRAME ALREADY RESPECTS THEM
         AppConfig.applyBoot(ctx);
         ctx.assets.load(ctx);
         initShell();
@@ -250,14 +245,11 @@ public class WaterMediaApp {
                 WaterMedia.LOGGER.error(IT, "GLFW error 0x{}: {}", Integer.toHexString(code), GLFWErrorCallback.getDescription(description))).set();
         if (!glfwInit()) throw new IllegalStateException("Unable to initialize GLFW");
 
-        // THE RENDER LAYER OWNS THE ENGINE CHOICE (FROM -Dwatermedia.engine) AND THE BACKEND LIFECYCLE.
-        // THE APP ONLY CREATES THE WINDOW AND, IF VULKAN FAILS TO ATTACH, REBUILDS IT FOR OPENGL.
-        // APPLY THE SETTINGS-PERSISTED ENGINE CHOICE UNLESS AN EXPLICIT -Dwatermedia.engine OVERRIDES IT.
-        if (System.getProperty("watermedia.engine") == null) {
-            final RenderSystem.Engine pref = RenderSystem.enginePreference();
-            if (pref != null) System.setProperty("watermedia.engine", pref == RenderSystem.Engine.VULKAN ? "vulkan" : "opengl");
-        }
-        RenderSystem.chooseEngine();
+        // THE LAUNCHER FORWARDS THE SAVED ENGINE; A LAUNCH WITHOUT IT READS THE SPEC, WHOSE LOAD MAY STILL BE RUNNING
+        final String forwarded = System.getProperty(AppBootstrap.ENGINE_PROP);
+        if (forwarded == null) AppConfig.await();
+        RenderSystem.chooseEngine(forwarded == null ? AppConfig.engine
+                : forwarded.equalsIgnoreCase("vulkan") ? RenderSystem.Engine.VULKAN : RenderSystem.Engine.OPENGL);
         createWindow();
         if (!RenderSystem.attach(ctx.windowHandle)) {
             WinFrame.uninstall();
@@ -354,27 +346,13 @@ public class WaterMediaApp {
         }
     }
 
-    // GLOBAL UI SCALE — RESOLUTION, PERSISTENCE AND LIVE APPLICATION
+    // GLOBAL UI SCALE — RESOLUTION AND LIVE APPLICATION
     // ==========================================================================
 
-    /**
-     * Re-reads the persisted UI scale preference and applies it. A non-AUTO preference wins; AUTO (or an
-     * unreadable value) recomputes the monitor-derived factor. Called at boot and whenever the setting
-     * changes.
-     */
+    /** Applies {@link AppConfig#scale}; {@link UiScale#AUTO} recomputes the factor from the window's monitor. */
     public static void reapplyUiScale() {
-        final String pref = RenderSystem.uiScalePreference();
-        float factor;
-        if (pref.equalsIgnoreCase("auto")) {
-            factor = computeAutoUiScale();
-        } else {
-            try {
-                factor = clampScale(Float.parseFloat(pref.trim()));
-            } catch (final NumberFormatException e) {
-                factor = computeAutoUiScale();
-            }
-        }
-        applyUiScale(factor);
+        final UiScale scale = AppConfig.scale;
+        applyUiScale(scale == UiScale.AUTO ? computeAutoUiScale() : scale.factor);
     }
 
     // APPLIES A SCALE EVERYWHERE IT MATTERS: THE APP STATE, THE RENDER ENGINE (SCISSOR/LINE WIDTH) AND THE
@@ -724,8 +702,7 @@ public class WaterMediaApp {
             ctx.windowHandle = NULL;
 
             // 4) SELECT THE TARGET ENGINE AND REBUILD THE WINDOW WITH ITS HINTS (MIRRORS initWindow())
-            System.setProperty("watermedia.engine", target == RenderSystem.Engine.VULKAN ? "vulkan" : "opengl");
-            RenderSystem.chooseEngine();
+            RenderSystem.chooseEngine(target);
             createWindow();
             if (!RenderSystem.attach(ctx.windowHandle)) {
                 // VK->GL FALLBACK: THE ENGINE IS ALREADY OPENGL; REBUILD THE WINDOW WITH GL HINTS AND RE-ATTACH
@@ -747,7 +724,7 @@ public class WaterMediaApp {
             // IF VULKAN WAS REQUESTED BUT ATTACH FELL BACK TO OPENGL, REVERT THE PERSISTED PREFERENCE TO WHAT
             // ACTUALLY RUNS SO THE NEXT BOOT IS CONSISTENT, AND TELL THE USER
             if (target == RenderSystem.Engine.VULKAN && RenderSystem.engineKind() != RenderSystem.Engine.VULKAN) {
-                RenderSystem.saveEnginePreference(RenderSystem.Engine.OPENGL);
+                AppConfig.engine(RenderSystem.Engine.OPENGL);
                 ctx.showError("Vulkan unavailable",
                         "Vulkan could not be initialized on this system.\nThe app is running on OpenGL.", null);
             }
@@ -795,17 +772,10 @@ public class WaterMediaApp {
                 glfwDestroyWindow(ctx.windowHandle);
                 ctx.windowHandle = NULL;
             }
-            System.setProperty("watermedia.engine", "opengl");
-            RenderSystem.chooseEngine();
+            RenderSystem.chooseEngine(RenderSystem.Engine.OPENGL);
             createWindow();
-            if (!RenderSystem.attach(ctx.windowHandle)) {
-                WinFrame.uninstall();
-                glfwFreeCallbacks(ctx.windowHandle);
-                glfwDestroyWindow(ctx.windowHandle);
-                createWindow();
-                RenderSystem.attach(ctx.windowHandle);
-            }
-            RenderSystem.saveEnginePreference(RenderSystem.Engine.OPENGL);
+            RenderSystem.attach(ctx.windowHandle);
+            AppConfig.engine(RenderSystem.Engine.OPENGL);
             restoreWindowPlacement(wasMaximized, px, py, pw, ph);
             reapplyUiScale();
             ctx.assets.load(ctx);

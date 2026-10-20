@@ -186,7 +186,7 @@ four read timeouts in total. Neither the builder nor the response is thread-safe
 
 ## Choosing engines
 
-Vulkan development takes priority; OpenGL remains supported as the secondary backend. Backend decisions belong in the rendering layer. This development preference does not change the standalone launcher's current initial OpenGL default or the user's saved engine selection.
+Vulkan development takes priority; OpenGL remains supported as the secondary backend. Backend decisions belong in the rendering layer. This development preference does not change the standalone launcher's current initial OpenGL default or the user's saved engine selection, which the app keeps in `config/app.properties` under its working directory.
 
 | Factory | Host obligation |
 | --- | --- |

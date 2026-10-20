@@ -27,9 +27,6 @@ import org.watermedia.bootstrap.app.element.Switch;
 import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.bootstrap.app.element.TextField;
 import org.watermedia.bootstrap.app.element.Theme;
-import org.watermedia.bootstrap.app.UiScale;
-import org.watermedia.bootstrap.app.WaterMediaApp;
-import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Gravity;
 import org.watermedia.bootstrap.app.ui.Spacing;
@@ -51,8 +48,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import static org.lwjgl.glfw.GLFW.*;
@@ -62,7 +57,7 @@ import static org.lwjgl.glfw.GLFW.*;
  * sections column and a {@link ListView} of setting rows backed by real widgets (switch, checkbox,
  * segmented control, spinner, seek bar, text field, dropdown). One reflective path builds every tab from
  * its {@link ConfigSpec}; each tab carries a status pip fed by that spec's own autosave machine. The
- * tab set, the reverse-spec'd mod files and the injected runtime rows are described at their code below.
+ * tab set and the reverse-spec'd mod files are described at their code below.
  */
 public final class SettingsScreen extends Screen {
 
@@ -229,7 +224,7 @@ public final class SettingsScreen extends Screen {
     @Override
     protected void onUpdate() {
         final SettingSection section = this.activeSection();
-        // THE HEADER SUBTITLE SHOWS THE ACTIVE TREE PATH ("engines" OR "group1 / group2")
+        // THE HEADER SUBTITLE SHOWS THE ACTIVE TREE PATH ("media" OR "group1 / group2")
         this.header.sub(section == null ? "" : section.path.toLowerCase(Locale.ROOT));
         this.paneTitle.text(section == null ? "" : section.name.toUpperCase(Locale.ROOT));
         this.paneDetail.text(section == null ? "" : section.detail);
@@ -433,9 +428,9 @@ public final class SettingsScreen extends Screen {
 
     private void rebuildSpecs() {
         this.specs.clear();
-        // TABS 0/1 — THE SHELL SPEC (WITH ITS INJECTED ENGINE/UI-SCALE ROWS) AND THE INSTANCE CONFIG
-        this.specs.add(this.buildAppSpec());
-        this.specs.add(this.buildInstanceSpec());
+        // TABS 0/1 — THE APP PREFERENCES (APPLIED LIVE ON EVERY EDIT) AND THE INSTANCE CONFIG
+        this.specs.add(this.buildOwnSpec("App", AppConfig.ID, AppConfig.spec(), () -> AppConfig.apply(this.ctx)));
+        this.specs.add(this.buildOwnSpec("Instance config", WaterMedia.ID, WaterConfig.spec(WaterMedia.ID), null));
 
         // EVERY OTHER SPEC WATERCONFIG NOW EXPOSES — TABS 0/1 ALREADY COVER THE SHELL AND INSTANCE, SO
         // SKIP THOSE TWO. SORTED BY NAME FOR A STABLE TAB ORDER ACROSS RE-ENTRIES (specs() IS BACKED BY
@@ -445,7 +440,7 @@ public final class SettingsScreen extends Screen {
         for (final ConfigSpec cs: registered) {
             final String name = cs.name();
             if (AppConfig.ID.equals(name) || WaterMedia.ID.equals(name)) continue;
-            this.specs.add(this.buildGenericSpec(titleCase(name), fileName(cs), cs, "settings", name));
+            this.specs.add(this.buildGenericSpec(titleCase(name), cs, "settings", name, null));
         }
 
         // REVERSE-ENGINEER EXTERNAL MOD CONFIG FILES INTO EDITABLE TABS — ATTEMPTED, SKIPPED WHEN ABSENT
@@ -699,81 +694,28 @@ public final class SettingsScreen extends Screen {
     }
 
     // ==========================================================================
-    // SPEC MODELS — ONE REFLECTIVE TREE BUILDER FOR BOTH WATERCONFIG SPECS (SHELL + INSTANCE)
+    // SPEC MODELS — ONE REFLECTIVE TREE BUILDER FOR EVERY WATERCONFIG SPEC
     // ==========================================================================
 
-    private SettingSpec buildAppSpec() {
-        // THE SHELL SPEC IS AN ANNOTATED WATERCONFIG CLASS (AppConfig) REFLECTED THROUGH THE EXACT SAME
-        // PATH AS THE INSTANCE SPEC. EVERY ROW IS A REAL OPTION — THE OLD READ-ONLY DIAGNOSTICS ARE GONE.
-        final ConfigSpec configSpec = AppConfig.spec();
-        final String file = configSpec == null ? "runtime shell" : String.valueOf(configSpec.path().getFileName());
-        final SettingSpec spec = new SettingSpec("App", file, configSpec != null, configSpec,
-                () -> AppConfig.apply(this.ctx), this.saveFor(AppConfig.ID), null);
-        if (configSpec != null) this.collectSections(configSpec, spec);
-
-        // THE SPEC'S "ENGINES" GROUP ALSO HOSTS THE TWO STRICTLY NON-PORTABLE RUNTIME ROWS: THE RENDER
-        // ENGINE AND THE UI SCALE (THEIR engine.cfg/uiscale.cfg STORES ARE READ BY THE LAUNCHER AND THE
-        // EARLY BOOT BEFORE ANY SPEC EXISTS). WITHOUT A LOADED SPEC THE NODE IS CREATED RUNTIME-ONLY SO
-        // BOTH ROWS STAY REACHABLE.
-        SettingSection engines = null;
-        for (final SettingSection section: spec.sections) {
-            if (section.depth == 0 && "Engines".equalsIgnoreCase(section.name)) {
-                engines = section;
-                break;
-            }
-        }
-        if (engines == null) {
-            engines = new SettingSection("Engines", "Engine backends: render and interface scale", "engines", 0);
-            spec.sections.add(engines);
-        }
-        engines.settings.add(0, new RuntimeEnumSetting<>("Render", "app.engines.render", "ENUM",
-                "Render engine. Changes apply live. Stored in engine.cfg.",
-                RenderSystem.Engine.values(),
-                RenderSystem::engineKind,
-                engine -> {
-                    RenderSystem.saveEnginePreference(engine);
-                    if (engine != RenderSystem.engineKind()) WaterMediaApp.requestEngineSwap(engine);
-                },
-                RenderSystem.Engine.OPENGL,
-                RenderSystem.Engine::name,
-                // VULKAN NEEDS A VULKAN LOADER; OPENGL IS ALWAYS AVAILABLE
-                engine -> engine != RenderSystem.Engine.VULKAN || RenderSystem.vulkanAvailable()));
-        engines.settings.add(1, new RuntimeEnumSetting<>("UI scale", "app.engines.uiScale", "ENUM",
-                "Global interface magnification. AUTO derives it from the monitor's DPI and resolution. Applies live. Stored in uiscale.cfg, read at boot before any config spec exists.",
-                UiScale.values(),
-                () -> UiScale.fromPreference(RenderSystem.uiScalePreference()),
-                value -> {
-                    RenderSystem.saveUiScalePreference(value.preference());
-                    // RE-READS THE PREFERENCE AND APPLIES IT (AUTO RECOMPUTES THE MONITOR-DERIVED FACTOR)
-                    WaterMediaApp.reapplyUiScale();
-                },
-                UiScale.AUTO,
-                scale -> scale.label));
+    // WATERMEDIA'S OWN SPECS (APP AND INSTANCE) KEEP THE APP ICON; A SPEC WATERCONFIG DID NOT EXPOSE SHOWS A
+    // READ-ONLY PLACEHOLDER INSTEAD OF AN EMPTY TAB
+    private SettingSpec buildOwnSpec(final String title, final String id, final ConfigSpec configSpec, final Runnable applier) {
+        if (configSpec != null) return this.buildGenericSpec(title, configSpec, null, id, applier);
+        final SettingSpec spec = new SettingSpec(title, id, null, applier, this.saveFor(id), null);
+        final SettingSection unavailable = new SettingSection("Unavailable",
+                "WaterConfig did not expose the active spec", "unavailable", 0);
+        unavailable.settings.add(new ReadOnlySetting(title, id, "STATE",
+                "The app could not read the registered WaterConfig spec.",
+                () -> WaterConfig.isRegistered(id) ? "REGISTERED" : "NOT REGISTERED"));
+        spec.sections.add(unavailable);
         return spec;
     }
 
-    private SettingSpec buildInstanceSpec() {
-        // WATERCONFIG NOW EXPOSES THE REGISTERED SPEC DIRECTLY — NO MORE REFLECTION INTO ITS REGISTRY
-        final ConfigSpec configSpec = WaterConfig.spec(WaterMedia.ID);
-        if (configSpec == null) {
-            final SettingSpec spec = new SettingSpec("Instance config", "watermedia.toml", true, null, null,
-                    this.saveFor(WaterMedia.ID), null);
-            final SettingSection unavailable = new SettingSection("Unavailable",
-                    "WaterConfig did not expose the active spec", "unavailable", 0);
-            unavailable.settings.add(new ReadOnlySetting("WaterMediaConfig", "watermedia", "STATE",
-                    "The app could not read the registered WaterConfig spec.",
-                    () -> WaterConfig.isRegistered(WaterMedia.ID) ? "REGISTERED" : "NOT REGISTERED"));
-            spec.sections.add(unavailable);
-            return spec;
-        }
-        return this.buildGenericSpec("Instance config", fileName(configSpec), configSpec, null, WaterMedia.ID);
-    }
-
-    // BUILDS A PLAIN WATERCONFIG SPEC TAB (INSTANCE, WATERCONFIG-EXPOSED OR REVERSE-SPEC'D): ITS SECTION
+    // BUILDS A PLAIN WATERCONFIG SPEC TAB (OWN, WATERCONFIG-EXPOSED OR REVERSE-SPEC'D): ITS SECTION
     // TREE COMES FROM collectSections, WITH A READ-ONLY PLACEHOLDER WHEN THE SPEC EXPOSES NO FIELDS
-    private SettingSpec buildGenericSpec(final String title, final String subtitle, final ConfigSpec configSpec,
-                                         final String icon, final String saveKey) {
-        final SettingSpec spec = new SettingSpec(title, subtitle, true, configSpec, null, this.saveFor(saveKey), icon);
+    private SettingSpec buildGenericSpec(final String title, final ConfigSpec configSpec, final String icon,
+                                         final String saveKey, final Runnable applier) {
+        final SettingSpec spec = new SettingSpec(title, fileName(configSpec), configSpec, applier, this.saveFor(saveKey), icon);
         this.collectSections(configSpec, spec);
         if (spec.sections.isEmpty()) {
             final SettingSection empty = new SettingSection("Empty", "No fields were discovered", "empty", 0);
@@ -806,7 +748,7 @@ public final class SettingsScreen extends Screen {
             this.reverseCache.put(file, new ReverseSpec(mtime, configSpec));
         }
         if (configSpec == null) return null;
-        final SettingSpec spec = new SettingSpec(titleCase(configSpec.name()), file, true, configSpec, null,
+        final SettingSpec spec = new SettingSpec(titleCase(configSpec.name()), file, configSpec, null,
                 this.saveFor(file), "folder");
         this.collectSections(configSpec, spec);
         return spec.sections.isEmpty() ? null : spec;
@@ -868,7 +810,7 @@ public final class SettingsScreen extends Screen {
         // PUSH THE FRESH VALUES INTO THE LIVE APP STATE (SHELL SPEC) BEFORE PERSISTING THEM
         if (spec.applier != null) spec.applier.run();
         final SaveMachine save = spec.save;
-        if (!spec.persistent || spec.configSpec == null) {
+        if (spec.configSpec == null) {
             save.failures = 0;
             save.state = SaveState.READY;
             return;
@@ -1297,16 +1239,8 @@ public final class SettingsScreen extends Screen {
                     segments[i] = options.get(i).toUpperCase(Locale.ROOT);
                     segW += SegmentedControl.segmentWidth(text, segments[i], AppTheme.TEXT_BODY);
                 }
-                // INVERT THE MODEL'S ENABLED MASK INTO THE WIDGET'S DISABLED MASK (null STAYS null = ALL ENABLED)
-                final boolean[] enabledMask = setting.optionEnabled();
-                boolean[] disabledMask = null;
-                if (enabledMask != null) {
-                    disabledMask = new boolean[enabledMask.length];
-                    for (int i = 0; i < enabledMask.length; i++) disabledMask[i] = !enabledMask[i];
-                }
                 final SegmentedControl control = new SegmentedControl().segments(segments)
                         .accent(AppTheme.CYAN).scale(AppTheme.TEXT_BODY).height(CONTROL_H)
-                        .disabled(disabledMask)
                         .onSelect(i -> SettingsScreen.this.apply(() -> setting.selectOption(i)));
                 bind = () -> control.selected(setting.selectedOptionIndex());
                 prefW = segW;
@@ -1458,9 +1392,9 @@ public final class SettingsScreen extends Screen {
     private static final class SettingSpec {
         private final String title;
         private final String subtitle;
-        private final boolean persistent;
+        // null WHEN WATERCONFIG DID NOT EXPOSE THE SPEC: THE TAB SHOWS A PLACEHOLDER AND NEVER SAVES
         private final ConfigSpec configSpec;
-        // RUNS AFTER EVERY MUTATION OF THIS SPEC — THE SHELL SPEC PUSHES ITS VALUES INTO THE LIVE APP
+        // RUNS AFTER EVERY MUTATION OF THIS SPEC — THE APP SPEC PUSHES ITS VALUES INTO THE LIVE APP
         // STATE HERE (AppConfig.apply) SO EDITS TAKE EFFECT IMMEDIATELY; null WHEN NOTHING TO APPLY
         private final Runnable applier;
         // THE SCREEN-OWNED SAVE MACHINE OF THIS SPEC SLOT — SHARED ACROSS REBUILDS (SEE saves)
@@ -1471,12 +1405,10 @@ public final class SettingsScreen extends Screen {
         // FLAT DFS-ORDERED SECTION TREE — depth EXPRESSES NESTING, PGUP/PGDN WALKS THIS LIST IN ORDER
         private final List<SettingSection> sections = new ArrayList<>();
 
-        private SettingSpec(final String title, final String subtitle, final boolean persistent,
-                            final ConfigSpec configSpec, final Runnable applier, final SaveMachine save,
-                            final String iconName) {
+        private SettingSpec(final String title, final String subtitle, final ConfigSpec configSpec,
+                            final Runnable applier, final SaveMachine save, final String iconName) {
             this.title = title;
             this.subtitle = subtitle;
-            this.persistent = persistent;
             this.configSpec = configSpec;
             this.applier = applier;
             this.save = save;
@@ -1555,12 +1487,6 @@ public final class SettingsScreen extends Screen {
             return List.of();
         }
 
-        // PER-OPTION AVAILABILITY FOR ENUM CONTROLS (null = ALL ENABLED). A DISABLED OPTION RENDERS DIMMED
-        // AND CANNOT BE SELECTED — E.G. VULKAN WHEN NO VULKAN LOADER IS PRESENT ON THIS MACHINE.
-        boolean[] optionEnabled() {
-            return null;
-        }
-
         int selectedOptionIndex() {
             return -1;
         }
@@ -1625,122 +1551,6 @@ public final class SettingsScreen extends Screen {
         String valueLabel() {
             final String current = this.value.get();
             return current == null || current.isBlank() ? "EMPTY" : current;
-        }
-    }
-
-    // RUNTIME ENUM SELECTOR (LIST_SPINNER) BACKED BY A getter/setter — RESERVED FOR THE STRICTLY
-    // NON-PORTABLE SHELL SETTINGS (ENGINE/UI SCALE, WHOSE .cfg STORES PREDATE ANY CONFIG SPEC).
-    // CYCLES THROUGH THE CONSTANTS WITH LEFT/RIGHT OR SELECTS DIRECTLY FROM THE WIDGET.
-    private static final class RuntimeEnumSetting<E extends Enum<E>> extends Setting {
-        private final E[] options;
-        private final Supplier<E> getter;
-        private final Consumer<E> setter;
-        private final E defaultValue;
-        // MAPS A CONSTANT TO ITS DISPLAY LABEL — DEFAULTS TO name(), OVERRIDDEN FOR ENUMS WHOSE
-        // LABELS ARE NOT VALID IDENTIFIERS (E.G. UI SCALE "1.0x"/"1.25x")
-        private final Function<E, String> labeler;
-        // OPTIONAL PER-CONSTANT AVAILABILITY GATE (null = ALL ENABLED) — DISABLED CONSTANTS ARE DIMMED AND SKIPPED
-        private final Predicate<E> enabled;
-
-        private RuntimeEnumSetting(final String label, final String key, final String type, final String note,
-                                   final E[] options, final Supplier<E> getter, final Consumer<E> setter,
-                                   final E defaultValue, final Function<E, String> labeler) {
-            this(label, key, type, note, options, getter, setter, defaultValue, labeler, null);
-        }
-
-        private RuntimeEnumSetting(final String label, final String key, final String type, final String note,
-                                   final E[] options, final Supplier<E> getter, final Consumer<E> setter,
-                                   final E defaultValue, final Function<E, String> labeler, final Predicate<E> enabled) {
-            super(label, key, type, note, true);
-            this.options = options;
-            this.getter = getter;
-            this.setter = setter;
-            this.defaultValue = defaultValue;
-            this.labeler = labeler;
-            this.enabled = enabled;
-        }
-
-        private boolean enabled(final E option) {
-            return this.enabled == null || this.enabled.test(option);
-        }
-
-        @Override
-        String valueLabel() {
-            return this.labeler.apply(this.getter.get());
-        }
-
-        @Override
-        boolean isEnumControl() {
-            return true;
-        }
-
-        @Override
-        Control control() {
-            return Control.LIST_SPINNER;
-        }
-
-        @Override
-        List<String> optionLabels() {
-            final List<String> labels = new ArrayList<>(this.options.length);
-            for (final E option: this.options) labels.add(this.labeler.apply(option));
-            return labels;
-        }
-
-        @Override
-        int selectedOptionIndex() {
-            final E current = this.getter.get();
-            for (int i = 0; i < this.options.length; i++) if (this.options[i] == current) return i;
-            return 0;
-        }
-
-        @Override
-        boolean[] optionEnabled() {
-            if (this.enabled == null) return null;
-            final boolean[] mask = new boolean[this.options.length];
-            for (int i = 0; i < this.options.length; i++) mask[i] = this.enabled(this.options[i]);
-            return mask;
-        }
-
-        @Override
-        boolean selectOption(final int index) {
-            if (index < 0 || index >= this.options.length || !this.enabled(this.options[index])) return false;
-            this.setter.accept(this.options[index]);
-            return true;
-        }
-
-        @Override
-        String widestValueLabel() {
-            String widest = this.valueLabel();
-            for (final E option: this.options) {
-                final String label = this.labeler.apply(option);
-                if (label.length() > widest.length()) widest = label;
-            }
-            return widest;
-        }
-
-        @Override
-        boolean adjust(final int direction, final int step) {
-            // CYCLE PAST DISABLED CONSTANTS SO KEYBOARD LEFT/RIGHT NEVER LANDS ON AN UNAVAILABLE OPTION
-            final int n = this.options.length;
-            int next = this.selectedOptionIndex();
-            for (int i = 0; i < n; i++) {
-                next = Math.floorMod(next + direction, n);
-                if (this.enabled(this.options[next])) {
-                    this.setter.accept(this.options[next]);
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        @Override
-        void reset() {
-            if (this.enabled(this.defaultValue)) this.setter.accept(this.defaultValue);
-        }
-
-        @Override
-        Color accent() {
-            return AppTheme.CYAN;
         }
     }
 

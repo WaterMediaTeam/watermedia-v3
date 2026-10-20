@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap;
 
+import org.watermedia.bootstrap.app.AppConfig;
 import org.watermedia.bootstrap.app.WaterMediaApp;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.tools.IOTool;
@@ -40,15 +41,17 @@ import java.util.concurrent.CompletableFuture;
 /** Prepares the standalone application's libraries and supervises its JVM. */
 public final class AppBootstrap {
     public static final int RELAUNCH_EXIT = 42;
+    /** System property that carries the render engine, {@code opengl} or {@code vulkan}, from the launcher to the app. */
+    public static final String ENGINE_PROP = "watermedia.engine";
     private static final String APP_FLAG = "watermedia.app";
-    private static final String ENGINE_PROP = "watermedia.engine";
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
     private static final long MAX_DOWNLOAD_BYTES = 256L * 1024 * 1024; // NO PINNED LIBRARY COMES CLOSE
     // SHARED BY EVERY USER ON LINUX (/tmp): PINS REJECT PLANTED JARS, BUT AN OWNER OF THIS FOLDER COULD STILL SWAP A
     // VERIFIED JAR BEFORE THE CHILD JVM OPENS IT. KEPT FOR NOW; A PER-USER CACHE DIRECTORY WOULD CLOSE THAT WINDOW
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs");
-    // THE RENDER SYSTEM READS AND WRITES THIS SAME PREFERENCE IN THE CHILD JVM.
-    private static final Path ENGINE_FILE = Path.of("watermedia", "engine.cfg");
+    // WATERCONFIG KEEPS ITS config FOLDER IN THE WORKING DIRECTORY, WHICH THE CHILD JVM INHERITS. THE AppConfig
+    // CONSTANTS INLINE AT COMPILE TIME, SO THIS JVM NEVER LOADS THE SPEC CLASS NOR WATERCONFIG
+    private static final Path PREFERENCES = Path.of("config", AppConfig.ID + ".properties");
     private BootstrapWindow window;
 
     public interface Extension {
@@ -72,24 +75,20 @@ public final class AppBootstrap {
                     });
                     return;
                 }
+                final Properties preferences = new Properties();
+                try (final InputStream input = Files.newInputStream(PREFERENCES)) { preferences.load(input); }
+                catch (final NoSuchFileException absent) {} // NO SAVED CHOICE YET
+                catch (final IOException failure) { bootstrap.log("Cannot read the app preferences: " + failure.getMessage()); }
                 String engine = engine(System.getProperty(ENGINE_PROP));
-                if (engine == null) {
-                    try { engine = engine(Files.readString(ENGINE_FILE)); }
-                    catch (final NoSuchFileException absent) {} // NO SAVED CHOICE YET
-                    catch (final IOException failure) { bootstrap.log("Cannot read the render engine: " + failure.getMessage()); }
-                }
+                if (engine == null) engine = engine(preferences.getProperty(AppConfig.ENGINE));
                 final boolean choose = firstLaunch && (engine == null || Arrays.stream(args)
                         .anyMatch(arg -> arg.equalsIgnoreCase("--engine") || arg.equalsIgnoreCase("--select-engine")));
                 if (choose && !GraphicsEnvironment.isHeadless()) {
                     final String preferred = "vulkan".equals(engine) ? "Vulkan" : "OpenGL";
                     engine = bootstrap.window().prompt("Starting with " + preferred + " in 5 seconds...", 5,
                             preferred, preferred.equals("OpenGL") ? "Vulkan" : "OpenGL").toLowerCase(Locale.ROOT);
-                    try {
-                        Files.createDirectories(ENGINE_FILE.getParent());
-                        Files.writeString(ENGINE_FILE, engine);
-                    } catch (final IOException failure) {
-                        bootstrap.log("Cannot save the render engine: " + failure.getMessage());
-                    }
+                    try { save(preferences, engine); }
+                    catch (final IOException failure) { bootstrap.log("Cannot save the render engine: " + failure.getMessage()); }
                 }
                 final Set<Path> jars = bootstrap.prepare();
                 if (bootstrap.window != null) {
@@ -118,6 +117,13 @@ public final class AppBootstrap {
         if (value == null) return null;
         final String name = value.trim().toLowerCase(Locale.ROOT);
         return name.equals("opengl") || name.equals("vulkan") ? name : null;
+    }
+
+    // WATERCONFIG DECODES THE ENGINE BY ITS ENUM NAME, SO IT IS STORED UPPERCASE
+    private static void save(final Properties preferences, final String engine) throws IOException {
+        preferences.setProperty(AppConfig.ENGINE, engine.toUpperCase(Locale.ROOT));
+        Files.createDirectories(PREFERENCES.getParent());
+        try (final OutputStream output = Files.newOutputStream(PREFERENCES)) { preferences.store(output, null); }
     }
 
     private static Properties versions() throws IOException {
