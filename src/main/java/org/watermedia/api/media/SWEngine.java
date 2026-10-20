@@ -33,7 +33,6 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
     volatile ByteBuffer bgra;
     // OPTIONAL "FRAME READY" HOOK, RUN ON THE UPLOAD THREAD AFTER EACH present()
     private final Runnable onFrame;
-    private volatile boolean framed;
     // ANOMALY LATCHES: A SHORT BUFFER OR ROW AND A FAILING CALLBACK ARE LOGGED ONCE PER ENGINE
     private boolean shortWarned;
     private boolean strideWarned;
@@ -73,9 +72,6 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         this.publish(format, width, height, bits, color);
         return true;
     }
-
-    @Override
-    public long texture() { return this.released || !this.framed ? 0L : SENTINEL_TEXTURE; }
 
     @Override
     void push(final ByteBuffer[] planes, final int[] strides) {

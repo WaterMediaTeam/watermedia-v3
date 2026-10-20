@@ -3,6 +3,11 @@ package org.watermedia.test.support;
 import org.watermedia.api.codecs.writers.WebMWriter;
 import org.watermedia.api.util.PixelFormat;
 
+import javax.sound.sampled.AudioFileFormat;
+import javax.sound.sampled.AudioFormat;
+import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.AudioSystem;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -30,12 +35,13 @@ public final class Fixtures {
     public static final Path WEBP_ANIMATED_DIR = RESOURCES.resolve("webp").resolve("animated");
     public static final Path NETPBM_DIR = RESOURCES.resolve("netpbm");
     public static final Path SVG_DIR = RESOURCES.resolve("svg");
-    public static final Path MP4_DIR = RESOURCES.resolve("mp4");
-    /** Hostile corpus driving {@code Pentesting}; regenerate with {@link MaliciousImages}. */
+    private static final Path MP4_DIR = RESOURCES.resolve("mp4");
+    /** Hostile corpus driving {@code PentestTest}; regenerate with {@link MaliciousImages}. */
     public static final Path PENTEST_DIR = RESOURCES.resolve("pentest");
 
     public static final Path MP4_H264 = MP4_DIR.resolve("fibonaccisongh264.mp4");
-    public static final Path PNG_STATIC = PNG_DIR.resolve("2.png");
+    /** Static 64x40 RGBA PNG with a translucent gradient: one IDAT, no acTL, no tRNS. */
+    public static final Path PNG_STATIC = PNG_DIR.resolve("static.png");
     /** Real-world static PNG with trailing garbage after IEND (waterframes field-test upload). */
     public static final Path PNG_BROKEN = PNG_DIR.resolve("broken.png");
     public static final Path PNG_ANIMATED = PNG_DIR.resolve("1.png");
@@ -59,6 +65,14 @@ public final class Fixtures {
     /** Returns a {@code file://} URI for a fixture, suitable for {@code MRL}/MediaAPI. */
     public static URI fileUri(final Path path) {
         return path.toAbsolutePath().toUri();
+    }
+
+    /** Writes 16-bit little-endian PCM frames as a WAV file. */
+    public static void wav(final Path file, final int sampleRate, final int channels, final byte[] pcm) throws IOException {
+        try (final AudioInputStream input = new AudioInputStream(new ByteArrayInputStream(pcm),
+                new AudioFormat(sampleRate, 16, channels, true, false), pcm.length / (2L * channels))) {
+            AudioSystem.write(input, AudioFileFormat.Type.WAVE, file.toFile());
+        }
     }
 
     /** Encodes a moving BGRA gradient into a VP9 WebM through {@link WebMWriter}; needs the FFmpeg natives. */

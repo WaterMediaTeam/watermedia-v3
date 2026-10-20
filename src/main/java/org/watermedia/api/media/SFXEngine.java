@@ -107,8 +107,8 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
 
     /**
      * Returns the canonical sample types this backend can play directly for at least one channel
-     * count, in preference order for fallbacks. A type appearing here is not guaranteed to work
-     * at every channel count — consult {@link ChannelSupport#supports(SampleType)} to confirm.
+     * count. A type appearing here is not guaranteed to work at every channel count — consult
+     * {@link ChannelSupport#supports(SampleType)} to confirm.
      * @return a defensive copy of the supported sample types
      */
     public abstract SampleType[] supportedTypes();
@@ -226,12 +226,14 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         try {
             this.destroy();
         } catch (final RuntimeException | Error e) {
-            this.released = false; // A TEARDOWN THE BACKEND REFUSED (WRONG OPENAL CONTEXT) CAN BE RETRIED
+            // ONLY A TEARDOWN REFUSED BEFORE THE SOURCE WAS FREED (WRONG OPENAL CONTEXT) CAN BE RETRIED; A FAILURE AFTER IT
+            // (A HOST ENVIRONMENT RESET) STILL LEFT THE ENGINE INERT
+            if (this.source != 0) this.released = false;
             throw e;
         }
     }
 
-    // BACKEND TEARDOWN; A THROW LEAVES THE ENGINE LIVE SO THE CALLER CAN RETRY ON THE RIGHT THREAD
+    // BACKEND TEARDOWN; A THROW THAT KEEPS THE SOURCE LEAVES THE ENGINE LIVE SO THE CALLER CAN RETRY ON THE RIGHT THREAD
     abstract void destroy();
 
     // QUEUES PCM IN THE LAST format(), READING [position, limit) WITHOUT MOVING position: FALSE WHEN FULL (RETRY LATER),

@@ -3,6 +3,7 @@ package org.watermedia.api.platform.web;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -12,8 +13,8 @@ import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.MatureContentException;
 import org.watermedia.api.platform.PlatformApiTest;
 import org.watermedia.api.platform.PlatformException;
-import org.watermedia.api.platform.WaterPlatformTest;
 import org.watermedia.api.platform.internal.WaterPlatform;
+import org.watermedia.api.platform.internal.WaterPlatformTest;
 
 import java.net.URI;
 import java.util.stream.Stream;
@@ -31,12 +32,25 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * block, again without touching the network. These cases exercise host matching, suffix rules, path
  * prefixes and pattern matchers.
  * <p>
- * The success (instance) and parse-failure (exception) states are covered offline by
- * {@link WaterPlatformTest}, the registry-level wiring by {@link PlatformApiTest}, and the
- * mature-content gate by {@link #testMatureContentDisabledThrowsBeforeFetch()}.
+ * The success (instance) state is covered offline by {@link WaterPlatformTest}, the registry-level
+ * wiring by {@link PlatformApiTest}, and the mature-content gate by the mature-only case below.
  */
 @DisplayName("Platform URI claim (offline)")
 public class PlatformClaimTest {
+
+    // THE MATURE GATE IS CHECKED OFF, SO A MATURE-ONLY HANDLER REJECTS BEFORE ANY NETWORK ACCESS
+    private boolean previousMature;
+
+    @BeforeEach
+    void rememberConfig() {
+        this.previousMature = WaterMediaConfig.platforms.allowMatureContent;
+        WaterMediaConfig.platforms.allowMatureContent = false;
+    }
+
+    @AfterEach
+    void restoreConfig() {
+        WaterMediaConfig.platforms.allowMatureContent = this.previousMature;
+    }
 
     static Stream<Arguments> foreignUris() {
         return Stream.of(
@@ -113,8 +127,9 @@ public class PlatformClaimTest {
 
     static Stream<Arguments> unsupportedUris() {
         return Stream.of(
-                // WaterPlatform: UNKNOWN HOST OF ITS OWN SCHEME
+                // WaterPlatform: AN UNKNOWN OR MISSING HOST OF ITS OWN SCHEME
                 arguments(WaterPlatform.class, "water://unknown/x"),
+                arguments(WaterPlatform.class, "water:///x"),
 
                 // Bluesky: NEEDS /profile/<handle>/post/<id> OR AN at:// POST PATTERN
                 arguments(BlueskyPlatform.class, "https://bsky.app/about"),
@@ -143,7 +158,7 @@ public class PlatformClaimTest {
                 // Imgur: A MEDIA PATH IS REQUIRED
                 arguments(ImgurPlatform.class, "https://imgur.com/"),
 
-                // Kick: A BARE HOST ONCE CRASHED WITH StringIndexOutOfBounds
+                // Kick: A BARE HOST OR A SETTINGS PAGE NAMES NO CHANNEL
                 arguments(KickPlatform.class, "https://kick.com"),
                 arguments(KickPlatform.class, "https://kick.com/"),
                 arguments(KickPlatform.class, "https://kick.com/settings/profile"),
@@ -180,47 +195,44 @@ public class PlatformClaimTest {
         );
     }
 
-    @ParameterizedTest(name = "{0} resolve({1}) == null")
-    @MethodSource("foreignUris")
-    void testForeignUriYieldsNull(final Class<? extends Platform> type, final String uriString) throws Exception {
-        final Platform platform = type.getDeclaredConstructor().newInstance();
-        final URI uri = URI.create(uriString);
-        assertNull(platform.resolve(uri),
-                () -> type.getSimpleName() + ".resolve(" + uriString + ") must return null for a foreign URI");
+    @Nested
+    @DisplayName("Claims")
+    class Claims {
+
+        @ParameterizedTest(name = "{0} resolve({1}) == null")
+        @MethodSource("org.watermedia.api.platform.web.PlatformClaimTest#foreignUris")
+        @DisplayName("A foreign URI is disclaimed with null before any network access")
+        void testForeignUriYieldsNull(final Class<? extends Platform> type, final String uriString) throws Exception {
+            final Platform platform = type.getDeclaredConstructor().newInstance();
+            final URI uri = URI.create(uriString);
+            assertNull(platform.resolve(uri),
+                    () -> type.getSimpleName() + ".resolve(" + uriString + ") must return null for a foreign URI");
+        }
+
+        @ParameterizedTest(name = "{0} resolve({1}) throws PlatformException")
+        @MethodSource("org.watermedia.api.platform.web.PlatformClaimTest#unsupportedUris")
+        @DisplayName("An unsupported shape of a claimed host fails with a PlatformException that is not a mature block")
+        void testUnsupportedUriThrows(final Class<? extends Platform> type, final String uriString) throws Exception {
+            final Platform platform = type.getDeclaredConstructor().newInstance();
+            final URI uri = URI.create(uriString);
+            final PlatformException thrown = assertThrows(PlatformException.class, () -> platform.resolve(uri),
+                    () -> type.getSimpleName() + ".resolve(" + uriString + ") must refuse an unsupported shape of its own host");
+            assertFalse(thrown instanceof MatureContentException, "An unsupported shape is not a mature block");
+            assertTrue(thrown.getMessage().startsWith(platform.name() + ": "), "The message names the handler");
+        }
     }
 
-    @ParameterizedTest(name = "{0} resolve({1}) throws PlatformException")
-    @MethodSource("unsupportedUris")
-    void testUnsupportedUriThrows(final Class<? extends Platform> type, final String uriString) throws Exception {
-        final Platform platform = type.getDeclaredConstructor().newInstance();
-        final URI uri = URI.create(uriString);
-        final PlatformException thrown = assertThrows(PlatformException.class, () -> platform.resolve(uri),
-                () -> type.getSimpleName() + ".resolve(" + uriString + ") must refuse an unsupported shape of its own host");
-        assertFalse(thrown instanceof MatureContentException, "An unsupported shape is not a mature block");
-        assertTrue(thrown.getMessage().startsWith(platform.name() + ": "), "The message names the handler");
-    }
+    @Nested
+    @DisplayName("Mature gate")
+    class MatureGate {
 
-    // MATURE GATE: PornHub IS MATURE-ONLY AND REJECTS BEFORE ANY NETWORK ACCESS WHEN allowMatureContent IS OFF,
-    // SO THE EXCEPTION STATE IS VERIFIABLE OFFLINE
-    private boolean previousMature;
-
-    @BeforeEach
-    void rememberConfig() {
-        this.previousMature = WaterMediaConfig.platforms.allowMatureContent;
-        WaterMediaConfig.platforms.allowMatureContent = false;
-    }
-
-    @AfterEach
-    void restoreConfig() {
-        WaterMediaConfig.platforms.allowMatureContent = this.previousMature;
-    }
-
-    @Test
-    @DisplayName("Mature-only platform throws before any fetch when mature content is disabled")
-    void testMatureContentDisabledThrowsBeforeFetch() {
-        final PornHubPlatform platform = new PornHubPlatform();
-        assertThrows(MatureContentException.class,
-                () -> platform.resolve(URI.create("https://www.pornhub.com/view_video.php?viewkey=abc")),
-                "Mature-only platform must throw when mature content is disabled, before any fetch");
+        @Test
+        @DisplayName("Mature-only platform throws before any fetch when mature content is disabled")
+        void testMatureContentDisabledThrowsBeforeFetch() {
+            final PornHubPlatform platform = new PornHubPlatform();
+            assertThrows(MatureContentException.class,
+                    () -> platform.resolve(URI.create("https://www.pornhub.com/view_video.php?viewkey=abc")),
+                    "Mature-only platform must throw when mature content is disabled, before any fetch");
+        }
     }
 }

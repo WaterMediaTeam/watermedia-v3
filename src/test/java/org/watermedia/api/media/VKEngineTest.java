@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.PointerBuffer;
@@ -13,6 +14,7 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.MediaBootstrap;
+import org.watermedia.test.support.PlayerWait;
 import org.watermedia.test.support.YuvFrames;
 
 import java.lang.reflect.Field;
@@ -23,14 +25,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
@@ -45,6 +46,7 @@ import static org.lwjgl.vulkan.KHRPortabilityEnumeration.*;
 import static org.lwjgl.vulkan.KHRPortabilitySubset.*;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.*;
+import static org.watermedia.test.support.YuvFrames.assertUniform;
 
 /**
  * Verifies {@link VKEngine} conversions on a headless Vulkan 1.1 device, once with every feature the device offers
@@ -97,6 +99,8 @@ public class VKEngineTest {
     private static int family;
     private static VkPhysicalDeviceMemoryProperties memory;
     private static boolean ycbcr, hostImport, validation;
+    // THE DEVICE CAN SAMPLE 8-BIT 4:2:0 THROUGH A YCBCR CONVERSION AT EITHER CHROMA SITING, SO THE ENGINE MUST ROUTE IT THERE
+    private static boolean ycbcr420;
     private static long alignment;
     private static String name;
 
@@ -178,6 +182,11 @@ public class VKEngineTest {
             final VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrFeatures = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc(stack).sType$Default();
             vkGetPhysicalDeviceFeatures2(physical, VkPhysicalDeviceFeatures2.calloc(stack).sType$Default().pNext(ycbcrFeatures));
             ycbcr = ycbcrFeatures.samplerYcbcrConversion();
+            final VkFormatProperties planar = VkFormatProperties.malloc(stack);
+            vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM, planar);
+            final int planarNeed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT
+                    | VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT | VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT;
+            ycbcr420 = ycbcr && (planar.optimalTilingFeatures() & planarNeed) == planarNeed;
             check(vkEnumerateDeviceExtensionProperties(physical, (ByteBuffer) null, count, null), "count device extensions");
             final VkExtensionProperties.Buffer deviceExtensions = VkExtensionProperties.create(count.get(0));
             check(vkEnumerateDeviceExtensionProperties(physical, (ByteBuffer) null, count, deviceExtensions), "enumerate device extensions");
@@ -268,7 +277,7 @@ public class VKEngineTest {
             close();
             throw new AssertionError("Vulkan is present but the LWJGL stack cannot list its extensions; raise org.lwjgl.system.stackSize", e);
         }
-        System.out.println("[VKEngineTest] " + name + ": samplerYcbcrConversion=" + ycbcr + ", hostImport=" + hostImport
+        System.out.println("[VKEngineTest] " + name + ": samplerYcbcrConversion=" + ycbcr + " (4:2:0 " + ycbcr420 + "), hostImport=" + hostImport
                 + " (alignment " + alignment + "), validation layer " + (validation ? "on" : "not installed"));
     }
 
@@ -437,27 +446,26 @@ public class VKEngineTest {
             }
         }
 
-        @ParameterizedTest(name = "{0}")
-        @EnumSource(Features.class)
-        @DisplayName("A 10 or 8-bit PQ gray shows its SDR level at 100 nits and peak white at 1000 nits")
-        void pq(final Features features) {
+        @ParameterizedTest(name = "{0} {1}-bit")
+        @CsvSource({ "DEVICE, 10", "DEVICE, 8", "FALLBACK, 10", "FALLBACK, 8" })
+        @DisplayName("A PQ gray shows its SDR level at 100 nits and peak white at 1000 nits")
+        void pq(final Features features, final int bits) {
             // THE 8-BIT FRAME QUALIFIES FOR THE YCBCR SAMPLER BY SIZE AND DEPTH, WHICH HAS NO PQ CURVE, SO IT MUST STAY ON COMPUTE
             final VKEngine engine = MediaAPI.vkEngine(features);
             try {
-                for (final int bits: new int[] { 10, 8 }) {
-                    for (final int nits: new int[] { 100, 1_000 }) {
-                        final int unit = 1 << (bits - 8);
-                        final int code = (int) Math.round(16 * unit + YuvFrames.pq(nits) * 219 * unit);
-                        final ByteBuffer[] planes = bits == 8
-                                ? new ByteBuffer[] { YuvFrames.plane(0, 16, 16, (row, col) -> code), YuvFrames.plane(0, 8, 8, (row, col) -> 128),
-                                        YuvFrames.plane(0, 8, 8, (row, col) -> 128) }
-                                : new ByteBuffer[] { YuvFrames.plane16(16, 16, (row, col) -> code), YuvFrames.plane16(8, 8, (row, col) -> 512),
-                                        YuvFrames.plane16(8, 8, (row, col) -> 512) };
-                        assumeTrue(engine.format(PixelFormat.YUV420P, 16, 16, bits, new Colorimetry(Colorimetry.Matrix.BT2020, false, true, false, Colorimetry.Transfer.PQ, true)),
-                                "the device cannot sample " + bits + "-bit planes");
-                        final int gray = nits == 100 ? YuvFrames.hdrGray(nits) : 255;
-                        assertUniform(frame(engine, planes, new int[3]), new int[] { gray, gray, gray, 255 }, 3, bits + "-bit " + nits + " nits");
-                    }
+                assumeTrue(engine.supports(PixelFormat.YUV420P, bits), "the device cannot sample " + bits + "-bit planes");
+                final int unit = 1 << (bits - 8);
+                for (final int nits: new int[] { 100, 1_000 }) {
+                    final int code = (int) Math.round(16 * unit + YuvFrames.pq(nits) * 219 * unit);
+                    final ByteBuffer[] planes = bits == 8
+                            ? new ByteBuffer[] { YuvFrames.plane(0, 16, 16, (row, col) -> code), YuvFrames.plane(0, 8, 8, (row, col) -> 128),
+                                    YuvFrames.plane(0, 8, 8, (row, col) -> 128) }
+                            : new ByteBuffer[] { YuvFrames.plane16(16, 16, (row, col) -> code), YuvFrames.plane16(8, 8, (row, col) -> 512),
+                                    YuvFrames.plane16(8, 8, (row, col) -> 512) };
+                    assertTrue(engine.format(PixelFormat.YUV420P, 16, 16, bits, new Colorimetry(Colorimetry.Matrix.BT2020, false, true, false, Colorimetry.Transfer.PQ, true)));
+                    assertEquals(0, (int) field(engine, "ycbcrFmt"), "the sampler has no PQ curve, so PQ stays on compute");
+                    final int gray = nits == 100 ? YuvFrames.hdrGray(nits) : 255;
+                    assertUniform(frame(engine, planes, new int[3]), new int[] { gray, gray, gray, 255 }, 3, bits + "-bit " + nits + " nits");
                 }
             } finally {
                 release(engine);
@@ -541,7 +549,9 @@ public class VKEngineTest {
                 assertUniform(frame(second, planes, new int[3]), rgba, 3, "second engine");
                 kit = field(first, "kit");
                 assertSame(kit, field(second, "kit"), "engines on one device share the kit");
-                if ((int) field(first, "ycbcrFmt") != 0) {
+                final boolean sampler = (int) field(first, "ycbcrFmt") != 0;
+                assertEquals(features == Features.DEVICE && ycbcr420, sampler, "8-bit SDR 4:2:0 takes the YCbCr sampler whenever the device offers it");
+                if (sampler) {
                     assertNotNull(field(first, "ycbcr"), "the sampler route takes the kit's conversion");
                     assertSame(field(first, "ycbcr"), field(second, "ycbcr"), "the same layout shares one conversion");
                 }
@@ -580,10 +590,9 @@ public class VKEngineTest {
             ALIGNED.add(sent[i]);
         }
         engine.upload(sent, strides);
-        final long deadline = System.nanoTime() + FRAME_TIMEOUT_NS;
-        long view = before;
-        while (view == before && System.nanoTime() < deadline) view = engine.texture();
-        assertNotEquals(before, view, "the frame was published within the timeout");
+        assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
+                "the frame was published within the timeout");
+        final long view = engine.texture();
 
         final String route = ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute") + ", "
                 + (((Map<?, ?>) field(engine, "importCache")).isEmpty() ? "staging" : "host import");
@@ -667,15 +676,6 @@ public class VKEngineTest {
         }
         for (final Runnable destroy: RETIRED) destroy.run();
         RETIRED.clear();
-    }
-
-    // ASSERTS EVERY PIXEL SHOWS rgba (RED, GREEN, BLUE, ALPHA) WITHIN tolerance
-    private static void assertUniform(final ByteBuffer frame, final int[] rgba, final int tolerance, final String what) {
-        for (int i = 0; i < frame.capacity(); i++) {
-            final int shown = frame.get(i) & 0xFF;
-            if (Math.abs(shown - rgba[i % 4]) > tolerance)
-                fail(what + ": pixel " + i / 4 + " channel " + i % 4 + " shows " + shown + " instead of " + rgba[i % 4]);
-        }
     }
 
     // READS A PRIVATE FIELD OF THE ENGINE: ITS ROUTE AND IMPORT STATE ARE NOT PART OF THE API

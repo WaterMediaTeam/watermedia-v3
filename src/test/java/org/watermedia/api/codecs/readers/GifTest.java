@@ -10,94 +10,47 @@ import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.FrameReplay;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
- * Verifies the GIF decoder: the three bundled animated fixtures (frame count, dimensions, BGRA frame size and
- * byte-identical reset() replays), plus hand-built streams for clipping, stray bytes, delays, loop counts,
- * metadata collection and the reader contract.
+ * Verifies the GIF decoder: the three bundled animated fixtures (scanned shape, tightly packed BGRA frames and
+ * byte-identical reset() replays), plus hand-built streams for clipping, stray bytes, delays, loop counts and
+ * metadata collection.
  */
 @DisplayName("GIF decoder")
 public class GifTest {
-
-    private record Fixture(String name, Path path) {}
-
-    private static final List<Fixture> FIXTURES = List.of(
-            new Fixture("1.gif", Fixtures.GIF_DIR.resolve("1.gif")),
-            new Fixture("2.gif", Fixtures.GIF_DIR.resolve("2.gif")),
-            new Fixture("3.gif", Fixtures.GIF_DIR.resolve("3.gif")));
-
-    @TestFactory
-    @DisplayName("Decode shape")
-    Iterable<DynamicTest> testGIFFixtures() {
-        final List<DynamicTest> tests = new ArrayList<>();
-        for (final Fixture fixture: FIXTURES) {
-            tests.add(dynamicTest("GIF decode [" + fixture.name + "]", () -> {
-                final ImageData result = CodecsAPI.decode(Fixtures.readAll(fixture.path));
-                assertNotNull(result, "GIF signature not recognized for: " + fixture.name);
-                assertTrue(result.width() > 0, "Width must be positive for " + fixture.name);
-                assertTrue(result.height() > 0, "Height must be positive for " + fixture.name);
-
-                // ANIMATED GIF — FRAME COUNT > 1 AND DELAY ARRAY MATCHES
-                assertTrue(result.frames().length > 1, fixture.name + " should be animated, got " + result.frames().length + " frame(s)");
-                assertEquals(result.frames().length, result.delays().length, "Delay array length must match frame count for " + fixture.name);
-                assertTrue(result.duration() > 0, "Animation duration must be positive for " + fixture.name);
-
-                // EACH FRAME IS BGRA — w*h*4 BYTES
-                final int expectedBufferSize = result.width() * result.height() * 4;
-                for (int i = 0; i < result.frames().length; i++) {
-                    assertEquals(expectedBufferSize, result.frames()[i].capacity(), "Frame " + i + " buffer size mismatch for " + fixture.name);
-                }
-            }));
-        }
-        return tests;
-    }
 
     @TestFactory
     @DisplayName("reset() replay")
     Iterable<DynamicTest> testGIFReset() {
         final List<DynamicTest> tests = new ArrayList<>();
-        for (final Fixture fixture: FIXTURES) {
-            tests.add(dynamicTest("GIF reset replay [" + fixture.name + "]", () -> {
-                try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(fixture.path)))) {
-                    final long[] delays = reader.delays();
+        for (final String name: List.of("1.gif", "2.gif", "3.gif")) {
+            tests.add(dynamicTest("GIF reset replay [" + name + "]", () -> {
+                try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(Fixtures.GIF_DIR.resolve(name))))) {
                     final ImageMetadata metadata = reader.metadata();
-                    final List<byte[]> first = decodeFrameHashes(reader);
-                    assertTrue(first.size() > 1, "Fixture should be animated: " + fixture.name);
-                    assertEquals(reader.frameCount(), first.size(), "scan() and the decoder disagree on " + fixture.name);
-
-                    // FIRST RESET — REPLAY MUST BE BYTE-IDENTICAL AND METADATA MUST SURVIVE UNCHANGED
-                    assertTrue(reader.reset(), "reset() must be supported for " + fixture.name);
-                    assertArrayEquals(delays, reader.delays(), "Delays changed after reset for " + fixture.name);
-                    assertReplayMatches(first, decodeFrameHashes(reader), fixture.name);
-
-                    // SECOND RESET — reset() MUST BE REPEATABLE
-                    assertTrue(reader.reset(), "Second reset() must be supported for " + fixture.name);
-                    assertReplayMatches(first, decodeFrameHashes(reader), fixture.name);
-                    assertEquals(metadata.comments(), reader.metadata().comments(), "Comments changed after replays for " + fixture.name);
-                    assertEquals(metadata.values().keySet(), reader.metadata().values().keySet(), "Metadata changed after replays for " + fixture.name);
+                    assertTrue(reader.duration() > 0, "Animation duration must be positive for " + name);
+                    final List<byte[]> first = FrameReplay.verify(reader, name);
+                    assertTrue(first.size() > 1, "Fixture should be animated: " + name);
+                    assertEquals(reader.frameCount(), first.size(), "scan() and the decoder disagree on " + name);
+                    assertEquals(metadata.comments(), reader.metadata().comments(), "Comments changed after replays for " + name);
+                    assertEquals(metadata.values().keySet(), reader.metadata().values().keySet(), "Metadata changed after replays for " + name);
                 }
             }));
         }
@@ -192,19 +145,6 @@ public class GifTest {
                 assertNull(reader.metadata().value(CodecsAPI.METAKEY_LOOP_COUNT));
             }
         }
-
-        @Test
-        @DisplayName("next() past the last frame throws NoSuchElementException and a closed reader IllegalStateException")
-        void endAndClose() throws IOException {
-            final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(new Gif(1, 1).frame(0, 0, 1, 1).bytes()));
-            reader.next();
-            assertFalse(reader.hasNext());
-            assertThrows(NoSuchElementException.class, reader::next);
-            reader.close();
-            assertThrows(IllegalStateException.class, reader::hasNext);
-            assertThrows(IllegalStateException.class, reader::next);
-            assertThrows(IllegalStateException.class, reader::reset);
-        }
     }
 
     @Nested
@@ -254,25 +194,6 @@ public class GifTest {
                 assertNull(reader.metadata().value(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION));
                 assertEquals(1, reader.readAll().frames().length);
             }
-        }
-    }
-
-    // HASH FRAMES INSTEAD OF COPYING THEM — 1080P FIXTURES TIMES THREE DECODE PASSES WOULD BLOW
-    // THE 512MB DIRECT-MEMORY BUDGET OF THE TEST JVM, AND SHA-256 EQUALITY IS BYTE-IDENTITY
-    private static List<byte[]> decodeFrameHashes(final ImageReader reader) throws IOException, NoSuchAlgorithmException {
-        final MessageDigest sha = MessageDigest.getInstance("SHA-256");
-        final List<byte[]> hashes = new ArrayList<>();
-        while (reader.hasNext()) {
-            sha.update(reader.next().duplicate());
-            hashes.add(sha.digest());
-        }
-        return hashes;
-    }
-
-    private static void assertReplayMatches(final List<byte[]> expected, final List<byte[]> replay, final String name) {
-        assertEquals(expected.size(), replay.size(), "Frame count changed after reset for " + name);
-        for (int i = 0; i < expected.size(); i++) {
-            assertArrayEquals(expected.get(i), replay.get(i), "Frame " + i + " not byte-identical after reset for " + name);
         }
     }
 

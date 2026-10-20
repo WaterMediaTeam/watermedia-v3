@@ -258,8 +258,6 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
             }
             if (sources.isEmpty()) throw skipped != null ? skipped : new PlatformException(this.name(), "No playable entries in playlist");
             return new Resolution(earliest, sources);
-        } catch (final PlatformException e) {
-            throw e;
         } catch (final RuntimeException e) { // A JSON SHAPE yt-dlp NEVER DOCUMENTED
             throw new PlatformException(this.name(), "Unexpected yt-dlp JSON", e);
         }

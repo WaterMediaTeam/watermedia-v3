@@ -8,16 +8,14 @@ import org.watermedia.api.media.ServerMediaPlayer;
 import org.watermedia.api.media.TLSLifecycleProbe;
 import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
-import org.watermedia.test.support.LocalHttp;
+import org.watermedia.test.support.Origin;
 import org.watermedia.test.support.PlayerWait;
 
-import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 /** Exercises one WaterMedia load per process: the load is final, so every scenario gets its own JVM. */
 public final class BootstrapProbe {
@@ -77,12 +75,11 @@ public final class BootstrapProbe {
         if (!WaterMedia.loaded() || status.failures().size() != 1 || status.failures().get(0).module() != NetworkAPI.Module.class)
             throw new AssertionError("An occupied port did not surface as an optional failure: " + status);
         if (status.done() != status.total() || status.loading() != null) throw new AssertionError(status);
-        // THE REST OF THE MODULE WORKS: AN UPLOAD IS ACCEPTED AND FAILS ON ITS OWN, NEVER WITH AN ILLEGAL STATE
+        // THE REST OF THE MODULE WORKS: AN UPLOAD IS ACCEPTED WITHOUT AN ILLEGAL STATE AND FAILS ON ITS OWN
+        // (ServiceLifecycleProbe CHECKS THE MESSAGE A MISCONFIGURED REMOTE FAILS IT WITH)
         WaterMediaConfig.network.remoteUrl = "remote.invalid/upload";
-        final Path file = Files.writeString(root.resolve("upload.bin"), "payload");
-        final NetworkAPI.UploadStatus upload = NetworkAPI.upload(file.toFile());
-        if (!PlayerWait.awaitCondition(upload::failed, 5000) || upload.completed())
-            throw new AssertionError("The upload worker did not fail the misconfigured upload");
+        final NetworkAPI.UploadStatus upload = NetworkAPI.upload(Files.writeString(root.resolve("upload.bin"), "payload").toFile());
+        if (!PlayerWait.awaitCondition(upload::failed, 5_000) || upload.completed()) throw new AssertionError("The misconfigured upload did not fail");
         requireFinal(root);
     }
 
@@ -124,16 +121,13 @@ public final class BootstrapProbe {
         if (Files.exists(root.resolve("temp/ffmpeg"))) throw new AssertionError("Disabled FFmpeg was extracted");
         if (!root.resolve("temp/yt-dlp").equals(WaterMediaBinaries.pathOf(WaterMediaBinaries.YTDLP_ID)))
             throw new AssertionError("Executable paths were not published");
-        // THE ORIGIN ANSWERS AFTER THE INTERRUPTED WAIT GIVES UP, SO THE LOAD MUST OUTLIVE THAT WAIT AND STILL SUCCEED
+        // THE ORIGIN ANSWERS ONLY AFTER THE INTERRUPTED WAIT GAVE UP, SO THE LOAD MUST OUTLIVE THAT WAIT AND STILL SUCCEED
         WaterMediaConfig.network.timeout = 5_000;
-        final CountDownLatch entered = new CountDownLatch(1);
-        try (final LocalHttp origin = LocalHttp.start("/slow.png", exchange -> {
-            entered.countDown();
-            try { Thread.sleep(1500); } catch (final InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-            try { LocalHttp.respond(exchange, "image/png", new byte[] {1, 2, 3}, 0); } catch (final IOException ignored) { exchange.close(); }
-        })) {
-            final MRL previous = MediaAPI.mrl(origin.uri("/slow.png"));
-            if (!entered.await(5, TimeUnit.SECONDS)) throw new AssertionError("Request never started");
+        try (final Origin origin = Origin.of(new byte[] { 1, 2, 3 }, "image/png")) {
+            origin.hold();
+            final URI slow = origin.uri(".png");
+            final MRL previous = MediaAPI.mrl(slow);
+            if (!origin.awaitEntered(5_000L)) throw new AssertionError("Request never started");
             Thread.currentThread().interrupt();
             try {
                 if (previous.await(10_000) || !Thread.currentThread().isInterrupted())
@@ -141,7 +135,8 @@ public final class BootstrapProbe {
             } finally {
                 Thread.interrupted();
             }
-            if (MediaAPI.mrl(origin.uri("/slow.png")) != previous) throw new AssertionError("The cached MRL was replaced");
+            if (MediaAPI.mrl(slow) != previous) throw new AssertionError("The cached MRL was replaced");
+            origin.release();
             if (!previous.await(10_000) || previous.status() != MRL.Status.LOADED) throw new AssertionError("The interrupted wait cancelled the load: " + previous.status());
         }
         requireFinal(root);

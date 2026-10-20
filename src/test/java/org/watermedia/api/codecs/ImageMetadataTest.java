@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Covers {@link ImageMetadata} invariants: the read-only {@code EMPTY} singleton, empty-collection
+ * Verifies {@link ImageMetadata} invariants: the read-only {@code EMPTY} singleton, empty-collection
  * accessors (never {@code null}), and the blank/empty filtering in {@code put()} and the setters.
  */
 @DisplayName("ImageMetadata")

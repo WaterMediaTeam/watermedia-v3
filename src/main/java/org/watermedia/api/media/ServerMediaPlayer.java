@@ -141,9 +141,12 @@ public final class ServerMediaPlayer extends MediaPlayer {
      */
     public synchronized void live(final boolean live) {
         if (this.live == live) return;
-        // SAME TIMELINE-BECAME-KNOWN REBASE AS syncDuration — A HELD CLOCK STARTS COUNTING NOW
-        if (live && this.duration <= 0 && this.status == Status.PLAYING && !this.gated)
+        if (this.duration <= 0 && this.status == Status.PLAYING && !this.gated) {
+            // SAME TIMELINE-BECAME-KNOWN REBASE AS syncDuration: A HELD CLOCK STARTS COUNTING NOW, AND A CLOCK THAT
+            // RAN LIVE KEEPS WHAT IT COUNTED BEFORE IT HOLDS AGAIN
+            if (!live) this.accumulatedMs = this.computeTime(this.speed());
             this.segmentStartNanos = System.nanoTime();
+        }
         this.live = live;
         this.revision.incrementAndGet();
     }
@@ -437,16 +440,16 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     public boolean speed(final float speed) {
         final float old = this.speed();
-        if (!super.speed(speed)) return false;
         synchronized (this) {
+            // THE ELAPSED SEGMENT RAN AT THE OUTGOING RATE: CLOSE IT BEFORE THE BASE PUBLISHES THE NEW ONE, SO NEITHER
+            // THE TICKER NOR A SNAPSHOT RESCALES TIME THAT ALREADY PASSED (A REFUSED CHANGE JUST KEEPS THE OLD RATE)
             if (this.status == Status.PLAYING && !this.gated) {
-                // THE ELAPSED SEGMENT RAN AT THE OUTGOING RATE — REBASING WITH THE NEW ONE WOULD
-                // RETROACTIVELY RESCALE TIME THAT ALREADY PASSED AND JUMP THE CLOCK
                 this.accumulatedMs = this.computeTime(old);
                 this.segmentStartNanos = System.nanoTime();
             }
-            if (old != speed) this.revision.incrementAndGet();
         }
+        if (!super.speed(speed)) return false;
+        if (old != speed) this.revision.incrementAndGet();
         return true;
     }
 

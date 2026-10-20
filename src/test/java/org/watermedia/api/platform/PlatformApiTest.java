@@ -20,7 +20,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -95,19 +94,7 @@ public class PlatformApiTest {
     @DisplayName("Claim Resolution")
     class ClaimTests {
 
-        // STATE: INSTANCE — A PLATFORM THAT CLAIMS AND RESOLVES THE URI
-        @Test
-        @DisplayName("fetch returns data from the matching platform")
-        void testFetchReturnsDataFromMatchingPlatform() throws Exception {
-            final Resolution data = marker("https://example.com/a.mp4");
-            PlatformApiTest.this.register(uri -> "match.test".equals(uri.getHost()) ? data : null);
-
-            final Resolution result = PlatformAPI.fetch(URI.create("https://match.test/x"));
-            assertNotNull(result, "Expected fetch to return data for the matching URI");
-            assertSame(data, result, "fetch should return the stub's Resolution instance");
-        }
-
-        // STATE: NULL — PLATFORMS THAT RETURN NULL ARE SKIPPED, NEXT CLAIMANT WINS
+        // PLATFORMS THAT RETURN NULL ARE SKIPPED, THE NEXT CLAIMANT WINS AND ITS OWN RESOLUTION IS RETURNED
         @Test
         @DisplayName("fetch skips platforms that return null")
         void testFetchSkipsPlatformsThatReturnNull() throws Exception {

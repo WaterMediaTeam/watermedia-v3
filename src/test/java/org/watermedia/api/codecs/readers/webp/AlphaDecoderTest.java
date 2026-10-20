@@ -71,15 +71,7 @@ public class AlphaDecoderTest {
     class Application {
 
         @Test
-        @DisplayName("applyAlpha replaces the high byte of each ARGB pixel")
-        void argb() {
-            final int[] argb = { 0xFF_FF_00_00, 0xFF_00_FF_00, 0xFF_00_00_FF };
-            AlphaDecoder.applyAlpha(argb, new byte[] { (byte) 128, (byte) 64, (byte) 255 });
-            assertArrayEquals(new int[] { 0x80_FF_00_00, 0x40_00_FF_00, 0xFF_00_00_FF }, argb);
-        }
-
-        @Test
-        @DisplayName("applyAlpha with a shorter alpha array touches only the leading pixels")
+        @DisplayName("applyAlpha replaces the high byte of each ARGB pixel, and a shorter alpha array touches only the leading pixels")
         void shorterPlane() {
             final int[] argb = { 0xFF_FF_00_00, 0xFF_00_FF_00, 0xFF_00_00_FF, 0xFF_FF_FF_00, 0xFF_00_FF_FF };
             AlphaDecoder.applyAlpha(argb, new byte[] { (byte) 100, (byte) 150, (byte) 200 });

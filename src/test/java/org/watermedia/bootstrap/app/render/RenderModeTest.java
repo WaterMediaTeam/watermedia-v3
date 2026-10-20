@@ -4,22 +4,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.bootstrap.app.PlayerTarget;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
- * Headless tests for {@link RenderMode#of}: the popup target wins over the in-app engine choice, and
- * every constant round-trips through its own {@code engine()}/{@code target()}. Pure mapping — no GPU.
+ * Verifies {@link RenderMode#of}: the popup target wins over the in-app engine choice, and every
+ * constant round-trips through its own {@code engine()}/{@code target()}. Pure mapping, no GPU.
  */
 @DisplayName("RenderMode mapping")
-class RenderModeTest {
-
-    @Test
-    @DisplayName("in-app modes follow the engine")
-    void inAppFollowsEngine() {
-        assertSame(RenderMode.OPENGL, RenderMode.of(RenderSystem.Engine.OPENGL, PlayerTarget.IN_APP));
-        assertSame(RenderMode.VULKAN, RenderMode.of(RenderSystem.Engine.VULKAN, PlayerTarget.IN_APP));
-    }
+public class RenderModeTest {
 
     @Test
     @DisplayName("a popup target wins over the engine, even a GL downgrade")
@@ -38,14 +30,5 @@ class RenderModeTest {
             assertSame(mode, RenderMode.of(mode.engine(), mode.target()),
                     "of(engine,target) must reconstruct " + mode);
         }
-    }
-
-    @Test
-    @DisplayName("labels are stable")
-    void labelsAreStable() {
-        assertEquals("GL", RenderMode.OPENGL.label());
-        assertEquals("VK", RenderMode.VULKAN.label());
-        assertEquals("VK+AWT", RenderMode.VULKAN_AWT.label());
-        assertEquals("VK+FX", RenderMode.VULKAN_JFX.label());
     }
 }

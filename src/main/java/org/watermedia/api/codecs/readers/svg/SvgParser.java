@@ -222,11 +222,10 @@ final class SvgParser {
         return finite(switch (unit) {
             case "", "px" -> num;
             case "pt" -> num * 96.0 / 72.0;
-            case "pc" -> num * 16.0;
+            case "pc", "em" -> num * 16.0;
             case "in" -> num * 96.0;
             case "cm" -> num * 96.0 / 2.54;
             case "mm" -> num * 96.0 / 25.4;
-            case "em" -> num * 16.0;
             case "ex" -> num * 8.0;
             default -> num; // INCLUDING "%": HANDLED BY CALLERS THAT HAVE A REFERENCE LENGTH
         });

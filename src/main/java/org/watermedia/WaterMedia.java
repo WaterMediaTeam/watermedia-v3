@@ -85,8 +85,9 @@ public final class WaterMedia {
         try {
             for (final Definition definition: modules) {
                 type = null;
+                WaterMediaModule module = null;
                 try {
-                    final WaterMediaModule module = definition.factory().get();
+                    module = definition.factory().get();
                     if (module != null) {
                         type = module.getClass();
                         status = new Status(State.LOADING, type, done, modules.size(), List.copyOf(failures));
@@ -94,6 +95,8 @@ public final class WaterMedia {
                         for (final Throwable partial: module.failures()) failures.add(new Failure(type, partial));
                     }
                 } catch (final Exception | LinkageError failure) {
+                    // THE PARTIAL FAILURES A MODULE REGISTERED BEFORE THROWING STAY LISTED NEXT TO THE ONE THAT ENDED IT
+                    if (module != null) for (final Throwable partial: module.failures()) failures.add(new Failure(type, partial));
                     final Failure failed = new Failure(type, failure);
                     failures.add(failed);
                     final boolean interrupted = failure instanceof InterruptedException;
@@ -195,7 +198,7 @@ public final class WaterMedia {
         private static final Supplier<WaterMediaModule> BINARIES = WaterMediaBinaries::new;
     }
 
-    /** The load state: the module being loaded (null between modules), modules done out of total, and every failure so far, the essential one that ended the load included. */
+    /** The load state: the module whose load started last (null before the first one and once the load ended), modules done out of total, and every failure so far, the essential one that ended the load included. */
     public record Status(State state, Class<?> loading, int done, int total, List<Failure> failures) {
         public Status {
             failures = List.copyOf(failures);

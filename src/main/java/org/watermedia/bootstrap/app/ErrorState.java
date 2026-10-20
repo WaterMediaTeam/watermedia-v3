@@ -16,10 +16,6 @@ final class ErrorState {
         this.message = message; // WRITTEN LAST: has() GATES ON message, SO title/onClose PUBLISH FIRST
     }
 
-    public void show(final String message, final Runnable onClose) {
-        this.show("Error", message, onClose);
-    }
-
     public boolean has() {
         return this.message != null;
     }

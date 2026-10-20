@@ -25,7 +25,6 @@ public final class RootScreen {
     private final ParentFrame tree;
     private final TitleBar titleBar;
     private final ParentFrame centerSlot;
-    private final KeybindsBar keybindsBar;
     private final ParentFrame dialogs;
     private Element<?> captured; // VIEW THAT CLAIMED THE CURRENT PRESS AND RECEIVES DRAG/RELEASE
     private boolean wasDragging;
@@ -38,12 +37,11 @@ public final class RootScreen {
         this.canvas = new Canvas(text);
         this.titleBar = new TitleBar();
         this.centerSlot = new ParentFrame().width(Element.MAX_PARENT).weight(1f);
-        this.keybindsBar = new KeybindsBar(keybinds);
         final Parent column = Parent.column()
                 .size(Element.MAX_PARENT, Element.MAX_PARENT)
                 .add(this.titleBar)
                 .add(this.centerSlot)
-                .add(this.keybindsBar);
+                .add(new KeybindsBar(keybinds));
         // GLOBAL DIALOGS LIVE IN THEIR OWN TOP LAYER, ABOVE THE SCREEN COLUMN
         this.dialogs = new ParentFrame().size(Element.MAX_PARENT, Element.MAX_PARENT);
         this.tree = new ParentFrame()
@@ -94,11 +92,6 @@ public final class RootScreen {
     /** The window titlebar. */
     public TitleBar titleBar() {
         return this.titleBar;
-    }
-
-    /** The footer keybinds/status bar. */
-    public KeybindsBar keybindsBar() {
-        return this.keybindsBar;
     }
 
     /** Whether a text input anywhere in the tree has keyboard focus. */

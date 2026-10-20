@@ -10,16 +10,20 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.zip.CRC32;
 import java.util.zip.DeflaterOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the PNG {@link IChunk} contract: {@code toChunk()} wraps exactly the {@code toBytes()} data with a
- * valid CRC, and every typed {@code read(ByteBuffer)} parses the written envelope through the same {@code convert}.
+ * valid CRC, every typed {@code read(ByteBuffer)} parses the written envelope through the same {@code convert},
+ * and {@link PngChunk#calculateCRC()} / {@link PngChunk#corrupted()} match the reference CRC-32 vectors that
+ * drive PNG {@code failOnCorruptedData}.
  */
 @DisplayName("PNG chunk contract")
 public class ChunkContractTest {
@@ -31,16 +35,12 @@ public class ChunkContractTest {
         @Test
         @DisplayName("Serializes an empty IEND chunk")
         void serializesEmptyChunk() throws IOException {
-            final PngChunk chunk = assertContract(new IEND(), IEND.SIGNATURE);
-            assertEquals(0, chunk.length());
-            assertEquals(0xAE426082, chunk.crc());
+            assertEquals(0, assertContract(new IEND(), IEND.SIGNATURE).length());
         }
 
         @Test
-        @DisplayName("Serializes structured metadata and animation control")
-        void serializesStructuredChunks() throws IOException {
-            assertContract(new IHDR(16, 9, 8, 6, 0, 0, 0), IHDR.SIGNATURE);
-            assertContract(new ACTL(3, 0), ACTL.SIGNATURE);
+        @DisplayName("Serializes frame data behind its sequence number")
+        void serializesFrameData() throws IOException {
             final PngChunk frameData = assertContract(new FDAT(7, new byte[] { 9, 10 }), FDAT.SIGNATURE);
             assertArrayEquals(new byte[] { 0, 0, 0, 7, 9, 10 }, frameData.data());
         }
@@ -232,6 +232,46 @@ public class ChunkContractTest {
             assertThrows(IllegalArgumentException.class, () -> ITXT.convert(text));
             assertThrows(IllegalArgumentException.class, () -> ICCP.convert(text));
             assertThrows(IllegalArgumentException.class, () -> SRGB.convert(text));
+        }
+    }
+
+    @Nested
+    @DisplayName("CRC")
+    class Crc {
+
+        @Test
+        @DisplayName("Matches the canonical IEND CRC-32 vector")
+        void iendReferenceVector() {
+            final PngChunk iend = new PngChunk(0, IEND.SIGNATURE, new byte[0], 0xAE426082);
+            assertEquals(0xAE426082, iend.calculateCRC(), "IEND CRC must equal the canonical 0xAE426082");
+            assertFalse(iend.corrupted(), "a chunk carrying its correct CRC must not be flagged corrupted");
+        }
+
+        @Test
+        @DisplayName("Matches the JDK CRC-32 over type + data")
+        void matchesJdkCrc() {
+            final byte[] data = { 1, 2, 3, 4, 5, (byte) 0xFF, 0, (byte) 0x80 };
+            final CRC32 ref = new CRC32();
+            // CRC IS COMPUTED OVER THE 4 TYPE BYTES (BIG-ENDIAN) FOLLOWED BY THE DATA
+            ref.update(new byte[] { 'I', 'D', 'A', 'T' });
+            ref.update(data);
+            final int expected = (int) ref.getValue();
+            final PngChunk good = new PngChunk(data.length, IDAT.SIGNATURE, data, expected);
+            assertEquals(expected, good.calculateCRC());
+            assertFalse(good.corrupted());
+            assertTrue(new PngChunk(data.length, IDAT.SIGNATURE, data, expected ^ 0x1).corrupted(), "a chunk whose stored CRC is wrong must be flagged corrupted");
+        }
+
+        @Test
+        @DisplayName("Envelope reads keep the wire CRC and leave its policy to the caller")
+        void wireCrc() throws IOException {
+            final TEXT text = new TEXT(TEXT.KEYWORD_TITLE, "WaterMedia");
+            assertFalse(PngChunk.read(envelope(text)).corrupted());
+            final ByteBuffer flipped = envelope(text);
+            flipped.put(flipped.limit() - 1, (byte) (flipped.get(flipped.limit() - 1) ^ 0x01));
+            assertTrue(PngChunk.read(flipped.duplicate()).corrupted(), "a flipped wire CRC is flagged corrupted");
+            // PngReader GATES THE CRC THROUGH failOnCorruptedData, SO THE TYPED PARSER MUST NOT DECIDE IT
+            assertEquals(text, TEXT.read(flipped));
         }
     }
 

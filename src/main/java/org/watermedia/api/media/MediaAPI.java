@@ -79,8 +79,8 @@ public final class MediaAPI {
      *
      * @param uri the media URI
      * @return the MRL instance (may still be loading)
-     * @throws NullPointerException  when {@code uri} is null
-     * @throws IllegalStateException before WaterMedia loads, and on dedicated servers
+     * @throws IllegalArgumentException when {@code uri} is null
+     * @throws IllegalStateException    before WaterMedia loads, and on dedicated servers
      */
     public static MRL mrl(final URI uri) {
         return MRL.get(uri);

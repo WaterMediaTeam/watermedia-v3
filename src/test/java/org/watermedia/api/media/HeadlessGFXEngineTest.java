@@ -14,11 +14,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the headless capture engine honors the shared {@link GFXEngine} contract: sentinel
- * texture, refused layouts, preload gating and an idempotent release that drops later uploads.
+ * texture, refused layouts, malformed plane sets, preload gating and an idempotent release that
+ * drops later uploads.
  */
 @DisplayName("HeadlessGFXEngine")
 public class HeadlessGFXEngineTest {
@@ -52,6 +54,21 @@ public class HeadlessGFXEngineTest {
         }
 
         @Test
+        @DisplayName("Empty plane sets, null or heap planes and missing strides are caller bugs that never reach the backend")
+        void malformedPlaneSets() {
+            final HeadlessGFXEngine gfx = MediaAPI.headlessEngine();
+            assertTrue(gfx.format(PixelFormat.BGRA, 2, 2, 8));
+            final ByteBuffer plane = ByteBuffer.allocateDirect(16);
+            assertThrows(IllegalArgumentException.class, () -> gfx.upload(null, new int[] { 0 }), "no plane array");
+            assertThrows(IllegalArgumentException.class, () -> gfx.upload(new ByteBuffer[0], new int[0]), "an empty plane set");
+            assertThrows(IllegalArgumentException.class, () -> gfx.upload(new ByteBuffer[] { null }, new int[] { 0 }), "a null plane");
+            assertThrows(IllegalArgumentException.class, () -> gfx.upload(new ByteBuffer[] { ByteBuffer.allocate(16) }, new int[] { 0 }), "a heap plane");
+            assertThrows(IllegalArgumentException.class, () -> gfx.upload(new ByteBuffer[] { plane }, new int[0]), "a missing stride");
+            assertEquals(0L, gfx.uploadCount(), "no malformed set reached the backend");
+            assertEquals(0L, gfx.texture());
+        }
+
+        @Test
         @DisplayName("Empty sizes, odd depths and compressed layouts are refused before reaching the backend")
         void refusedLayouts() {
             final HeadlessGFXEngine gfx = MediaAPI.headlessEngine();
@@ -71,13 +88,13 @@ public class HeadlessGFXEngineTest {
         @Test
         @DisplayName("preload(frames) follows the advertised capability and never aliases the producer's array")
         void preloadGating() {
-            assertFalse(MediaAPI.headlessEngine().preload(new ByteBuffer[] { ByteBuffer.allocateDirect(4) }, 0),
+            assertFalse(MediaAPI.headlessEngine().preload(new ByteBuffer[] { ByteBuffer.allocateDirect(4) }),
                     "an engine without the capability refuses frame sets");
             final HeadlessGFXEngine gfx = MediaAPI.headlessEngine(true);
             final ByteBuffer[] frames = { ByteBuffer.allocateDirect(4) };
-            assertFalse(gfx.preload(new ByteBuffer[0], 0));
-            assertFalse(gfx.preload(null, 0));
-            assertTrue(gfx.preload(frames, 0));
+            assertFalse(gfx.preload(new ByteBuffer[0]));
+            assertFalse(gfx.preload(null));
+            assertTrue(gfx.preload(frames));
             assertNotSame(frames, gfx.preloadedFrames());
             assertNotSame(gfx.preloadedFrames(), gfx.preloadedFrames());
             assertNotEquals(0L, gfx.texture());

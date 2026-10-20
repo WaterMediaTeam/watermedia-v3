@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies {@link ThreadTool}'s naming (one counter per name across every creator), its daemon and
- * priority defaults, and the owned-worker mark of worker and group factories.
+ * priority defaults, and the owned-worker mark of worker factories.
  */
 @DisplayName("ThreadTool")
 public class ThreadToolTest {
@@ -75,17 +75,7 @@ public class ThreadToolTest {
             host.start();
             assertFalse(ordinary.get(2, TimeUnit.SECONDS));
             host.join(2_000);
-        }
-
-        @Test
-        @DisplayName("worker factory threads are owned workers while ThreadTool.thread stays a host thread")
-        void groupThreadsAreOwned() throws Exception {
-            final FutureTask<Boolean> grouped = new FutureTask<>(ThreadTool::workerThread);
-            final Thread groupThread = ThreadTool.workerFactory("ThreadToolTest-group", Thread.NORM_PRIORITY).newThread(grouped);
-            groupThread.start();
-            assertTrue(grouped.get(2, TimeUnit.SECONDS));
-            groupThread.join(2_000);
-
+            // ThreadTool.thread STARTS A HOST THREAD TOO
             final FutureTask<Boolean> plain = new FutureTask<>(ThreadTool::workerThread);
             final Thread started = ThreadTool.thread("ThreadToolTest-plain", plain);
             assertFalse(plain.get(2, TimeUnit.SECONDS));

@@ -49,11 +49,7 @@ final class Predictor {
                                      final int yOff, final int prevRow, final int width,
                                      final int xStart, final int xEnd) {
         final int lastX = width - 1;
-        final int rowStart = yOff;
         switch (mode) {
-            case 0 -> {
-                for (int x = xStart; x < xEnd; x++) pixels[yOff + x] = addPixels(pixels[yOff + x], 0xFF000000);
-            }
             case 1 -> {
                 for (int x = xStart; x < xEnd; x++) pixels[yOff + x] = addPixels(pixels[yOff + x], pixels[yOff + x - 1]);
             }
@@ -62,7 +58,7 @@ final class Predictor {
             }
             case 3 -> {
                 for (int x = xStart; x < xEnd; x++) {
-                    final int tr = (x < lastX) ? pixels[prevRow + x + 1] : pixels[rowStart];
+                    final int tr = (x < lastX) ? pixels[prevRow + x + 1] : pixels[yOff];
                     pixels[yOff + x] = addPixels(pixels[yOff + x], tr);
                 }
             }
@@ -73,7 +69,7 @@ final class Predictor {
                 for (int x = xStart; x < xEnd; x++) {
                     final int L = pixels[yOff + x - 1];
                     final int T = pixels[prevRow + x];
-                    final int TR = (x < lastX) ? pixels[prevRow + x + 1] : pixels[rowStart];
+                    final int TR = (x < lastX) ? pixels[prevRow + x + 1] : pixels[yOff];
                     pixels[yOff + x] = addPixels(pixels[yOff + x], avg2(avg2(L, TR), T));
                 }
             }
@@ -95,7 +91,7 @@ final class Predictor {
             case 9 -> {
                 for (int x = xStart; x < xEnd; x++) {
                     final int T = pixels[prevRow + x];
-                    final int TR = (x < lastX) ? pixels[prevRow + x + 1] : pixels[rowStart];
+                    final int TR = (x < lastX) ? pixels[prevRow + x + 1] : pixels[yOff];
                     pixels[yOff + x] = addPixels(pixels[yOff + x], avg2(T, TR));
                 }
             }
@@ -104,7 +100,7 @@ final class Predictor {
                     final int L = pixels[yOff + x - 1];
                     final int T = pixels[prevRow + x];
                     final int TL = pixels[prevRow + x - 1];
-                    final int TR = (x < lastX) ? pixels[prevRow + x + 1] : pixels[rowStart];
+                    final int TR = (x < lastX) ? pixels[prevRow + x + 1] : pixels[yOff];
                     pixels[yOff + x] = addPixels(pixels[yOff + x], avg2(avg2(L, TL), avg2(T, TR)));
                 }
             }
@@ -132,6 +128,7 @@ final class Predictor {
                     pixels[yOff + x] = addPixels(pixels[yOff + x], clampAddSubHalf(avg2(L, T), TL));
                 }
             }
+            // MODE 0 AND THE RESERVED MODES 14-15 ADD OPAQUE BLACK
             default -> {
                 for (int x = xStart; x < xEnd; x++) pixels[yOff + x] = addPixels(pixels[yOff + x], 0xFF000000);
             }

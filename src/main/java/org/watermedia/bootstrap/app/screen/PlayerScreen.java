@@ -92,7 +92,6 @@ public final class PlayerScreen extends Screen {
     private boolean sourceFollowPending;
 
     // TREE
-    private Hud hud;
     private Dialog qualityDialog;
     private ListView<MRL.Source> srcList;
     private ListView<MediaQuality> qualList;
@@ -115,10 +114,9 @@ public final class PlayerScreen extends Screen {
 
     @Override
     protected Element<?> build() {
-        this.hud = new Hud();
         // VIDEO AREA STACK: THE FRAME BLIT AT THE BOTTOM, THE LOCALIZED CRT EFFECT OVER IT (GATED BY ctx.crt,
         // NEVER HIT-TESTABLE), AND THE HUD ON TOP. THE GLOBAL SHELL CRT IS GONE — THIS IS THE PLAYER'S OWN
-        return new ParentFrame().add(new VideoSurface()).add(new CrtOverlay()).add(this.hud);
+        return new ParentFrame().add(new VideoSurface()).add(new CrtOverlay()).add(new Hud());
     }
 
     @Override
@@ -848,7 +846,7 @@ public final class PlayerScreen extends Screen {
     }
 
     // SECTION HEADER (NEON PIP + BOLD LABEL + FAINT COUNT) — CANVAS PORT OF THE LEGACY DIALOG HEADS
-    private final class SectionHead extends Element<SectionHead> {
+    private static final class SectionHead extends Element<SectionHead> {
 
         private final String label;
         private String count = "";
@@ -975,7 +973,7 @@ public final class PlayerScreen extends Screen {
     }
 
     // QUALITY ROW: SELECTION PIP + BOLD NAME + THRESHOLD VALUE
-    private final class QualityRow extends Element<QualityRow> {
+    private static final class QualityRow extends Element<QualityRow> {
 
         private final MediaQuality quality;
 
@@ -1112,7 +1110,7 @@ public final class PlayerScreen extends Screen {
             y = this.head(canvas, "ENGINE", x, y);
             y = this.metric(canvas, "Engine", player.getClass().getSimpleName(), x, y, AppTheme.NEON_LIGHT);
             if (ctx.selectedMRL != null) {
-                y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.selectedMRL.uri().toString(), x, y, AppTheme.TEXT_SOFT, 2);
+                y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.selectedMRL.uri().toString(), x, y);
             }
             y = this.metric(canvas, "Source", (ctx.sourceSelectorIndex + 1) + "/" +
                     (ctx.availableSources != null ? ctx.availableSources.length : 1), x, y, AppTheme.TEXT_SOFT);
@@ -1134,7 +1132,7 @@ public final class PlayerScreen extends Screen {
             y = this.head(canvas, "METADATA", x, y);
 
             if (meta != null) {
-                y = this.wrappedMetric(canvas, this.titleWrap, "Title", meta.title(), x, y, AppTheme.TEXT_SOFT, 2);
+                y = this.wrappedMetric(canvas, this.titleWrap, "Title", meta.title(), x, y);
                 y = this.metric(canvas, "Author", meta.author(), x, y, AppTheme.TEXT_SOFT);
                 if (meta.postedAt() != null) {
                     y = this.metric(canvas, "Published", PlayerScreen.this.formatDate(meta), x, y, AppTheme.TEXT_SOFT);
@@ -1171,16 +1169,16 @@ public final class PlayerScreen extends Screen {
             return y + text.lineHeight(META_SCALE) + 4;
         }
 
-        private int wrappedMetric(final Canvas canvas, final WrapCache cache, final String label, final String value, final int x, final int y,
-                                  final Color valueColor, final int maxLines) {
+        // A LONG VALUE WRAPS ONTO AT MOST TWO LINES
+        private int wrappedMetric(final Canvas canvas, final WrapCache cache, final String label, final String value, final int x, final int y) {
             final TextRenderer text = PlayerScreen.this.text;
             final int valueX = this.valueX(x);
             final int maxPixelW = Math.max(80, this.left + this.measuredWidth - valueX - 14);
-            final List<String> lines = cache.lines(value, maxPixelW, META_SCALE, maxLines);
+            final List<String> lines = cache.lines(value, maxPixelW, META_SCALE, 2);
             canvas.text(label + ":", x, y, AppTheme.TEXT_FAINT, META_SCALE, false);
             final int lineH = text.lineHeight(META_SCALE) + 2;
             for (int i = 0; i < lines.size(); i++) {
-                canvas.text(lines.get(i), valueX, y + i * lineH, valueColor, META_SCALE, false);
+                canvas.text(lines.get(i), valueX, y + i * lineH, AppTheme.TEXT_SOFT, META_SCALE, false);
             }
             return y + Math.max(text.lineHeight(META_SCALE), lines.size() * lineH) + 4;
         }
@@ -1331,8 +1329,6 @@ public final class PlayerScreen extends Screen {
         private boolean errorMode = true;
         private boolean multiSource;
         private int transportYL;   // LOCAL Y OF THE TRANSPORT BAR TOP
-        private int panelW;
-        private int panelH;
         private int barW;
         private String leftTime = "";
         private String rightTime = "--:--";
@@ -1483,9 +1479,7 @@ public final class PlayerScreen extends Screen {
             // LOCAL GEOMETRY (WINDOW X == LOCAL X; Y IS OFFSET BY this.top AT LAYOUT). LEGACY:
             // transportY = max(TITLEBAR_H + 120, windowH - FOOTER_H - 92) → LOCAL max(120, H - 92)
             this.transportYL = Math.max(120, innerAvailHeight - 92);
-            this.panelW = MathUtil.clamp(innerAvailWidth / 4, 240, 405);
-            this.panelH = Math.max(220, this.transportYL - 80 - 14);
-            this.metrics.size(this.panelW, this.panelH);
+            this.metrics.size(MathUtil.clamp(innerAvailWidth / 4, 240, 405), Math.max(220, this.transportYL - 80 - 14));
 
             final MediaPlayer p = PlayerScreen.this.ctx.player;
             final long duration = p == null ? 0 : Math.max(0, p.duration());

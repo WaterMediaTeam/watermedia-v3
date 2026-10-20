@@ -108,8 +108,8 @@ public final class KickPlatform implements Platform {
         if (video.livestream == null || playback == null)
             throw new PlatformException(NAME, "VOD '" + id + "' is unavailable (no usable playback URL)");
 
-        final String username = video.livestream.channel != null && video.livestream.channel.user != null
-                ? video.livestream.channel.user.username : null;
+        final User user = video.livestream.channel != null ? video.livestream.channel.user : null;
+        final String username = user != null ? user.username : null;
 
         if (video.livestream.channel != null && video.livestream.channel.banned)
             throw new PlatformException(NAME, "Streamer '" + username + "' is banned");
@@ -131,7 +131,7 @@ public final class KickPlatform implements Platform {
 
         LOGGER.debug(IT, "Kick resolved VOD '{}' with {} variant(s)", id, vodVariants.size());
         final var entry = new Source(MediaType.VIDEO,
-                video.livestream.channel != null && video.livestream.channel.user != null ? DataTool.uri(video.livestream.channel.user.profilePic) : null,
+                user != null ? DataTool.uri(user.profilePic) : null,
                 vodMetadata,
                 headers,
                 vodVariants,

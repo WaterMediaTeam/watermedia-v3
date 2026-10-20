@@ -92,13 +92,13 @@ final class FrameQueue {
      * <p>
      * Caller contract:
      * <ol>
-     *   <li>Call {@link #peekWritable()} to get a slot</li>
+     *   <li>Call this method to get a slot</li>
      *   <li>{@code av_frame_move_ref(slot.frame, decodedFrame)}</li>
      *   <li>Fill {@code slot.ptsMs}, {@code slot.serial}, etc.</li>
      *   <li>Call {@link #push()}</li>
      * </ol>
      *
-     * @return writable slot, or null if the queue was aborted.
+     * @return writable slot, or null when the queue was aborted or the wait was interrupted
      */
     public Slot peekWritable() {
         synchronized (this.lock) {
@@ -164,7 +164,7 @@ final class FrameQueue {
      * Consumes the current frame: advances {@code readIndex} and releases pixel buffers.
      * Calls {@code av_frame_unref} internally — pixel buffers are returned to the FFmpeg pool.
      * <p>
-     * After {@link #next()}, the previous slot is no longer valid.
+     * After this call, the previous slot is no longer valid.
      */
     public void next() {
         synchronized (this.lock) {
@@ -208,7 +208,7 @@ final class FrameQueue {
         }
     }
 
-    /** Abort signal — unblocks {@link #peekWritable()} immediately. */
+    /** Abort signal — unblocks {@link #peekWritable()} immediately; every peek answers null until {@link #reset()}. */
     public void abort() {
         synchronized (this.lock) {
             this.aborted = true;
@@ -216,7 +216,7 @@ final class FrameQueue {
         }
     }
 
-    /** Resets the abort flag to reuse the queue (e.g. on a quality switch). */
+    /** Discards the pending frames and clears the abort flag so the queue can be reused (e.g. on a quality switch). */
     public void reset() {
         synchronized (this.lock) {
             this.flush();
@@ -226,7 +226,7 @@ final class FrameQueue {
 
     /**
      * Releases the AVFrame structs. Call only during final player cleanup.
-     * After {@link #free()}, the queue is not reusable.
+     * After this call, the queue is not reusable.
      */
     public void free() {
         this.flush();

@@ -18,10 +18,10 @@ import java.nio.ByteBuffer;
  * <p>
  * Every backend shares one lifecycle contract: {@link #release()} is idempotent, may run on any
  * thread but never concurrently with a format or upload, and leaves the engine inert
- * ({@link #texture()} returns 0, formats are refused and uploads are dropped). Uploads never
- * throw: a backend that hits a driver failure logs it, drops the frame and keeps the last texture
- * it published. Software and headless backends expose a non-zero sentinel texture because they
- * have no GPU handle.
+ * ({@link #texture()} returns 0, formats are refused and uploads are dropped). A backend failure
+ * never throws from an upload: the backend logs it, drops the frame and keeps the last texture it
+ * published. Software and headless backends expose a non-zero sentinel texture because they have
+ * no GPU handle.
  */
 public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEngine, SWEngine {
     // NON-ZERO HANDLE FOR BACKENDS WITHOUT A GPU TEXTURE (SOFTWARE SURFACES, HEADLESS CAPTURE): NEVER A VALID GL NAME
@@ -34,6 +34,8 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     volatile int bits = 8;
     volatile Colorimetry color;
     volatile boolean released;
+    // A FRAME IS PRESENT ON A BACKEND WITHOUT A GPU HANDLE (SEE texture); GPU BACKENDS PUBLISH THEIR OWN HANDLE INSTEAD
+    volatile boolean framed;
 
     // SINGLE ENFORCEMENT POINT: EVERY ENGINE CONSTRUCTION PASSES THROUGH HERE, HEADLESS CAPTURE INCLUDED.
     GFXEngine() {
@@ -96,7 +98,7 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
      * non-zero sentinel once a frame is present, so hosts only test the handle against 0.
      * @return texture handle, or 0 if no frame has been uploaded yet or the engine was released
      */
-    public abstract long texture();
+    public long texture() { return this.released || !this.framed ? 0L : SENTINEL_TEXTURE; }
 
     /** Whether the engine consumes 8-bit frames in {@code format} directly; see {@link #supports(PixelFormat, int)}. */
     public final boolean supports(final PixelFormat format) { return this.supports(format, 8); }
@@ -123,9 +125,9 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
      */
     public boolean preload() { return false; }
 
-    // OPTIONAL FAST PATH: ONE TEXTURE PER FRAME OF THE SET, IN format() (RAW PIXELS OR BCn BLOCKS); THE BUFFERS MUST OUTLIVE
-    // THE NEXT preload/format/release AND A PROGRESSIVE ENGINE CLAMPS frame() TO THE UPLOADED PREFIX. FALSE = UNSUPPORTED
-    boolean preload(final ByteBuffer[] frames, final int stride) { return false; }
+    // OPTIONAL FAST PATH: ONE TEXTURE PER TIGHTLY PACKED FRAME OF THE SET, IN format() (RAW PIXELS OR BCn BLOCKS); THE BUFFERS
+    // MUST OUTLIVE THE NEXT preload/format/release AND A PROGRESSIVE ENGINE CLAMPS frame() TO THE UPLOADED PREFIX. FALSE = UNSUPPORTED
+    boolean preload(final ByteBuffer[] frames) { return false; }
 
     // SELECTS THE PRELOADED FRAME TEXTURE EXPOSED BY texture()
     void frame(final int index) {}
@@ -138,12 +140,13 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     // SINCE DESTROYING AN IMPORT AFTER ITS HOST MEMORY IS GONE CRASHES THE DRIVER. NEVER CONCURRENT WITH upload
     void release(final ByteBuffer buffer) {}
 
-    // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(), EACH OF minBytes; STRIDES IN BYTES, 0 = TIGHT): READS
-    // [position, limit) WITHOUT MOVING position AND MAY KEEP READING UNTIL THE SECOND LATER upload RETURNS, SO CALLERS PASS FRESH ARRAYS
+    // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(), EACH OF minBytes; STRIDES IN BYTES, 0 = TIGHT), READING [position, limit)
+    // UNMOVED UNTIL THE SECOND LATER upload RETURNS (CALLERS PASS FRESH ARRAYS). AN EMPTY SET, A NULL OR HEAP PLANE OR A MISSING STRIDE IS A CALLER BUG
     final void upload(final ByteBuffer[] planes, final int[] strides) {
-        if (planes == null || strides == null || strides.length < planes.length)
-            throw new IllegalArgumentException("Every plane needs a buffer and a stride");
-        for (final ByteBuffer plane: planes) if (plane == null) throw new IllegalArgumentException("A plane buffer cannot be null");
+        if (planes == null || planes.length == 0 || strides == null || strides.length < planes.length)
+            throw new IllegalArgumentException("A frame needs at least one plane and a stride per plane");
+        for (final ByteBuffer plane: planes)
+            if (plane == null || !plane.isDirect()) throw new IllegalArgumentException("Plane buffers must be direct and non-null");
         if (this.released) return;
         this.push(planes, strides);
     }

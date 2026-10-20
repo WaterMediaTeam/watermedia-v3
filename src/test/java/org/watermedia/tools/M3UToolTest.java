@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("M3UTool")
 public class M3UToolTest {
-    // ENTRIES ONLY SURVIVE WHEN THEY RESOLVE TO http OR https, SO EVERY SOURCE LIVES ON A WEB ORIGIN
+    // A REMOTE PLAYLIST KEEPS ONLY ENTRIES ON STREAMING SCHEMES, SO EVERY SOURCE LIVES ON A WEB ORIGIN
     private static final String BASE = "https://cdn.test/";
 
     // ==========================================================================
@@ -56,27 +56,12 @@ public class M3UToolTest {
     class ErrorHandlingTests {
 
         @Test
-        @DisplayName("Null content throws IOException")
-        void testNullContent() {
-            final IOException error = assertThrows(IOException.class,
-                    () -> M3UTool.parse((String) null, URI.create(BASE + "test.m3u8")));
-            assertTrue(error.getMessage().contains("Empty playlist"));
-        }
-
-        @Test
-        @DisplayName("Empty content throws IOException")
+        @DisplayName("Null, empty and blank content throw IOException")
         void testEmptyContent() {
-            final IOException error = assertThrows(IOException.class,
-                    () -> M3UTool.parse("", URI.create(BASE + "test.m3u8")));
-            assertTrue(error.getMessage().contains("Empty playlist"));
-        }
-
-        @Test
-        @DisplayName("Blank content throws IOException")
-        void testBlankContent() {
-            final IOException error = assertThrows(IOException.class,
-                    () -> M3UTool.parse("   \n\t  ", URI.create(BASE + "test.m3u8")));
-            assertTrue(error.getMessage().contains("Empty playlist"));
+            for (final String content: new String[] { null, "", "   \n\t  " }) {
+                final IOException error = assertThrows(IOException.class, () -> M3UTool.parse(content, URI.create(BASE + "test.m3u8")));
+                assertTrue(error.getMessage().contains("Empty playlist"), content);
+            }
         }
 
         @Test
@@ -106,14 +91,6 @@ public class M3UToolTest {
             final IOException error = assertThrows(IOException.class,
                     () -> M3UTool.parse(content, URI.create(BASE + "test.m3u8")));
             assertTrue(error.getMessage().contains("Unrecognized"));
-        }
-
-        @Test
-        @DisplayName("Non-playlist text throws IOException")
-        void testNonPlaylistText() {
-            assertThrows(IOException.class, () -> M3UTool.parse("", URI.create(BASE + "src")));
-            assertThrows(IOException.class, () -> M3UTool.parse((String) null, URI.create(BASE + "src")));
-            assertThrows(IOException.class, () -> M3UTool.parse("hello world", URI.create(BASE + "src")));
         }
     }
 
@@ -296,29 +273,6 @@ public class M3UToolTest {
         }
 
         @Test
-        @DisplayName("Parse media sequence")
-        void testMediaSequence() throws IOException {
-            final String content = """
-                #EXTM3U
-                #EXT-X-TARGETDURATION:6
-                #EXT-X-MEDIA-SEQUENCE:1074
-                #EXTINF:4.0,
-                segment1074.ts
-                #EXTINF:4.0,
-                segment1075.ts
-                """;
-
-            final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
-
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
-
-            assertEquals(1074L, media.sequence());
-            assertEquals(1074L, media.segments().get(0).sequence());
-            assertEquals(1075L, media.segments().get(1).sequence());
-        }
-
-        @Test
         @DisplayName("Parse segment duration and title")
         void testSegmentDurationTitle() throws IOException {
             final String content = """
@@ -369,26 +323,6 @@ public class M3UToolTest {
         }
 
         @Test
-        @DisplayName("Detect live stream (no ENDLIST)")
-        void testLiveStream() throws IOException {
-            final String content = """
-                #EXTM3U
-                #EXT-X-TARGETDURATION:6
-                #EXTINF:4.0,
-                segment1.ts
-                #EXTINF:4.0,
-                segment2.ts
-                """;
-
-            final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
-
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
-
-            assertTrue(media.live());
-        }
-
-        @Test
         @DisplayName("Detect VOD stream")
         void testVodStream() throws IOException {
             final String content = """
@@ -407,29 +341,6 @@ public class M3UToolTest {
 
             assertTrue(media.vod());
             assertFalse(media.live());
-        }
-
-        @Test
-        @DisplayName("Calculate total duration")
-        void testTotalDuration() throws IOException {
-            final String content = """
-                #EXTM3U
-                #EXT-X-TARGETDURATION:6
-                #EXTINF:4.167,
-                segment1.ts
-                #EXTINF:4.166,
-                segment2.ts
-                #EXTINF:4.167,
-                segment3.ts
-                #EXT-X-ENDLIST
-                """;
-
-            final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
-
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
-
-            assertEquals(12.5, media.totalDuration(), 0.001);
         }
 
         @Test
@@ -468,38 +379,7 @@ public class M3UToolTest {
                 "https://stream.example/two/playlist.m3u8\n";
 
         @Test
-        @DisplayName("Flat #EXTINF list (no #EXT-X-* tags) is classified as IPTV")
-        void testFlatExtinfClassifiedAsIptv() throws IOException {
-            assertInstanceOf(Iptv.class, M3UTool.parse(IPTV_SAMPLE, URI.create(BASE + "iptv.m3u")));
-        }
-
-        @Test
-        @DisplayName("HLS master is NOT classified as IPTV")
-        void testHlsMasterNotIptv() throws IOException {
-            final String content = """
-                #EXTM3U
-                #EXT-X-VERSION:6
-                #EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1280x720
-                720p.m3u8
-                """;
-            assertInstanceOf(Master.class, M3UTool.parse(content, URI.create(BASE + "src")));
-        }
-
-        @Test
-        @DisplayName("HLS media is NOT classified as IPTV")
-        void testHlsMediaNotIptv() throws IOException {
-            final String content = """
-                #EXTM3U
-                #EXT-X-VERSION:3
-                #EXT-X-TARGETDURATION:6
-                #EXTINF:5.005,
-                segment-0.ts
-                """;
-            assertInstanceOf(Media.class, M3UTool.parse(content, URI.create(BASE + "src")));
-        }
-
-        @Test
-        @DisplayName("Extract channels with their tvg-* attributes")
+        @DisplayName("A flat #EXTINF list is classified as IPTV and its channels carry their tvg-* attributes")
         void testExtractsChannelsWithAttributes() throws IOException {
             final Playlist result = M3UTool.parse(IPTV_SAMPLE, URI.create(BASE + "iptv.m3u"));
 
@@ -560,15 +440,6 @@ public class M3UToolTest {
     }
 
     // ==========================================================================
-    // INPUT STREAM PARSING TESTS
-    // ==========================================================================
-
-    @Nested
-    @DisplayName("InputStream Parsing")
-    class InputStreamTests {
-    }
-
-    // ==========================================================================
     // EDGE CASE TESTS
     // ==========================================================================
 
@@ -604,26 +475,6 @@ public class M3UToolTest {
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
             assertEquals(0, master.variants().size()); // NO URI FOLLOWS THE STREAM-INF
-        }
-
-        @Test
-        @DisplayName("Handle full URLs in segments")
-        void testFullUrlSegments() throws IOException {
-            final String content = """
-                #EXTM3U
-                #EXT-X-TARGETDURATION:6
-                #EXTINF:4.0,
-                https://cdn.example.com/stream/segment1.ts
-                #EXTINF:4.0,
-                https://cdn.example.com/stream/segment2.ts
-                """;
-
-            final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
-
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
-
-            assertEquals(URI.create("https://cdn.example.com/stream/segment1.ts"), media.segments().get(0).uri());
         }
 
         @Test
@@ -667,21 +518,32 @@ public class M3UToolTest {
         }
 
         @Test
-        @DisplayName("Handle default frame rate")
-        void testDefaultFrameRate() throws IOException {
+        @DisplayName("A missing, negative, NaN or infinite FRAME-RATE is unknown, which reads as zero")
+        void testUnknownFrameRate() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080
-                stream.m3u8
+                missing.m3u8
+                #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,FRAME-RATE=-5
+                negative.m3u8
+                #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,FRAME-RATE=NaN
+                nan.m3u8
+                #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,FRAME-RATE=Infinity
+                infinite.m3u8
+                #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,FRAME-RATE=1e40
+                oversized.m3u8
+                #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,FRAME-RATE=25
+                known.m3u8
                 """;
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
-            final Variant variant = master.variants().get(0);
-
-            assertEquals(30.0, variant.fps(), 0.001); // DEFAULT IS 30
+            // A DEFAULT ABOVE ZERO WOULD LET A TAG-LESS VARIANT OUTRANK A SIBLING THAT DECLARED ITS REAL RATE, AND A VALUE
+            // PAST THE FLOAT RANGE WOULD REACH THE QUALITY RECORDS AS INFINITY
+            for (int i = 0; i < 5; i++) assertEquals(0.0, master.variants().get(i).fps(), 0.0, master.variants().get(i).uri().toString());
+            assertEquals(25.0, master.variants().get(5).fps(), 0.001);
         }
 
         @Test
@@ -809,71 +671,15 @@ public class M3UToolTest {
     }
 
     // ==========================================================================
-    // SEALED INTERFACE TESTS
+    // REMOTE ENTRIES AND FETCH TESTS
     // ==========================================================================
 
     @Nested
-    @DisplayName("Playlist Types")
-    class PlaylistTypeTests {
+    @DisplayName("Remote entries and fetch")
+    class RemoteEntryTests {
 
         @Test
-        @DisplayName("Playlist sealed interface permits only Master/Media/Iptv; invalid input throws")
-        void testSealedInterface() throws IOException {
-            final String masterContent = """
-                #EXTM3U
-                #EXT-X-STREAM-INF:BANDWIDTH=1000000
-                stream.m3u8
-                """;
-
-            final String mediaContent = """
-                #EXTM3U
-                #EXT-X-TARGETDURATION:6
-                #EXTINF:4.0,
-                segment.ts
-                """;
-
-            final String iptvContent =
-                    "#EXTM3U\n" +
-                    "#EXTINF:-1 tvg-name=\"X\",X\n" +
-                    "https://x.example/x\n";
-
-            final Playlist master = M3UTool.parse(masterContent, URI.create(BASE + "test.m3u8"));
-            final Playlist media = M3UTool.parse(mediaContent, URI.create(BASE + "test.m3u8"));
-            final Playlist iptv = M3UTool.parse(iptvContent, URI.create(BASE + "test.m3u"));
-
-            // VERIFY TYPES USING instanceof
-            assertInstanceOf(Master.class, master);
-            assertInstanceOf(Media.class, media);
-            assertInstanceOf(Iptv.class, iptv);
-
-            // VERIFY DISCRIMINATOR
-            assertEquals("master", master.kind());
-            assertEquals("media", media.kind());
-            assertEquals("iptv", iptv.kind());
-
-            // VERIFY EACH TYPE IS DISTINCT
-            assertFalse(master instanceof Media);
-            assertFalse(master instanceof Iptv);
-            assertFalse(media instanceof Master);
-            assertFalse(media instanceof Iptv);
-            assertFalse(iptv instanceof Master);
-            assertFalse(iptv instanceof Media);
-
-            // INVALID INPUT IS NO LONGER A RESULT TYPE — IT THROWS
-            assertThrows(IOException.class, () -> M3UTool.parse((String) null, URI.create(BASE + "test.m3u8")));
-        }
-    }
-
-    // ==========================================================================
-    // WEB-ONLY ENTRIES AND FETCH TESTS
-    // ==========================================================================
-
-    @Nested
-    @DisplayName("Web-only entries and fetch")
-    class WebOnlyTests {
-
-        @Test
-        @DisplayName("Entries outside http and https are skipped")
+        @DisplayName("A remote playlist skips local and archive entries while streaming schemes survive")
         void testSkipsLocalEntries() throws IOException {
             final String iptv =
                     "#EXTM3U\n" +

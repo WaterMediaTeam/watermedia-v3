@@ -2,6 +2,7 @@ package org.watermedia.api.media;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MediaPlayer.Status;
 import org.watermedia.test.support.Fixtures;
@@ -20,8 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Verifies that status listeners hear transitions in the order the statuses changed, even while two threads drive one
- * player, and never run under a lock of the player, so a listener can wait for another thread that calls into it.
+ * Verifies that status listeners hear transitions in the order the statuses changed, even while several threads drive
+ * one player, and never run under a lock of the player, so a listener can wait for another thread that calls into it.
  */
 @DisplayName("Status delivery")
 public class StatusDeliveryTest {
@@ -32,53 +33,63 @@ public class StatusDeliveryTest {
     @BeforeAll
     static void boot() { MediaBootstrap.client(); }
 
-    @Test
-    @DisplayName("Concurrent pauses and resumes are heard in the order the statuses changed")
-    void transitionsArriveInOrder() throws Exception {
-        final ServerMediaPlayer player = MediaAPI.serverPlayer();
-        final AtomicReference<String> broken = new AtomicReference<>();
-        final AtomicReference<Status> last = new AtomicReference<>();
-        final AtomicInteger heard = new AtomicInteger();
-        player.onStatus((p, previous, current) -> {
-            // EACH TRANSITION MUST START WHERE THE ONE HEARD BEFORE IT ENDED
-            heard.incrementAndGet();
-            final Status before = last.getAndSet(current);
-            if (before != null && before != previous) broken.compareAndSet(null, previous + "->" + current + " heard after " + before);
-        });
-        try {
-            assertTrue(player.start());
-            final CountDownLatch go = new CountDownLatch(1);
-            final Runnable toggler = () -> {
-                try { go.await(); }
-                catch (final InterruptedException e) { return; }
-                for (int i = 0; i < ROUNDS; i++) player.pause(i % 2 == 0);
-            };
-            final Thread[] togglers = new Thread[TOGGLERS];
-            for (int i = 0; i < togglers.length; i++) {
-                togglers[i] = new Thread(toggler, "toggler-" + i);
-                togglers[i].start();
+    @Nested
+    @DisplayName("Ordering")
+    class Ordering {
+
+        @Test
+        @DisplayName("Concurrent pauses and resumes are heard in the order the statuses changed")
+        void transitionsArriveInOrder() throws Exception {
+            final ServerMediaPlayer player = MediaAPI.serverPlayer();
+            final AtomicReference<String> broken = new AtomicReference<>();
+            final AtomicReference<Status> last = new AtomicReference<>();
+            final AtomicInteger heard = new AtomicInteger();
+            player.onStatus((p, previous, current) -> {
+                // EACH TRANSITION MUST START WHERE THE ONE HEARD BEFORE IT ENDED
+                heard.incrementAndGet();
+                final Status before = last.getAndSet(current);
+                if (before != null && before != previous) broken.compareAndSet(null, previous + "->" + current + " heard after " + before);
+            });
+            try {
+                assertTrue(player.start());
+                final CountDownLatch go = new CountDownLatch(1);
+                final Runnable toggler = () -> {
+                    try { go.await(); }
+                    catch (final InterruptedException e) { return; }
+                    for (int i = 0; i < ROUNDS; i++) player.pause(i % 2 == 0);
+                };
+                final Thread[] togglers = new Thread[TOGGLERS];
+                for (int i = 0; i < togglers.length; i++) {
+                    togglers[i] = new Thread(toggler, "toggler-" + i);
+                    togglers[i].start();
+                }
+                go.countDown();
+                for (final Thread toggling: togglers) toggling.join();
+                assertTrue(heard.get() > ROUNDS, "the togglers raced through real transitions: " + heard.get());
+                assertNull(broken.get(), "out-of-order transition");
+                assertEquals(player.status(), last.get(), "the last transition heard is the current status");
+            } finally {
+                player.release();
             }
-            go.countDown();
-            for (final Thread toggling: togglers) toggling.join();
-            assertTrue(heard.get() > ROUNDS, "the togglers raced through real transitions: " + heard.get());
-            assertNull(broken.get(), "out-of-order transition");
-            assertEquals(player.status(), last.get(), "the last transition heard is the current status");
-        } finally {
-            player.release();
         }
     }
 
-    @Test
-    @DisplayName("An image player's release lets a STOPPED listener wait for another thread releasing it")
-    void imageReleaseListenerIsLockFree() {
-        assertReleaseIsLockFree(Fixtures.PNG_STATIC);
-    }
+    @Nested
+    @DisplayName("Release outside the player locks")
+    class LockFreeRelease {
 
-    @Test
-    @DisplayName("A video player's release lets a STOPPED listener wait for another thread releasing it")
-    void videoReleaseListenerIsLockFree() {
-        assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
-        assertReleaseIsLockFree(Fixtures.MP4_H264);
+        @Test
+        @DisplayName("An image player's release lets a STOPPED listener wait for another thread releasing it")
+        void imageReleaseListenerIsLockFree() {
+            assertReleaseIsLockFree(Fixtures.PNG_STATIC);
+        }
+
+        @Test
+        @DisplayName("A video player's release lets a STOPPED listener wait for another thread releasing it")
+        void videoReleaseListenerIsLockFree() {
+            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
+            assertReleaseIsLockFree(Fixtures.MP4_H264);
+        }
     }
 
     // UTILITY
@@ -90,18 +101,22 @@ public class StatusDeliveryTest {
         assertTrue(mrl.await(3_000L));
         final HeadlessGFXEngine gfx = MediaAPI.headlessEngine();
         final MediaPlayer player = MediaAPI.player(mrl, () -> gfx, () -> null);
+        final AtomicBoolean ran = new AtomicBoolean();
         final AtomicBoolean joined = new AtomicBoolean();
-        assertTrue(player.start());
-        assertTrue(PlayerWait.awaitStatus(player, 15_000L, Status.PLAYING, Status.PAUSED, Status.ENDED));
+        // REGISTERED BEFORE start(): NEITHER FIXTURE ENDS, SO ONLY THE RELEASE'S STOPPED CONSUMES IT
         player.onStatus((p, previous, current) -> {
             if (current != Status.STOPPED) return;
+            ran.set(true);
             final Thread other = new Thread(p::release, "second-release");
             other.start();
             try { other.join(JOIN_MS); }
             catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
             joined.set(!other.isAlive());
         });
+        assertTrue(player.start());
+        assertTrue(PlayerWait.awaitStatus(player, 15_000L, Status.PLAYING, Status.PAUSED));
         player.release();
-        assertTrue(joined.get(), "the STOPPED listener ran while release held its lock");
+        assertTrue(ran.get(), "the release published STOPPED to the listener");
+        assertTrue(joined.get(), "the second release waited for the lock the first one held while the listener ran");
     }
 }

@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -23,10 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies the shared control contract on {@link TxMediaPlayer}: boolean controls answer whether
- * the local state changed, stop() rewinds to zero, a scrub or toggle after ended/stopped restarts
- * the media in both the streaming and the frame-texture mode, every restart clears the previous
- * failure, frame stepping is paused-only, and the status listener hears every transition.
+ * Verifies the shared control contract on {@link TxMediaPlayer}: boolean controls answer whether the local state changed,
+ * stop() rewinds to zero, a scrub or toggle after stop restarts the media, a scrub after ENDED restarts a streaming
+ * animation paused at the target while the frame-texture mode rewinds and pauses in place, every restart clears the
+ * previous failure, a timed still ends from PLAYING even with repeat on, and the status listener hears every transition.
  */
 @DisplayName("TxMediaPlayer control contract")
 public class TxControlContractTest {
@@ -53,8 +54,7 @@ public class TxControlContractTest {
         @Test
         @DisplayName("stop() reports the transition once, rewinds to zero and keeps the media playable")
         void stopContract() {
-            final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-            final TxMediaPlayer player = open(Fixtures.GIF_ANIMATED, gfx);
+            final TxMediaPlayer player = open(Fixtures.GIF_ANIMATED, new HeadlessGFXEngine(false));
             try {
                 assertFalse(player.stop(), "nothing started yet");
                 player.start();
@@ -68,7 +68,6 @@ public class TxControlContractTest {
                 assertFalse(player.pause(), "nothing to pause");
             } finally {
                 player.release();
-                gfx.release();
             }
         }
 
@@ -81,8 +80,7 @@ public class TxControlContractTest {
             assertTrue(mrl.await(MRL_TIMEOUT_MS));
             // THE SOURCE VANISHES AFTER IT RESOLVED, SO EVERY RUN FAILS WITH ITS OWN EXCEPTION
             Files.delete(input);
-            final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-            final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
+            final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, new HeadlessGFXEngine(false));
             try {
                 assertTrue(player.start());
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.ERROR));
@@ -99,15 +97,13 @@ public class TxControlContractTest {
                         "the toggle restart failed again and replaced the old failure");
             } finally {
                 player.release();
-                gfx.release();
             }
         }
 
         @Test
         @DisplayName("seek() after stop restarts paused at the target and togglePlay() resumes it")
         void seekAfterStopRestartsPaused() {
-            final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-            final TxMediaPlayer player = open(Fixtures.GIF_ANIMATED, gfx);
+            final TxMediaPlayer player = open(Fixtures.GIF_ANIMATED, new HeadlessGFXEngine(false));
             try {
                 player.start();
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING));
@@ -115,13 +111,12 @@ public class TxControlContractTest {
                 assertTrue(player.stop());
                 assertTrue(player.seek(target));
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PAUSED));
-                assertTrue(PlayerWait.awaitCondition(() -> player.time() >= target - 100L, PLAYER_TIMEOUT_MS),
+                assertTrue(PlayerWait.awaitCondition(() -> player.time() >= target - SEEK_WINDOW_MS, PLAYER_TIMEOUT_MS),
                         "the restart lands at the scrubbed position");
                 assertTrue(player.togglePlay());
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING));
             } finally {
                 player.release();
-                gfx.release();
             }
         }
 
@@ -139,6 +134,8 @@ public class TxControlContractTest {
                 assertEquals(textures, gfx.preloadedFrames() != null, "the engine picks the playback mode under test");
                 final long duration = player.duration();
                 assertTrue(duration > 2 * SEEK_WINDOW_MS);
+                // THE WHOLE ANIMATION OUTLASTS THE WAIT BELOW, SO ONLY A SCRUB THAT REALLY MOVED THE CLOCK REACHES ENDED IN TIME
+                assertTrue(duration > PLAYER_TIMEOUT_MS, "the fixture must outlast the wait");
                 assertTrue(player.seek(duration - SEEK_WINDOW_MS), "a live scrub runs the animation into its end");
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.ENDED));
 
@@ -153,28 +150,30 @@ public class TxControlContractTest {
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING));
             } finally {
                 player.release();
-                gfx.release();
             }
         }
 
         @Test
-        @DisplayName("A timed still ends even when repeat is on; pause() refuses and togglePlay() restarts it")
+        @DisplayName("A timed still ends from PLAYING even when repeat is on; pause() refuses and togglePlay() restarts it")
         void endedStillRestartsOnToggle() {
-            final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-            final TxMediaPlayer player = open(Fixtures.JPEG_BASELINE, gfx);
+            final TxMediaPlayer player = open(Fixtures.JPEG_BASELINE, new HeadlessGFXEngine(false));
+            final AtomicReference<Status> endedFrom = new AtomicReference<>();
+            player.onStatus((p, prev, next) -> { if (next == Status.ENDED) endedFrom.set(prev); });
             try {
                 player.repeat(true);
                 player.displayTime(DISPLAY_MS);
                 player.start();
+                // THE PASSIVE CLOCK ENDS THE STILL ON THE THREAD THAT READS status(), SO THE LISTENER RAN BEFORE THE WAIT RETURNS
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.ENDED));
+                assertEquals(Status.PLAYING, endedFrom.get(), "the display window ends a playing still");
+                assertEquals(DISPLAY_MS, player.duration(), "a timed still reports its display window as its duration");
                 assertFalse(player.pause(), "an ended still has nothing to pause");
                 assertFalse(player.resume(), "nor to resume");
-                assertFalse(player.nextFrame(), "a still has no other frame");
+                assertFalse(player.nextFrame(), "an ended player is not paused, so it cannot step");
                 assertTrue(player.togglePlay(), "toggling an ended player starts it again");
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING));
             } finally {
                 player.release();
-                gfx.release();
             }
         }
     }
@@ -186,8 +185,7 @@ public class TxControlContractTest {
         @Test
         @DisplayName("Every transition reaches the listener and release() lands STOPPED")
         void listenerHearsEveryTransition() {
-            final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-            final TxMediaPlayer player = open(Fixtures.GIF_ANIMATED, gfx);
+            final TxMediaPlayer player = open(Fixtures.GIF_ANIMATED, new HeadlessGFXEngine(false));
             final List<Status> seen = new CopyOnWriteArrayList<>();
             player.onStatus((p, prev, next) -> seen.add(next));
             try {
@@ -203,11 +201,11 @@ public class TxControlContractTest {
                 assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING));
             } finally {
                 player.release();
-                gfx.release();
             }
             assertEquals(Status.STOPPED, player.status());
             assertEquals(Status.STOPPED, seen.get(seen.size() - 1), "release publishes the final stop");
-            assertTrue(seen.indexOf(Status.LOADING) < seen.indexOf(Status.PLAYING), "intermediate states are published in order");
+            assertTrue(seen.contains(Status.LOADING) && seen.contains(Status.PLAYING), "both intermediate states are published: " + seen);
+            assertTrue(seen.indexOf(Status.LOADING) < seen.indexOf(Status.PLAYING), "intermediate states are published in order: " + seen);
             assertTrue(seen.contains(Status.PAUSED));
             assertFalse(player.canPlay(), "released players are not playable");
         }

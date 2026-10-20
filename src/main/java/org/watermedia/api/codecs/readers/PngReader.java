@@ -342,7 +342,8 @@ public final class PngReader extends ImageReader {
                 System.arraycopy(this.outputBuffer, 0, prev, 0, this.outputBuffer.length);
             }
             this.applyBlendOp(this.outputBuffer, framePixels, fctl);
-            this.delayMs = fctl.delayMs();
+            // AN ANIMATION OF ONE FRAME IS A STILL IMAGE: ITS fcTL DELAY TIMES NOTHING
+            this.delayMs = this.scan.frameCount() > 1 ? fctl.delayMs() : 0L;
             this.writeBGRA(this.outputBuffer);
             this.applyDispose(fctl);
         } else {
@@ -1055,22 +1056,19 @@ public final class PngReader extends ImageReader {
             if (x >= imageWidth) break;
 
             pixels[rowBase + x] = switch (this.colorType) {
+                // tRNS HOLDS RAW SAMPLES AT THE IMAGE DEPTH, SO THE KEY IS MATCHED BEFORE SCALING TO 8 BITS
                 case GREYSCALE -> {
-                    int gray = extractSample(row, bitOffset, d); bitOffset += d;
-                    gray = scaleTo8Bit(gray, d);
-                    int alpha = 255;
-                    if (this.trns != null && gray == this.trns.gray()) alpha = 0;
+                    final int raw = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int gray = scaleTo8Bit(raw, d);
+                    final int alpha = this.trns != null && raw == this.trns.gray() ? 0 : 255;
                     yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
                 }
                 case TRUECOLOR -> {
-                    int r = extractSample(row, bitOffset, d); bitOffset += d;
-                    int g = extractSample(row, bitOffset, d); bitOffset += d;
-                    int b = extractSample(row, bitOffset, d); bitOffset += d;
-                    final int rRaw = r, gRaw = g, bRaw = b;
-                    r = scaleTo8Bit(r, d); g = scaleTo8Bit(g, d); b = scaleTo8Bit(b, d);
-                    int alpha = 255;
-                    if (this.trns != null && rRaw == this.trns.red() && gRaw == this.trns.green() && bRaw == this.trns.blue()) alpha = 0;
-                    yield (alpha << 24) | (r << 16) | (g << 8) | b;
+                    final int r = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int g = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int b = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int alpha = this.trns != null && r == this.trns.red() && g == this.trns.green() && b == this.trns.blue() ? 0 : 255;
+                    yield (alpha << 24) | (scaleTo8Bit(r, d) << 16) | (scaleTo8Bit(g, d) << 8) | scaleTo8Bit(b, d);
                 }
                 case INDEXED -> {
                     final int index = extractSample(row, bitOffset, d); bitOffset += d;

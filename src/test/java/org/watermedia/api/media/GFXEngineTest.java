@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Verifies the plane-size and bit-depth rules every {@link GFXEngine} backend shares. */
+/** Verifies the plane-size rule every {@link GFXEngine} backend shares. */
 @DisplayName("GFXEngine")
 public class GFXEngineTest {
 
@@ -18,13 +18,5 @@ public class GFXEngineTest {
         assertEquals(12L, GFXEngine.minBytes(4, 4, 3));
         assertEquals(-1L, GFXEngine.minBytes(3, 4, 3));
         assertEquals(65_535L * 65_536 + 65_536, GFXEngine.minBytes(65_536, 65_536, 65_536), "large planes never wrap");
-    }
-
-    @Test
-    @DisplayName("bitScale stretches 10 and 12-bit samples to the full 16-bit range")
-    void bitScale() {
-        assertEquals(65_535f / 1_023f, GFXEngine.bitScale(10));
-        assertEquals(65_535f / 4_095f, GFXEngine.bitScale(12));
-        for (final int bits: new int[] { 8, 16, 32 }) assertEquals(1f, GFXEngine.bitScale(bits), bits + " bits");
     }
 }

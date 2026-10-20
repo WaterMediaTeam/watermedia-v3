@@ -30,15 +30,8 @@ final class PacketQueue {
     private long totalBytes;
     private final long maxBytes;
 
-    private static final class Entry {
-        final AVPacket packet; // OWNED — CLONED IN put()
-        final int serial;
-
-        Entry(final AVPacket packet, final int serial) {
-            this.packet = packet;
-            this.serial = serial;
-        }
-    }
+    // THE PACKET IS OWNED: CLONED IN put() AND FREED WHEN THE ENTRY LEAVES THE QUEUE
+    private record Entry(AVPacket packet, int serial) {}
 
     /**
      * @param maxBytes byte limit for the queue. 16MB is reasonable for video.
@@ -55,7 +48,7 @@ final class PacketQueue {
      * <p>
      * Blocks if {@code totalBytes >= maxBytes} (backpressure to the demux thread).
      *
-     * @return false if the queue was aborted.
+     * @return false when the queue was aborted or finished, the wait was interrupted or the clone failed
      */
     public boolean put(final AVPacket packet) {
         synchronized (this.lock) {
@@ -80,7 +73,7 @@ final class PacketQueue {
     }
 
     /**
-     * Non-blocking put. Returns false immediately if the queue is full.
+     * Non-blocking put. Returns false immediately when the queue is full, aborted or finished, or the clone fails.
      * The caller's original packet is not consumed on failure.
      */
     public boolean tryPut(final AVPacket packet) {
@@ -102,7 +95,7 @@ final class PacketQueue {
      *
      * @param serialOut array of at least 1 element. {@code serialOut[0]} receives
      *                  the packet serial for post-seek comparison.
-     * @return packet owned by the caller, or null if aborted.
+     * @return packet owned by the caller, or null when the queue was aborted, finished and drained, or the wait was interrupted
      */
     public AVPacket get(final int[] serialOut) {
         synchronized (this.lock) {
@@ -119,10 +112,10 @@ final class PacketQueue {
             if (this.packets.isEmpty()) return null;
 
             final Entry entry = this.packets.pollFirst();
-            this.totalBytes -= entry.packet.size();
-            serialOut[0] = entry.serial;
+            this.totalBytes -= entry.packet().size();
+            serialOut[0] = entry.serial();
             this.lock.notifyAll();
-            return entry.packet;
+            return entry.packet();
         }
     }
 
@@ -133,7 +126,7 @@ final class PacketQueue {
     public void flush() {
         synchronized (this.lock) {
             while (!this.packets.isEmpty()) {
-                avcodec.av_packet_free(this.packets.pollFirst().packet);
+                avcodec.av_packet_free(this.packets.pollFirst().packet());
             }
             this.totalBytes = 0;
             this.serial++;
@@ -169,7 +162,7 @@ final class PacketQueue {
         }
     }
 
-    /** Unblocks readers and writers. Pending native packets remain owned until clear, reset or free. */
+    /** Unblocks readers and writers, which then get false or null until {@link #reset()}; pending packets stay owned until flush, reset or free. */
     public void abort() {
         synchronized (this.lock) {
             this.aborted = true;
@@ -177,7 +170,7 @@ final class PacketQueue {
         }
     }
 
-    /** Resets the flags to reuse the queue (e.g. on a quality switch). */
+    /** Flushes the queue and clears the abort and finish flags so it can be reused (e.g. on a quality switch). */
     public void reset() {
         synchronized (this.lock) {
             this.flush();
@@ -194,7 +187,7 @@ final class PacketQueue {
     public void free() {
         synchronized (this.lock) {
             while (!this.packets.isEmpty()) {
-                avcodec.av_packet_free(this.packets.pollFirst().packet);
+                avcodec.av_packet_free(this.packets.pollFirst().packet());
             }
             this.totalBytes = 0;
             this.lock.notifyAll();

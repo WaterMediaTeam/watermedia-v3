@@ -353,7 +353,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             vkGetPhysicalDeviceProperties(this.physicalDevice, props);
             // CAPTURE THE GPU NAME + MAX API VERSION ONCE FOR DIAGNOSTICS (SAFE TO READ OFF-THREAD AFTERWARDS)
             final String name = props.deviceNameString();
-            if (name != null && !name.isBlank()) this.deviceName = name;
+            if (!name.isBlank()) this.deviceName = name;
             final int api = props.apiVersion();
             this.deviceVersion = ((api >>> 22) & 0x7F) + "." + ((api >>> 12) & 0x3FF);
             if (props.apiVersion() >= VK_API_VERSION_1_1) {
@@ -519,9 +519,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final ByteBuffer white = stack.malloc(4);
             white.put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF).flip();
             final TextureRecord dummy = this.uploadTexture(1, 1, white);
-            this.dummyImg = dummy.image;
-            this.dummyMem = dummy.memory;
-            this.dummyView = dummy.view;
+            this.dummyImg = dummy.image();
+            this.dummyMem = dummy.memory();
+            this.dummyView = dummy.view();
 
             final VkDescriptorPoolSize.Buffer size = VkDescriptorPoolSize.calloc(1, stack);
             size.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1);
@@ -857,7 +857,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     @Override
     public void bindTexture(final int textureId) {
         final TextureRecord rec = this.textures.get(textureId);
-        this.currentView = rec != null ? rec.view : 0L;
+        this.currentView = rec != null ? rec.view() : 0L;
     }
 
     /**
@@ -1282,15 +1282,15 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         synchronized (this.queueLock) {
             vkDeviceWaitIdle(this.device);
         }
-        vkDestroyImageView(this.device, rec.view, null);
-        vkDestroyImage(this.device, rec.image, null);
-        vkFreeMemory(this.device, rec.memory, null);
+        vkDestroyImageView(this.device, rec.view(), null);
+        vkDestroyImage(this.device, rec.image(), null);
+        vkFreeMemory(this.device, rec.memory(), null);
     }
 
     // CREATES A SAMPLED R8G8B8A8_UNORM DEVICE-LOCAL IMAGE, STAGES THE TIGHTLY-PACKED RGBA THROUGH A
     // HOST-VISIBLE BUFFER, AND TRANSITIONS IT TO SHADER_READ_ONLY. SUBMITTED UNDER THE SHARED QUEUE LOCK.
     private TextureRecord uploadTexture(final int w, final int h, final ByteBuffer rgba) {
-        final long[] im = this.createImage(w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        final long[] im = this.createImage(w, h);
         final long view = this.createView(im[0], VK_FORMAT_R8G8B8A8_UNORM);
         final long size = (long) w * h * 4;
 
@@ -1351,11 +1351,11 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         return new TextureRecord(im[0], im[1], view);
     }
 
-    private long[] createImage(final int w, final int h, final int format, final int usage) {
+    private long[] createImage(final int w, final int h) {
         try (final MemoryStack stack = stackPush()) {
             final VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
-                    .imageType(VK_IMAGE_TYPE_2D).format(format).mipLevels(1).arrayLayers(1)
-                    .samples(VK_SAMPLE_COUNT_1_BIT).tiling(VK_IMAGE_TILING_OPTIMAL).usage(usage)
+                    .imageType(VK_IMAGE_TYPE_2D).format(VK_FORMAT_R8G8B8A8_UNORM).mipLevels(1).arrayLayers(1)
+                    .samples(VK_SAMPLE_COUNT_1_BIT).tiling(VK_IMAGE_TILING_OPTIMAL).usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
                     .sharingMode(VK_SHARING_MODE_EXCLUSIVE).initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
             ici.extent().width(w).height(h).depth(1);
             final LongBuffer pImg = stack.mallocLong(1);
@@ -1456,9 +1456,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             }
 
             for (final TextureRecord rec: this.textures.values()) {
-                vkDestroyImageView(this.device, rec.view, null);
-                vkDestroyImage(this.device, rec.image, null);
-                vkFreeMemory(this.device, rec.memory, null);
+                vkDestroyImageView(this.device, rec.view(), null);
+                vkDestroyImage(this.device, rec.image(), null);
+                vkFreeMemory(this.device, rec.memory(), null);
             }
             this.textures.clear();
 
@@ -1573,13 +1573,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         int descPoolUsed;
     }
 
-    // AN APP TEXTURE: ITS IMAGE, BACKING MEMORY AND SAMPLEABLE VIEW.
-    private static final class TextureRecord {
-        final long image, memory, view;
-        TextureRecord(final long image, final long memory, final long view) {
-            this.image = image;
-            this.memory = memory;
-            this.view = view;
-        }
-    }
+    // AN APP TEXTURE: ITS IMAGE, BACKING MEMORY AND SAMPLEABLE VIEW
+    private record TextureRecord(long image, long memory, long view) {}
 }

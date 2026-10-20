@@ -90,7 +90,7 @@ public final class NetworkAPI {
     }
 
     private static void upload(final File file, final UploadStatus status) {
-        status.worker = Thread.currentThread();
+        synchronized (status) { status.worker = Thread.currentThread(); }
         if (status.failed()) return; // CANCELLED BEFORE IT STARTED: NOTHING IS SENT, NOT EVEN THE TOKEN
         final String remote;
         try {
@@ -158,17 +158,14 @@ public final class NetworkAPI {
             LOGGER.warn(IT, "Could not reach the remote file server to upload '{}': {}", file.getName(), unreachable.getMessage());
             status.fail(unreachable.toString());
         } catch (final Exception e) {
-            if (status.cancelled) {
-                Thread.interrupted(); // THE CANCEL INTERRUPT MUST NOT LEAK INTO THE NEXT UPLOAD ON THIS WORKER
-                return;
-            }
+            if (status.cancelled) return; // THE POOL CLEARS A LATE CANCEL INTERRUPT BEFORE ITS NEXT UPLOAD
             // e.getMessage() IS OFTEN null (E.G. NPE); e.toString() KEEPS THE EXCEPTION TYPE FOR DIAGNOSIS
             LOGGER.error(IT, "Failed to upload '{}' to remote server", file.getName(), e);
             status.fail(e.toString());
         } finally {
-            if (conn != null) {
-                conn.disconnect();
-            }
+            // A cancel() THAT LANDS AFTER THIS UPLOAD MUST NOT INTERRUPT THE WORKER'S NEXT ONE
+            synchronized (status) { status.worker = null; }
+            if (conn != null) conn.disconnect();
         }
     }
 

@@ -164,16 +164,14 @@ public abstract class ImageReader implements Closeable {
         long retained = 0L;
         while (this.hasNext()) {
             final ByteBuffer decoded = this.next();
-            final ByteBuffer kept = this.fresh ? decoded : detach(decoded);
-            // BACKSTOP AGAINST THE ANIMATION BOMB: FRAME COST IS FIXED AT CANVAS SIZE WHILE FRAME
-            // COUNT COMES FROM THE CONTAINER, SO A FEW HUNDRED HEADER BYTES CAN DESCRIBE GIGABYTES.
-            // READERS CAP THEIR OWN FRAME COUNTS; THIS BOUNDS WHAT SURVIVES ALL OF THEM COMBINED.
-            retained += kept.remaining();
+            // BACKSTOP AGAINST THE ANIMATION BOMB: FRAME COST IS FIXED AT CANVAS SIZE WHILE FRAME COUNT COMES FROM
+            // THE CONTAINER. CHARGED BEFORE THE COPY, SO THE FRAME THAT BREAKS THE BUDGET IS NEVER RETAINED
+            retained += decoded.remaining();
             if (retained > MAX_DECODED_BYTES) {
                 throw new CodecException("Decoded animation exceeds budget: " + retained
                         + " bytes over " + frames.size() + " frames (max " + MAX_DECODED_BYTES + ")");
             }
-            frames.add(kept);
+            frames.add(this.fresh ? decoded : detach(decoded));
             frameDelays.add(this.delayMs);
         }
         if (frames.isEmpty()) {

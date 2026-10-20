@@ -13,9 +13,8 @@ import java.util.function.BooleanSupplier;
  * Spin-waits that turn the player's volatile state into a synchronization
  * point for tests. Polls every 5 ms and bails after {@code timeoutMs}.
  *
- * <p>Used heavily by {@code TxMediaPlayer} tests: the lifecycle thread drives
- * status transitions on a separate executor, so tests need a tight loop to
- * observe each transition without sleeping for an arbitrary chunk of time.
+ * <p>Player lifecycles run on their own threads, so tests observe each
+ * transition through a bounded wait instead of sleeping an arbitrary time.
  */
 public final class PlayerWait {
     private static final long POLL_INTERVAL_MS = 5L;

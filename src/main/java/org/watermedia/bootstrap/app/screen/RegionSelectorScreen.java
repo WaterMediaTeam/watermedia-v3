@@ -312,18 +312,19 @@ public final class RegionSelectorScreen extends Screen {
                 final int badgeX = x + 62 + Math.min(labelMax, text.widthBold(label, AppTheme.TEXT_BUTTON));
                 canvas.fill(badgeX, y + 16, 76, 22, AppTheme.alpha(AppTheme.BG_1, 190));
                 canvas.stroke(badgeX, y + 16, 76, 22, AppTheme.AMBER, 1f);
-                canvas.text("SYSTEM", badgeX + 10, this.centerY(text, y + 16, 22), AppTheme.AMBER, AppTheme.TEXT_SUBTITLE, false);
+                canvas.text("SYSTEM", badgeX + 10, this.centerY(text, y + 16), AppTheme.AMBER, AppTheme.TEXT_SUBTITLE, false);
             }
 
             final int tagX = x + w - tagW - 12;
             canvas.fill(tagX, y + 16, tagW, 22, AppTheme.alpha(AppTheme.BG_1, 190));
             canvas.stroke(tagX, y + 16, tagW, 22, this.selected ? AppTheme.GREEN : AppTheme.STROKE, 1f);
-            canvas.text(meta, tagX + 11, this.centerY(text, y + 16, 22),
+            canvas.text(meta, tagX + 11, this.centerY(text, y + 16),
                     this.selected ? AppTheme.GREEN : AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
         }
 
-        private int centerY(final TextRenderer text, final int y, final int h) {
-            return y + Math.max(0, (h - text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2);
+        // CENTERS THE SUBTITLE GLYPHS IN THE 22 PX BADGE ROW
+        private int centerY(final TextRenderer text, final int y) {
+            return y + Math.max(0, (22 - text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2);
         }
     }
 }

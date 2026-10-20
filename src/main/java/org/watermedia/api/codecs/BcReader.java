@@ -28,6 +28,7 @@ public final class BcReader implements Closeable {
     private final long[] delays;
     private final long duration;
     private int cursor;
+    private boolean closed;
 
     /**
      * Parses a complete BC-in-DDS file from {@code file.position()}.
@@ -42,8 +43,7 @@ public final class BcReader implements Closeable {
         this.height = info.height();
         this.format = info.format();
 
-        // RANGE, THEN TRUNCATION — IN THAT ORDER. THE RANGE CHECK IS WHAT MAKES THE int CASTS BELOW SOUND,
-        // SO RUNNING THE TRUNCATION CHECK FIRST LEFT IT GUARDING NOTHING
+        // RANGE BEFORE TRUNCATION: THE RANGE CHECK IS WHAT KEEPS THE TRUNCATION MATH AND THE int CASTS BELOW SOUND
         final long frameBytes = info.frameBytes();
         final long texLen = (long) info.arraySize() * frameBytes;
         if (texLen > ImageReader.MAX_DECODED_BYTES) throw new CodecException("BC texture too large: " + texLen + " bytes");
@@ -111,12 +111,16 @@ public final class BcReader implements Closeable {
         return new Block(this.frames[i], this.delays[i]);
     }
 
-    /** Rewinds to the first frame. */
-    public void reset() { this.cursor = 0; }
+    /** Rewinds to the first frame; a closed reader throws {@link IllegalStateException}. */
+    public void reset() {
+        if (this.closed) throw new IllegalStateException("BC reader is closed");
+        this.cursor = 0;
+    }
 
     @Override
     public void close() {
-        // BACKED BY AN IN-MEMORY DIRECT BUFFER — NO EXTERNAL RESOURCES TO RELEASE.
+        // BACKED BY AN IN-MEMORY DIRECT BUFFER: CLOSING ONLY EXHAUSTS THE CURSOR FOR GOOD
+        this.closed = true;
         this.cursor = this.frames.length;
     }
 

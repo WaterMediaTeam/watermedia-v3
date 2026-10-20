@@ -21,7 +21,6 @@ public final class HeadlessGFXEngine extends GFXEngine {
     private volatile int activeFrame;
     private volatile ByteBuffer[] preloaded;
     private volatile ByteBuffer lastUpload;
-    private volatile boolean framed;
 
     HeadlessGFXEngine() {
         this(false);
@@ -32,13 +31,10 @@ public final class HeadlessGFXEngine extends GFXEngine {
     }
 
     @Override
-    public long texture() { return this.released || !this.framed ? 0L : SENTINEL_TEXTURE; }
-
-    @Override
     public boolean preload() { return this.preload; }
 
     @Override
-    boolean preload(final ByteBuffer[] frames, final int stride) {
+    boolean preload(final ByteBuffer[] frames) {
         // HONOR THE ADVERTISED CAPABILITY LIKE A REAL BACKEND; CLONE ON STORE SO THE PRODUCER'S ARRAY IS NEVER ALIASED
         if (!this.preload || this.released || frames == null || frames.length == 0) return false;
         this.preloaded = frames.clone();
@@ -53,7 +49,7 @@ public final class HeadlessGFXEngine extends GFXEngine {
 
     @Override
     void push(final ByteBuffer[] planes, final int[] strides) {
-        this.lastUpload = planes.length > 0 ? planes[0] : null;
+        this.lastUpload = planes[0];
         this.uploadCount++;
         this.framed = true;
     }

@@ -40,7 +40,6 @@ public final class AppContext implements Executor {
     );
 
     public static final int PADDING = 20;
-    public static final int MENU_WIDTH = 500;
 
     // WINDOW STATE
     public int windowWidth = 1280;
@@ -128,7 +127,7 @@ public final class AppContext implements Executor {
     public final CleanupState cleanup = new CleanupState();
 
     // GLOBAL ERROR DIALOG
-    public final ErrorState error = new ErrorState();
+    final ErrorState error = new ErrorState();
 
     // GLOBAL EXIT-CONFIRM DIALOG (TITLEBAR CLOSE / EXIT ACTION) — RENDERED BY THE WINDOW SHELL
     public volatile boolean exitConfirm;
@@ -272,13 +271,6 @@ public final class AppContext implements Executor {
      */
     public void showError(final String title, final String message, final Runnable onClose) {
         this.error.show(title, message, onClose);
-    }
-
-    /**
-     * Shows a global error dialog with default title.
-     */
-    public void showError(final String message, final Runnable onClose) {
-        this.error.show(message, onClose);
     }
 
     /**

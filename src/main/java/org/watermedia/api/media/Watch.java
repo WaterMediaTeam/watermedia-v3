@@ -4,10 +4,10 @@ import java.nio.ByteBuffer;
 
 /**
  * Upstream hello: a follower announces itself to the authority as a new member and
- * asks for its {@link Config} and a fresh {@link Sync}. Sent when the bridged player
- * receives its first {@code Sync} and repeated every few seconds until a {@code Config}
- * answers it, since a lossy or late-wired transport may drop the first one; the follower
- * registers as loading and never interrupts an already-running session.
+ * asks for its {@link Config} and a fresh {@link Sync}. Sent when the bridged player is
+ * created and, once a {@code Sync} has been heard, repeated every few seconds until a
+ * {@code Config} answers it, since a lossy or late-wired transport may drop the first one;
+ * the follower registers as loading and never interrupts an already-running session.
  *
  * @param watcherId follower instance id, echoed back in {@link Config} for RTT measurement
  */

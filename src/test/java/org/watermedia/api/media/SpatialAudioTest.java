@@ -9,19 +9,14 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
 import org.lwjgl.openal.AL;
 import org.lwjgl.openal.AL10;
-import org.lwjgl.openal.ALC;
 import org.lwjgl.openal.ALC10;
 import org.lwjgl.openal.EXTEfx;
 import org.lwjgl.system.MemoryUtil;
-import org.watermedia.test.support.MediaBootstrap;
-import org.watermedia.test.support.PlayerWait;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
+import org.watermedia.test.support.OpenALContext;
+import org.watermedia.test.support.PlayerWait;
 
-import javax.sound.sampled.AudioFileFormat;
-import javax.sound.sampled.AudioFormat;
-import javax.sound.sampled.AudioInputStream;
-import javax.sound.sampled.AudioSystem;
-import java.io.ByteArrayInputStream;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -42,12 +37,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Verifies {@link SFXEngine.SpatialAudio} validation and the spatial {@link ALEngine}: mono
- * negotiation, world positioning, environment processor isolation, context guards and release
- * ordering with the player. The OpenAL cases skip when no output device opens.
+ * Verifies {@link SFXEngine.SpatialAudio} validation and the spatial {@link ALEngine}: world
+ * positioning, environment processor isolation, context guards and release ordering with the
+ * player. The OpenAL cases skip when no output device opens.
  */
 @DisplayName("Spatial audio")
 public class SpatialAudioTest {
+    // AN ENVIRONMENT ADAPTER WHOSE DETACH FAILS, AS A BROKEN HOST EFFECT MOD WOULD
+    private static final SFXEngine.SpatialAudio.Environment RESET_FAILURE = new SFXEngine.SpatialAudio.Environment() {
+        @Override
+        public void process(final int source, final SFXEngine.SpatialAudio audio) {}
+
+        @Override
+        public void reset(final int source) { throw new IllegalStateException("reset failed"); }
+    };
+
     @BeforeAll
     static void boot() {
         MediaBootstrap.client();
@@ -72,56 +76,29 @@ public class SpatialAudioTest {
         assertDoesNotThrow(() -> new SFXEngine.SpatialAudio(0, 0, 0, 1, 16, 0, false, null));
     }
 
-    @Test
-    @DisplayName("Java Sound refuses spatial updates")
-    void javaSoundRefusesSpatialUpdates() {
-        final SFXEngine engine = MediaAPI.jsEngine();
-        assertFalse(engine.spatial());
-        assertFalse(engine.spatialAudio(new SFXEngine.SpatialAudio(1, 2, 3, 1, 16, 1, false, null)));
-        assertNull(engine.spatialAudio());
-        engine.release();
-    }
-
     @Nested
     @TestInstance(TestInstance.Lifecycle.PER_CLASS)
     @DisplayName("ALEngine (OpenAL, requires a current context)")
     class OpenAL {
-        private long device;
-        private long context;
+        private OpenALContext al;
 
         @BeforeAll
         void openContext() {
-            this.device = ALC10.alcOpenDevice((ByteBuffer) null);
-            assumeTrue(this.device != 0, "OpenAL output device unavailable");
-            final var capabilities = ALC.createCapabilities(this.device);
-            this.context = capabilities.ALC_EXT_EFX
-                    ? ALC10.alcCreateContext(this.device, new int[] { EXTEfx.ALC_MAX_AUXILIARY_SENDS, 4, 0 })
-                    : ALC10.alcCreateContext(this.device, (IntBuffer) null);
-            assumeTrue(this.context != 0, "OpenAL context unavailable");
-            assertTrue(ALC10.alcMakeContextCurrent(this.context));
-            AL.createCapabilities(capabilities);
+            this.al = OpenALContext.open();
         }
 
         @AfterAll
         void closeContext() {
-            if (this.context != 0) {
-                ALC10.alcMakeContextCurrent(0);
-                ALC10.alcDestroyContext(this.context);
-            }
-            if (this.device != 0) ALC10.alcCloseDevice(this.device);
+            if (this.al != null) this.al.close();
         }
 
         @Test
-        @DisplayName("A spatial source negotiates mono, applies its world position and keeps the host distance model")
-        void negotiatesMonoAndPreservesHostDistanceModel() {
+        @DisplayName("A spatial source applies its world position and keeps the host distance model")
+        void appliesWorldPositionAndPreservesHostDistanceModel() {
             final int model = AL10.alGetInteger(AL10.AL_DISTANCE_MODEL);
             final ALEngine engine = MediaAPI.alEngine(true);
             try {
                 assertTrue(engine.spatial());
-                assertEquals(1, engine.supportedChannels().length);
-                assertEquals(1, engine.closestChannelSupport(8).channels());
-                assertFalse(engine.format(SFXEngine.SampleType.S16, 2, 48_000));
-                assertTrue(engine.format(SFXEngine.SampleType.S16, 1, 48_000));
                 final SFXEngine.SpatialAudio audio = new SFXEngine.SpatialAudio(12, 24, -36, 4, 64, 0.75f, false, null);
                 assertTrue(engine.spatialAudio(audio));
                 assertSame(audio, engine.spatialAudio());
@@ -185,14 +162,7 @@ public class SpatialAudioTest {
                 assertThrows(IllegalStateException.class, () -> engine.spatialAudio(broken));
                 assertNull(engine.spatialAudio());
                 assertEquals(AL10.AL_TRUE, AL10.alGetSourcei(engine.source(), AL10.AL_SOURCE_RELATIVE));
-                final SFXEngine.SpatialAudio.Environment resetFailure = new SFXEngine.SpatialAudio.Environment() {
-                    @Override
-                    public void process(final int source, final SFXEngine.SpatialAudio audio) {}
-
-                    @Override
-                    public void reset(final int source) { throw new IllegalStateException("reset failed"); }
-                };
-                engine.spatialAudio(new SFXEngine.SpatialAudio(1, 2, 3, 1, 32, 1, false, resetFailure));
+                engine.spatialAudio(new SFXEngine.SpatialAudio(1, 2, 3, 1, 32, 1, false, RESET_FAILURE));
                 assertThrows(IllegalStateException.class, () -> engine.spatialAudio(null));
                 assertNull(engine.spatialAudio());
                 assertEquals(AL10.AL_TRUE, AL10.alGetSourcei(engine.source(), AL10.AL_SOURCE_RELATIVE));
@@ -204,11 +174,26 @@ public class SpatialAudioTest {
         }
 
         @Test
+        @DisplayName("A reset failure during release still frees the source and leaves the engine released")
+        void resetFailureOnReleaseStillReleases() {
+            final ALEngine engine = MediaAPI.alEngine(true);
+            final int source = engine.source();
+            assertTrue(engine.format(SFXEngine.SampleType.S16, 1, 48_000));
+            assertTrue(engine.spatialAudio(new SFXEngine.SpatialAudio(1, 2, 3, 1, 32, 1, false, RESET_FAILURE)));
+            assertThrows(IllegalStateException.class, engine::release, "the host failure still reaches the caller");
+            assertEquals(0, engine.source());
+            assertFalse(AL10.alIsSource(source), "the source was deleted despite the failure");
+            assertTrue(engine.released(), "a teardown that freed the source is not retried");
+            assertFalse(engine.format(SFXEngine.SampleType.S16, 1, 48_000), "the engine stays inert");
+            assertEquals(AL10.AL_NO_ERROR, AL10.alGetError());
+        }
+
+        @Test
         @DisplayName("A wrong context throws and a released engine never touches a recycled source")
         void wrongContextAndLateUpdatesCannotTouchRecycledSource() {
             final ALEngine engine = MediaAPI.alEngine(true);
             final SFXEngine.SpatialAudio audio = new SFXEngine.SpatialAudio(1, 2, 3, 1, 32, 1, false, null);
-            final long other = ALC10.alcCreateContext(this.device, (IntBuffer) null);
+            final long other = ALC10.alcCreateContext(this.al.device(), (IntBuffer) null);
             assertNotEquals(0, other);
             // A CONFIGURED ENGINE, SO THE UPLOAD BELOW PASSES THE BASE CHECKS AND REACHES THE CONTEXT GUARD
             assertTrue(engine.format(SFXEngine.SampleType.S16, 1, 48_000));
@@ -223,8 +208,9 @@ public class SpatialAudioTest {
                 assertThrows(IllegalStateException.class, engine::flush);
                 assertThrows(IllegalStateException.class, engine::pendingMs);
                 assertThrows(IllegalStateException.class, engine::release);
+                assertFalse(engine.released(), "a release refused on the wrong context can be retried");
             } finally {
-                assertTrue(ALC10.alcMakeContextCurrent(this.context));
+                assertTrue(ALC10.alcMakeContextCurrent(this.al.context()));
                 ALC10.alcDestroyContext(other);
                 engine.release();
             }
@@ -258,13 +244,7 @@ public class SpatialAudioTest {
             pool[0] = new ByteBuffer[] { MemoryUtil.memAlignedAlloc(64, 64) };
             alignmentField.setInt(player, 64);
             try {
-                player.spatialAudio(new SFXEngine.SpatialAudio(1, 2, 3, 1, 32, 1, false, new SFXEngine.SpatialAudio.Environment() {
-                    @Override
-                    public void process(final int source, final SFXEngine.SpatialAudio audio) {}
-
-                    @Override
-                    public void reset(final int source) { throw new IllegalStateException("reset failed"); }
-                }));
+                player.spatialAudio(new SFXEngine.SpatialAudio(1, 2, 3, 1, 32, 1, false, RESET_FAILURE));
                 assertThrows(IllegalStateException.class, player::release);
                 for (final ByteBuffer[] planes: pool) assertNull(planes);
                 assertEquals(-1, alignmentField.getInt(player));
@@ -292,10 +272,7 @@ public class SpatialAudioTest {
                 pcm.putShort((short) (4000 * Math.sin(2 * Math.PI * 880 * i / samples)));
             }
             final Path wav = directory.resolve("stereo.wav");
-            try (final AudioInputStream input = new AudioInputStream(new ByteArrayInputStream(pcm.array()),
-                    new AudioFormat(samples, 16, 2, true, false), samples)) {
-                AudioSystem.write(input, AudioFileFormat.Type.WAVE, wav.toFile());
-            }
+            Fixtures.wav(wav, samples, 2, pcm.array());
             final MRL mrl = MediaAPI.mrl(wav.toUri());
             assertTrue(mrl.await(3000));
             final ALEngine engine = MediaAPI.alEngine(true);

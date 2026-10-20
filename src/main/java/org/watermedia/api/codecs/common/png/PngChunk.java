@@ -68,7 +68,7 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
         }
         final int type = readIntBE(in);
         final byte[] data = new byte[length];
-        readFully(in, data, 0, length);
+        readFully(in, data, length);
         final int crc = readIntBE(in);
         return new PngChunk(length, type, data, crc);
     }
@@ -82,10 +82,10 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
         return (b1 << 24) | (b2 << 16) | (b3 << 8) | b4;
     }
 
-    private static void readFully(final InputStream in, final byte[] dst, final int off, final int len) throws IOException {
+    private static void readFully(final InputStream in, final byte[] dst, final int len) throws IOException {
         int read = 0;
         while (read < len) {
-            final int n = in.read(dst, off + read, len - read);
+            final int n = in.read(dst, read, len - read);
             if (n < 0) throw new EOFException("Unexpected EOF while reading chunk data (" + read + "/" + len + ")");
             read += n;
         }

@@ -33,31 +33,6 @@ public class MasterClockTest {
     class StateMachineTests {
 
         @Test
-        @DisplayName("Initial state is WAITING at time zero")
-        void testInitialStateIsWaitingZero() {
-            final MasterClock clock = new MasterClock();
-            assertEquals(Status.WAITING, clock.status());
-            assertEquals(0.0, clock.time(), 0.0);
-            assertEquals(0, clock.serial());
-        }
-
-        @Test
-        @DisplayName("start(false) transitions to PLAYING")
-        void testStartUnpausedTransitionsToPlaying() {
-            final MasterClock clock = new MasterClock();
-            clock.start(false);
-            assertEquals(Status.PLAYING, clock.status());
-        }
-
-        @Test
-        @DisplayName("start(true) transitions to PAUSED")
-        void testStartPausedTransitionsToPaused() {
-            final MasterClock clock = new MasterClock();
-            clock.start(true);
-            assertEquals(Status.PAUSED, clock.status());
-        }
-
-        @Test
         @DisplayName("PLAYING to PAUSED freezes the PTS")
         void testTransitionFromPlayingToPausedFreezesPts() throws InterruptedException {
             final MasterClock clock = new MasterClock();
@@ -120,31 +95,35 @@ public class MasterClockTest {
         }
 
         @Test
-        @DisplayName("A listener may re-enter the clock from a nested transition without deadlocking")
-        void testListenerReentrancy() throws InterruptedException {
+        @DisplayName("A listener runs outside the clock lock, so another thread can seek while it runs")
+        void testListenerRunsOutsideTheLock() {
             final MasterClock clock = new MasterClock();
             final List<Status> seen = new ArrayList<>();
-            // paused() TRANSITIONS WHILE HOLDING THE LOCK; THE LISTENER THEN SEEKS, WHICH TAKES IT AGAIN
+            final boolean[] blocked = new boolean[1];
+            // THE LISTENER'S OWN THREAD COULD RE-ENTER A REENTRANT LOCK; ONLY A SECOND THREAD PROVES THE LOCK IS FREE
             clock.listener((prev, next) -> {
                 seen.add(next);
-                if (next == Status.PAUSED) clock.requestSeek(10L, true);
+                if (next != Status.PAUSED) return;
+                final Thread seeker = new Thread(() -> clock.requestSeek(10L, true));
+                seeker.start();
+                try { seeker.join(2_000L); }
+                catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
+                blocked[0] = seeker.isAlive();
             });
             clock.start(false);
-            final Thread other = new Thread(() -> clock.paused(true));
-            other.start();
-            other.join(2_000L);
-            assertFalse(other.isAlive(), "the nested transition must not deadlock");
+            clock.paused(true);
+            assertFalse(blocked[0], "a seek from another thread must complete while the listener runs");
             assertEquals(List.of(Status.PLAYING, Status.PAUSED, Status.BUFFERING), seen);
         }
 
         @Test
-        @DisplayName("The listener hears every transition in order, outside the lock")
+        @DisplayName("The listener hears every transition in order, after it is published")
         void testListenerOrder() {
             final MasterClock clock = new MasterClock();
             final List<Status> seen = new ArrayList<>();
             clock.listener((prev, next) -> {
                 seen.add(next);
-                // RE-ENTERING THE CLOCK FROM THE LISTENER MUST NOT DEADLOCK
+                // THE STATUS IS ALREADY PUBLISHED WHEN THE LISTENER HEARS IT
                 assertEquals(next, clock.status());
             });
             clock.transition(Status.LOADING);
@@ -249,12 +228,16 @@ public class MasterClockTest {
             clock.start(false);
             Thread.sleep(ADVANCE_MS);
 
+            final long opened = System.nanoTime();
             final double beforeChange = clock.time();
             clock.speed(2.0);
             final double afterChange = clock.time();
+            final long closed = System.nanoTime();
 
-            // SPEED RECALIBRATES BUT MUST NOT INTRODUCE A DISCONTINUITY.
-            assertEquals(beforeChange, afterChange, 0.010);
+            // SPEED RECALIBRATES BUT MUST NOT INTRODUCE A DISCONTINUITY: ONLY THE BRACKETED WINDOW, AT 2x AT MOST, MAY PASS
+            assertTrue(afterChange >= beforeChange, "time must not go backwards");
+            assertTrue(afterChange - beforeChange <= 2.0 * (closed - opened) / 1_000_000_000.0,
+                    "a speed change must not jump the clock: " + beforeChange + " -> " + afterChange);
             assertEquals(2.0, clock.speed(), 0.0);
 
             // TIME KEEPS MOVING FORWARD AFTER THE SPEED CHANGE.

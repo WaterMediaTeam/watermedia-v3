@@ -43,8 +43,9 @@ public final class WaterPlatform implements Platform {
 
     /**
      * Resolves a {@code water://local/}, {@code water://remote/}, or {@code water://global/}
-     * address to its file or HTTP URL. Local paths are resolved against {@link WaterMedia#cwd()};
-     * remote and global paths keep their raw encoding, so a space or a percent sign survives the hop.
+     * address to its file or HTTP URL. Local paths are resolved against {@link WaterMedia#cwd()} with the
+     * same reach as a {@code file://} address, so a parent segment leaves that directory; remote and global
+     * paths keep their raw encoding, so a space or a percent sign survives the hop.
      * @param u water address to resolve
      * @return the resolved URL text
      * @throws PlatformException if the address has no supported host

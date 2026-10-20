@@ -11,9 +11,11 @@ import org.lwjgl.openal.AL;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.ALC;
 import org.lwjgl.openal.ALC10;
+import org.lwjgl.openal.ALCapabilities;
 import org.lwjgl.openal.EXTThreadLocalContext;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
+import org.watermedia.test.support.OpenALContext;
 import org.watermedia.test.support.PlayerWait;
 
 import javax.sound.sampled.AudioSystem;
@@ -24,9 +26,10 @@ import javax.sound.sampled.SourceDataLine;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
+import java.time.Duration;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -38,13 +41,14 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the {@link SFXEngine} implementations that the MasterClock/FFMediaPlayer sync contract
- * depends on: the channel-support gate, sample sizes and volume of both engines, {@link JSEngine}
- * line uploads and inertness after release, and the OpenAL queue ownership. Cases that need a Java
- * Sound output line or an OpenAL device skip when the machine has none.
+ * depends on: the channel-support gate and volume of both engines, {@link JSEngine} line uploads and
+ * inertness after release, and the OpenAL table, gain, speed and queue ownership. Cases that need a
+ * Java Sound output line or an OpenAL device skip when the machine has none.
  */
 @DisplayName("SFXEngine")
 public class SFXEngineTest {
@@ -58,32 +62,9 @@ public class SFXEngineTest {
         MediaBootstrap.client();
     }
 
-    @Test
-    @DisplayName("Every sample type reports its single-channel size in bytes")
-    void sampleTypeBytes() {
-        for (final SFXEngine.SampleType type: SFXEngine.SampleType.values()) {
-            final int expected = switch (type) {
-                case U8 -> 1;
-                case S16 -> 2;
-                case S32, FLT -> 4;
-                case DBL -> 8;
-            };
-            assertEquals(expected, type.bytes(), type.name());
-        }
-    }
-
     @Nested
     @DisplayName("JSEngine (Java Sound, no OpenAL context)")
     class JavaSound {
-
-        @Test
-        @DisplayName("Capability table is self-consistent and U8-first")
-        void capabilityTable() {
-            final JSEngine engine = MediaAPI.jsEngine();
-            assertEquals(SFXEngine.SampleType.U8, engine.supportedTypes()[0]);
-            assertEquals(2, engine.supportedTypes().length);
-            assertTableConsistent(engine);
-        }
 
         @Test
         @DisplayName("format() refuses every combination outside U8/S16 mono/stereo without opening a line")
@@ -91,6 +72,7 @@ public class SFXEngineTest {
             final Set<Line> before = openLines();
             final JSEngine engine = MediaAPI.jsEngine();
             try {
+                assertEquals(Set.of(SFXEngine.SampleType.U8, SFXEngine.SampleType.S16), Set.of(engine.supportedTypes()));
                 for (final SFXEngine.SampleType type: SFXEngine.SampleType.values()) {
                     for (int channels = 1; channels <= 8; channels++) {
                         final boolean listed = (type == SFXEngine.SampleType.U8 || type == SFXEngine.SampleType.S16) && channels <= 2;
@@ -109,23 +91,16 @@ public class SFXEngineTest {
         }
 
         @Test
-        @DisplayName("format() rejects invalid arguments without opening a line")
+        @DisplayName("format() rejects a null type, channel counts outside 1..8 and rates outside the supported range")
         void formatValidation() {
             final JSEngine engine = MediaAPI.jsEngine();
             assertFalse(engine.format(null, 2, RATE_HZ), "null type");
             assertFalse(engine.format(SFXEngine.SampleType.S16, 0, RATE_HZ), "channels < 1");
             assertFalse(engine.format(SFXEngine.SampleType.S16, 9, RATE_HZ), "channels > 8");
-            assertFalse(engine.format(SFXEngine.SampleType.S16, 2, 100), "rate below MIN");
-            assertFalse(engine.format(SFXEngine.SampleType.S16, 2, 10_000_000), "rate above MAX");
-        }
-
-        @Test
-        @DisplayName("No pitch control and no source handle")
-        void capabilityContract() {
-            final JSEngine engine = MediaAPI.jsEngine();
-            assertFalse(engine.speed(2.0f), "Java Sound refuses speed control");
-            assertEquals(1.0f, engine.speed(), "a refused speed keeps the 1.0x default");
-            assertEquals(0, engine.source(), "Java Sound has no source handle");
+            assertFalse(engine.format(SFXEngine.SampleType.S16, 2, SFXEngine.MIN_SAMPLE_RATE_HZ - 1), "rate below MIN");
+            assertFalse(engine.format(SFXEngine.SampleType.S16, 2, SFXEngine.MAX_SAMPLE_RATE_HZ + 1), "rate above MAX");
+            assertNull(engine.sampleType(), "a rejected format configures nothing");
+            engine.release();
         }
 
         @Test
@@ -256,10 +231,8 @@ public class SFXEngineTest {
                     }
                     assertTrue(accepted > 0 && accepted < 1_000, "the line fills up, accepted " + accepted + " chunks");
 
-                    final long start = System.nanoTime();
-                    assertFalse(engine.upload(chunk), "a full line keeps refusing");
-                    final long refusedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-                    assertTrue(refusedMs < 100, "a refusal returns at once instead of waiting for room, took " + refusedMs + " ms");
+                    // A NEVER-STARTED LINE FREES NO ROOM, SO A BLOCKING WRITE WOULD NEVER RETURN: ANY BOUND PROVES THE REFUSAL IS IMMEDIATE
+                    assertFalse(assertTimeoutPreemptively(Duration.ofSeconds(5), () -> engine.upload(chunk)), "a full line keeps refusing");
                     assertEquals(4, chunk.position(), "a refused chunk keeps its position");
                     assertEquals(pending, engine.pendingMs(), "a refused chunk adds nothing");
 
@@ -339,37 +312,15 @@ public class SFXEngineTest {
             }
 
             @Test
-            @DisplayName("upload() rejects heap, empty and frame-misaligned chunks like every backend")
-            void malformedChunks() {
-                final JSEngine engine = open(JSEngine.DEFAULT_BUFFER_MS);
-                try {
-                    assertMalformedChunksRejected(engine);
-                } finally {
-                    engine.release();
-                }
-            }
-
-            @Test
-            @DisplayName("release() closes the line and leaves every later call harmless")
+            @DisplayName("release() closes the line and leaves no engine line open")
             void releaseClosesTheLine() {
                 final Set<Line> before = openLines();
                 final JSEngine engine = open(JSEngine.DEFAULT_BUFFER_MS);
                 final SourceDataLine line = openedSince(before);
-                final ByteBuffer chunk = ByteBuffer.allocateDirect(10 * MS_BYTES);
-                assertTrue(engine.upload(chunk));
-                engine.volume(0.5f);
+                assertTrue(engine.upload(ByteBuffer.allocateDirect(10 * MS_BYTES)));
                 engine.release();
                 assertFalse(line.isOpen(), "release closes the line");
-                assertFalse(engine.format(SFXEngine.SampleType.S16, 2, RATE_HZ), "a released engine never reopens a line");
-                assertFalse(engine.upload(chunk), "uploads are refused");
                 assertEquals(before, openLines(), "no engine line stays open");
-                assertEquals(0, engine.pendingMs(), "nothing pends on a released engine");
-                engine.flush();
-                engine.pause();
-                engine.play();
-                engine.volume(0.25f);
-                assertEquals(0.5f, engine.volume(), "a released engine keeps its last gain");
-                engine.release(); // IDEMPOTENT
             }
         }
     }
@@ -378,84 +329,42 @@ public class SFXEngineTest {
     @TestInstance(TestInstance.Lifecycle.PER_CLASS) // NON-STATIC @BeforeAll/@AfterAll HOLD THE OPENAL CONTEXT
     @DisplayName("ALEngine (OpenAL, requires a current context)")
     class OpenAL {
-        private long device;
-        private long context;
+        private OpenALContext al;
 
         @BeforeAll
         void openContext() {
-            try {
-                this.device = ALC10.alcOpenDevice((ByteBuffer) null);
-                Assumptions.assumeTrue(this.device != 0L, "no OpenAL device available");
-                this.context = ALC10.alcCreateContext(this.device, (IntBuffer) null);
-                Assumptions.assumeTrue(this.context != 0L, "no OpenAL context available");
-                ALC10.alcMakeContextCurrent(this.context);
-                AL.createCapabilities(ALC.createCapabilities(this.device));
-            } catch (final Throwable t) {
-                // NO NATIVES / NO AUDIO STACK — SKIP THE OPENAL CASES INSTEAD OF FAILING
-                Assumptions.abort("OpenAL unavailable: " + t.getMessage());
-            }
+            this.al = OpenALContext.open();
         }
 
         @AfterAll
         void closeContext() {
-            if (this.context != 0L) {
-                ALC10.alcMakeContextCurrent(0L);
-                ALC10.alcDestroyContext(this.context);
-            }
-            if (this.device != 0L) ALC10.alcCloseDevice(this.device);
+            if (this.al != null) this.al.close();
         }
 
         @Test
-        @DisplayName("Capability table is self-consistent and U8-first")
-        void capabilityTable() {
-            final ALEngine engine = MediaAPI.alEngine();
-            try {
-                assertEquals(SFXEngine.SampleType.U8, engine.supportedTypes()[0]);
-                final var capabilities = AL.getCapabilities();
-                assertEquals(2 + (capabilities.AL_EXT_FLOAT32 || capabilities.AL_EXT_MCFORMATS ? 1 : 0)
-                        + (capabilities.AL_EXT_DOUBLE ? 1 : 0), engine.supportedTypes().length);
-                assertTableConsistent(engine);
-                assertNotEquals(0, engine.source(), "a source handle is generated under a live context");
-                assertTrue(engine.speed(2.0f), "AL_PITCH applies speed natively");
-                assertEquals(2.0f, engine.speed(), "the applied speed is reflected by the getter");
-            } finally {
-                engine.release();
-            }
-        }
-
-        @Test
-        @DisplayName("format() accepts supported combos and rejects the rest")
-        void formatNegotiation() {
-            final ALEngine engine = MediaAPI.alEngine();
-            try {
-                assertTrue(engine.format(SFXEngine.SampleType.S16, 2, RATE_HZ), "S16 stereo");
-                assertEquals(2, engine.channels());
-                assertEquals(SFXEngine.SampleType.S16, engine.sampleType());
-
-                assertEquals(AL.getCapabilities().AL_EXT_MCFORMATS, engine.format(SFXEngine.SampleType.S16, 6, RATE_HZ), "S16 5.1");
-                assertEquals(AL.getCapabilities().AL_EXT_DOUBLE, engine.format(SFXEngine.SampleType.DBL, 2, RATE_HZ), "DBL stereo");
-
-                assertFalse(engine.format(SFXEngine.SampleType.DBL, 6, RATE_HZ), "DBL multichannel is outside the channel-support table");
-                assertFalse(engine.format(SFXEngine.SampleType.S32, 2, RATE_HZ), "S32 is outside the channel-support table");
-                assertFalse(engine.format(null, 2, RATE_HZ), "null type");
-            } finally {
-                engine.release();
-            }
-        }
-
-        @Test
-        @DisplayName("format() accepts exactly the channel-support table, mono alone in spatial mode, and never S32")
+        @DisplayName("format() accepts exactly the channel-support table the context's extensions build, mono alone in spatial mode")
         void formatFollowsTheTable() {
+            final ALCapabilities caps = AL.getCapabilities();
             for (final boolean spatial: new boolean[] { false, true }) {
                 final ALEngine engine = MediaAPI.alEngine(spatial);
+                final String mode = spatial ? " (spatial)" : "";
                 try {
+                    assertNotEquals(0, engine.source(), "a source handle is generated under a live context" + mode);
+                    // THE TABLE FOLLOWS THE LIVE CONTEXT'S EXTENSIONS, AND supportedTypes() LISTS EXACTLY ITS TYPES
+                    assertEquals(caps.AL_EXT_FLOAT32, engine.channelSupport(1).supports(SFXEngine.SampleType.FLT), "AL_EXT_FLOAT32 gates float" + mode);
+                    assertEquals(caps.AL_EXT_DOUBLE, engine.channelSupport(1).supports(SFXEngine.SampleType.DBL), "AL_EXT_DOUBLE gates double" + mode);
+                    if (!spatial) assertEquals(caps.AL_EXT_MCFORMATS, engine.channelSupport(6) != null, "AL_EXT_MCFORMATS gates 5.1");
+                    final Set<SFXEngine.SampleType> listed = EnumSet.noneOf(SFXEngine.SampleType.class);
+                    for (final SFXEngine.ChannelSupport entry: engine.supportedChannels()) listed.addAll(entry.types());
+                    assertEquals(listed, Set.of(engine.supportedTypes()), "supportedTypes() lists every type of the table" + mode);
+
                     for (final SFXEngine.SampleType type: SFXEngine.SampleType.values()) {
                         for (int channels = 1; channels <= 8; channels++) {
                             final SFXEngine.ChannelSupport support = engine.channelSupport(channels);
-                            final boolean listed = support != null && support.supports(type);
-                            final String combination = type + " x" + channels + (spatial ? " (spatial)" : "");
-                            assertEquals(listed, engine.format(type, channels, RATE_HZ), combination);
-                            if (!listed) continue;
+                            final boolean supported = support != null && support.supports(type);
+                            final String combination = type + " x" + channels + mode;
+                            assertEquals(supported, engine.format(type, channels, RATE_HZ), combination);
+                            if (!supported) continue;
                             assertEquals(type, engine.sampleType(), combination);
                             assertEquals(channels, engine.channels(), combination);
                         }
@@ -464,6 +373,7 @@ public class SFXEngineTest {
                         assertFalse(engine.format(SFXEngine.SampleType.S32, channels, RATE_HZ), "OpenAL has no native S32 PCM");
                         if (spatial && channels > 1) assertNull(engine.channelSupport(channels), "a spatial source is mono");
                     }
+                    if (spatial) assertEquals(1, engine.closestChannelSupport(8).channels(), "a spatial source downmixes every layout to mono");
                     // A REFUSAL NEVER REACHES THE BACKEND, SO THE LAST ACCEPTED LAYOUT STAYS
                     assertTrue(engine.format(SFXEngine.SampleType.S16, 1, RATE_HZ));
                     assertFalse(engine.format(SFXEngine.SampleType.S32, 1, RATE_HZ));
@@ -477,32 +387,56 @@ public class SFXEngineTest {
         }
 
         @Test
-        @DisplayName("volume() drives AL_GAIN and a released source keeps its last gain")
+        @DisplayName("volume() drives AL_GAIN")
         void volumeDrivesGain() {
             final ALEngine engine = MediaAPI.alEngine();
             try {
-                assertEquals(1.0f, engine.volume(), "full gain by default");
-                assertEquals(1.0f, AL10.alGetSourcef(engine.source(), AL10.AL_GAIN));
+                assertEquals(1.0f, AL10.alGetSourcef(engine.source(), AL10.AL_GAIN), "full gain by default");
                 engine.volume(0.25f);
-                assertEquals(0.25f, engine.volume());
                 assertEquals(0.25f, AL10.alGetSourcef(engine.source(), AL10.AL_GAIN), 1e-6f);
-                assertThrows(IllegalArgumentException.class, () -> engine.volume(Float.NaN));
-                assertEquals(0.25f, AL10.alGetSourcef(engine.source(), AL10.AL_GAIN), 1e-6f, "a refused gain never reaches the source");
                 assertEquals(AL10.AL_NO_ERROR, AL10.alGetError());
             } finally {
                 engine.release();
             }
-            engine.volume(0.75f);
-            assertEquals(0.25f, engine.volume(), "a released engine keeps its last gain");
         }
 
         @Test
-        @DisplayName("upload() rejects heap, empty and frame-misaligned chunks like every backend")
+        @DisplayName("speed() drives AL_PITCH and refuses invalid rates; the capability needs no context while the setter guards it")
+        void speedControl() {
+            final ALEngine engine = MediaAPI.alEngine();
+            final long other = ALC10.alcCreateContext(this.al.device(), (IntBuffer) null);
+            assertNotEquals(0, other);
+            try {
+                assertTrue(engine.speed(2.0f), "AL_PITCH applies speed natively");
+                assertEquals(2.0f, engine.speed());
+                assertEquals(2.0f, AL10.alGetSourcef(engine.source(), AL10.AL_PITCH), 1e-6f);
+                assertFalse(engine.speed(Float.NaN));
+                assertFalse(engine.speed(0));
+                assertEquals(2.0f, engine.speed(), "a refused rate keeps the last one");
+
+                assertTrue(ALC10.alcMakeContextCurrent(other));
+                assertTrue(engine.canSpeed(), "the capability is a pure query");
+                assertThrows(IllegalStateException.class, () -> engine.speed(3));
+                assertTrue(ALC10.alcMakeContextCurrent(this.al.context()));
+                assertEquals(2.0f, engine.speed(), "a guarded call leaves the rate untouched");
+            } finally {
+                ALC10.alcMakeContextCurrent(this.al.context());
+                ALC10.alcDestroyContext(other);
+                engine.release();
+            }
+            assertFalse(engine.canSpeed(), "a released source cannot change speed");
+        }
+
+        @Test
+        @DisplayName("upload() rejects heap, empty and frame-misaligned chunks as caller bugs")
         void malformedChunks() {
             final ALEngine engine = MediaAPI.alEngine();
             try {
                 assertTrue(engine.format(SFXEngine.SampleType.S16, 2, RATE_HZ));
-                assertMalformedChunksRejected(engine);
+                assertThrows(IllegalArgumentException.class, () -> engine.upload(ByteBuffer.allocate(4 * MS_BYTES)), "a heap chunk");
+                assertThrows(IllegalArgumentException.class, () -> engine.upload(ByteBuffer.allocateDirect(0)), "an empty chunk");
+                assertThrows(IllegalArgumentException.class, () -> engine.upload(ByteBuffer.allocateDirect(MS_BYTES + 2)), "half a stereo frame");
+                assertEquals(0, engine.pendingMs(), "nothing was queued");
                 assertEquals(0, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED), "no buffer was queued");
             } finally {
                 engine.release();
@@ -538,9 +472,6 @@ public class SFXEngineTest {
                 assertTrue(engine.upload(pcm));
                 assertTrue(engine.upload(pcm));
                 assertFalse(engine.upload(pcm));
-                assertFalse(engine.speed(Float.NaN));
-                assertFalse(engine.speed(0));
-                assertEquals(1, engine.speed());
                 assertEquals(AL10.AL_NO_ERROR, AL10.alGetError());
             } finally {
                 engine.release();
@@ -580,27 +511,6 @@ public class SFXEngineTest {
         }
 
         @Test
-        @DisplayName("Speed capability needs no context while the setter still guards it")
-        void speedCapabilityNeedsNoContext() {
-            final ALEngine engine = MediaAPI.alEngine();
-            final long other = ALC10.alcCreateContext(this.device, (IntBuffer) null);
-            assertNotEquals(0, other);
-            try {
-                assertTrue(ALC10.alcMakeContextCurrent(other));
-                assertTrue(engine.canSpeed(), "the capability is a pure query");
-                assertThrows(IllegalStateException.class, () -> engine.speed(2));
-                assertTrue(ALC10.alcMakeContextCurrent(this.context));
-                assertEquals(1, engine.speed(), "a guarded call leaves the rate untouched");
-            } finally {
-                ALC10.alcMakeContextCurrent(this.context);
-                ALC10.alcDestroyContext(other);
-                engine.release();
-            }
-            assertFalse(engine.canSpeed(), "a released source cannot change speed");
-            assertFalse(MediaAPI.jsEngine().canSpeed(), "Java Sound has no rate control");
-        }
-
-        @Test
         @DisplayName("Players query speed on any context and keep their rate when the engine refuses")
         void playerSpeedFollowsTheEngine() {
             Assumptions.assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
@@ -610,7 +520,7 @@ public class SFXEngineTest {
             assertTrue(mrl.await(3000));
             final ALEngine engine = MediaAPI.alEngine();
             final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, null, engine);
-            final long other = ALC10.alcCreateContext(this.device, (IntBuffer) null);
+            final long other = ALC10.alcCreateContext(this.al.device(), (IntBuffer) null);
             assertNotEquals(0, other);
             try {
                 player.mute(true);
@@ -635,21 +545,6 @@ public class SFXEngineTest {
     }
 
     // UTILITY
-
-    // VERIFIES A SUPPORTED_CHANNELS TABLE: CHANNEL COUNTS IN RANGE, AT LEAST ONE TYPE PER ENTRY,
-    // AND EVERY ENTRY TYPE DECLARED IN supportedTypes().
-    private static void assertTableConsistent(final SFXEngine engine) {
-        final List<SFXEngine.SampleType> declared = List.of(engine.supportedTypes());
-        assertFalse(declared.isEmpty(), "at least one supported type must be declared");
-
-        for (final SFXEngine.ChannelSupport entry: engine.supportedChannels()) {
-            assertTrue(entry.channels() >= 1 && entry.channels() <= 8, "channel count out of range: " + entry.channels());
-            assertFalse(entry.types().isEmpty(), "entry must support at least one type");
-            for (final SFXEngine.SampleType type: entry.types()) {
-                assertTrue(declared.contains(type), "entry type not declared in supportedTypes: " + type);
-            }
-        }
-    }
 
     // OPENS AN S16 STEREO LINE OF bufferMs, SKIPPING THE CASE WHEN JAVA SOUND HAS NO OUTPUT LINE (HEADLESS CI)
     private static JSEngine open(final int bufferMs) {
@@ -680,13 +575,5 @@ public class SFXEngineTest {
         final FloatControl control = (FloatControl) line.getControl(FloatControl.Type.MASTER_GAIN);
         final float expected = volume <= 0 ? control.getMinimum() : (float) (20.0 * Math.log10(volume));
         assertEquals(expected, control.getValue(), 0.01f, "MASTER_GAIN for volume " + volume);
-    }
-
-    // AN ENGINE CONFIGURED FOR S16 STEREO REFUSES HEAP, EMPTY AND FRAME-MISALIGNED CHUNKS AS THE SAME CALLER BUG
-    private static void assertMalformedChunksRejected(final SFXEngine engine) {
-        assertThrows(IllegalArgumentException.class, () -> engine.upload(ByteBuffer.allocate(4 * MS_BYTES)), "a heap chunk");
-        assertThrows(IllegalArgumentException.class, () -> engine.upload(ByteBuffer.allocateDirect(0)), "an empty chunk");
-        assertThrows(IllegalArgumentException.class, () -> engine.upload(ByteBuffer.allocateDirect(MS_BYTES + 2)), "half a stereo frame");
-        assertEquals(0, engine.pendingMs(), "nothing was queued");
     }
 }

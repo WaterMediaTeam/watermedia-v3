@@ -1041,7 +1041,7 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     // DETECTED-STATUS CHIP — TINTED FILL + OUTLINE + SQUARE STATUS PIP + LABEL (LEGACY GEOMETRY)
-    private final class StatusChip extends Element<StatusChip> {
+    private static final class StatusChip extends Element<StatusChip> {
 
         private String label = "";
         private Color color = AppTheme.TEXT_FAINT;

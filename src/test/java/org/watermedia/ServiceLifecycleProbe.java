@@ -4,11 +4,9 @@ import me.srrapero720.waterconfig.WaterConfig;
 import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MRL;
-import org.watermedia.api.platform.Platform.Quality;
-import org.watermedia.api.platform.Platform.Source;
 import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.PlatformAPI;
-import org.watermedia.api.platform.Platform.Resolution;
+import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.test.support.LocalHttp;
 import org.watermedia.test.support.PlayerWait;
@@ -25,8 +23,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Exercises the loaded services in a fresh JVM: searches, uploads and the MRL cache sweep. */
 public final class ServiceLifecycleProbe {
@@ -42,7 +42,7 @@ public final class ServiceLifecycleProbe {
             case "platform" -> platforms();
             case "uploads" -> uploads(root);
             case "evicted" -> evicted();
-            case "failed-probe" -> PlatformSearchFailureProbe.run();
+            case "failed-probe" -> failedProbe();
             default -> throw new IllegalArgumentException("Unknown scenario: " + arguments[0]);
         }
         System.out.println("PROBE_OK " + arguments[0]);
@@ -61,7 +61,7 @@ public final class ServiceLifecycleProbe {
             }
         });
         final MRL old = MediaAPI.mrl(key);
-        if (!old.await(3000) || old.status() != MRL.Status.EXPIRED || old.sourceCount() != 1)
+        if (!old.await(3_000) || old.status() != MRL.Status.EXPIRED || old.sourceCount() != 1)
             throw new AssertionError("Expiring fixture did not load");
         awaitIdle(old);
         final var ownerField = MRL.class.getDeclaredField("owner");
@@ -71,10 +71,10 @@ public final class ServiceLifecycleProbe {
         cleanupField.setAccessible(true);
         synchronized (owner) { cleanupField.setLong(owner, 0); }
         final MRL sweep = MediaAPI.mrl(URI.create("fixture:cleanup"));
-        if (!sweep.await(3000) || old.status() != MRL.Status.FORGOTTEN || old.sourceCount() != 0)
+        if (!sweep.await(3_000) || old.status() != MRL.Status.FORGOTTEN || old.sourceCount() != 0)
             throw new AssertionError("Cleanup did not invalidate the expired handle");
         final MRL replacement = old.reload();
-        if (replacement == old || !replacement.await(3000) || replacement.status() != MRL.Status.LOADED
+        if (replacement == old || !replacement.await(3_000) || replacement.status() != MRL.Status.LOADED
                 || replacement != MediaAPI.mrl(key) || old.status() != MRL.Status.FORGOTTEN || old.sourceCount() != 0)
             throw new AssertionError("Reload did not return the canonical replacement");
     }
@@ -175,6 +175,68 @@ public final class ServiceLifecycleProbe {
         } finally {
             resolveResume.countDown();
             resume.countDown();
+        }
+    }
+
+    // ONE PROBE FAILS (AND ITS NAME BREAKS ON THE SECOND CALL) WHILE A SLOW ONE SUCCEEDS LATE: THE SEARCH WAITS FOR THE
+    // SLOW PROBE, KEEPS ITS RESULT AND CACHES THE FULL SET
+    private static void failedProbe() throws Exception {
+        for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
+        final CountDownLatch slowEntered = new CountDownLatch(1);
+        final CountDownLatch releaseSlow = new CountDownLatch(1);
+        final AtomicInteger successfulProbes = new AtomicInteger();
+        PlatformAPI.register(new Platform() {
+            @Override public String name() { return "Slow fixture"; }
+            @Override public Resolution resolve(final URI uri) { return null; }
+            @Override public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
+                successfulProbes.incrementAndGet();
+                slowEntered.countDown();
+                try {
+                    if (!releaseSlow.await(5, TimeUnit.SECONDS)) throw new PlatformException("Slow fixture", "not released");
+                } catch (final InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new PlatformException("Slow fixture", "interrupted");
+                }
+                return List.of(new PlatformResult(this, "late success", null, URI.create("https://fixture.invalid/success")));
+            }
+        });
+        final AtomicInteger names = new AtomicInteger();
+        PlatformAPI.register(new Platform() {
+            @Override public String name() {
+                if (names.incrementAndGet() > 1) throw new IllegalStateException("Broken diagnostic name");
+                return "Failing fixture";
+            }
+            @Override public Resolution resolve(final URI uri) { return null; }
+            @Override public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
+                throw new PlatformException("Failing fixture", "Fixture probe failed");
+            }
+        });
+        try {
+            final var search = PlatformAPI.search("failure contract");
+            // THE WORKERS EXIST FROM THE FIRST SEARCH ON
+            final var field = PlatformAPI.class.getDeclaredField("searchPool");
+            field.setAccessible(true);
+            final ThreadPoolExecutor pool = (ThreadPoolExecutor) field.get(null);
+            final var coordinatorField = PlatformAPI.class.getDeclaredField("coordinator");
+            coordinatorField.setAccessible(true);
+            final ThreadPoolExecutor coordinator = (ThreadPoolExecutor) coordinatorField.get(null);
+            if (!slowEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Second probe did not start");
+            if (!PlayerWait.awaitCondition(() -> pool.getCompletedTaskCount() >= 1, 3000))
+                throw new AssertionError("Failing probe did not complete exceptionally");
+            if (PlayerWait.awaitCondition(search::done, 250))
+                throw new AssertionError("Search completed while another probe was still running");
+            releaseSlow.countDown();
+            if (!PlayerWait.awaitCondition(search::done, 3000) || search.results().size() != 1
+                    || !search.results().get(0).title().equals("late success"))
+                throw new AssertionError("Successful late probe was lost");
+            if (!PlayerWait.awaitCondition(() -> coordinator.getCompletedTaskCount() >= 1, 3000))
+                throw new AssertionError("Search coordinator did not finish publishing its cache");
+            final var cached = PlatformAPI.search("failure contract");
+            if (!cached.done() || cached.results().size() != 1 || !cached.results().get(0).title().equals("late success")
+                    || successfulProbes.get() != 1)
+                throw new AssertionError("Completed search did not cache its full result set");
+        } finally {
+            releaseSlow.countDown();
         }
     }
 

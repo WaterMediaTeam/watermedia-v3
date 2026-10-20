@@ -6,7 +6,6 @@ import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
-import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.ThreadTool;
 
 import java.net.URI;
@@ -148,9 +147,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     volatile int scaleHeight = NO_SIZE;
     volatile LodLevel lod = LodLevel.MAX;
 
-    // NATIVE SOURCE FRAME SIZE BEFORE ANY SCALING — UPDATED BY THE SUBCLASS WHEN IT LEARNS
-    // THE DECODED DIMENSIONS, READ BY CALLERS THAT NEED THE UNCAPPED RESOLUTION (e.g. A UI
-    // CLAMPING A CUSTOM maxSize TO THE SOURCE).
+    // NATIVE SOURCE FRAME SIZE BEFORE ANY SCALING: THE SUBCLASS SETS IT WHEN IT LEARNS THE DECODED DIMENSIONS,
+    // CALLERS THAT NEED THE UNCAPPED RESOLUTION READ IT (e.g. A UI CLAMPING A CUSTOM scale() TO THE SOURCE)
     volatile int sourceWidth = NO_SIZE;
     volatile int sourceHeight = NO_SIZE;
 
@@ -759,9 +757,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public int volume() { return Math.round(this.volume * 100); }
 
     /**
-     * Mutes or unmutes the audio playback.
-     * When muted, the volume is internally set to 0.0f,
-     * and when unmuted, the volume is restored to the previous level.
+     * Mutes or unmutes the audio playback. Muting silences the audio engine without changing
+     * {@link #volume()}, and unmuting plays at that volume again.
      * @param mute true to mute the audio, false to unmute
      */
     public void mute(final boolean mute) {
@@ -1189,11 +1186,25 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             try {
                 step.run();
             } catch (final RuntimeException | Error problem) {
-                failure = WaterMediaModule.mergeFailure(failure, problem);
+                failure = mergeFailure(failure, problem);
             }
         }
         if (failure instanceof final Error error) throw error;
         if (failure instanceof final RuntimeException error) throw error;
+    }
+
+    // COMBINES CLEANUP FAILURES: THE FIRST CAUSE KEEPS THE REST AS SUPPRESSED, EXCEPT THAT AN Error OUTRANKS AN EXCEPTION AND A
+    // VirtualMachineError OUTRANKS EVERYTHING, SO A FATAL VM ERROR NEVER HIDES BEHIND AN ORDINARY ONE
+    static Throwable mergeFailure(final Throwable previous, final Throwable next) {
+        if (previous == null || previous == next) return next;
+        final boolean previousFatal = previous instanceof VirtualMachineError;
+        final boolean nextFatal = next instanceof VirtualMachineError;
+        if ((nextFatal && !previousFatal) || (next instanceof Error && !(previous instanceof Error))) {
+            next.addSuppressed(previous);
+            return next;
+        }
+        previous.addSuppressed(next);
+        return previous;
     }
 
     // MONOTONIC MILLISECONDS SINCE CLASS LOAD (SEE EPOCH_NS)

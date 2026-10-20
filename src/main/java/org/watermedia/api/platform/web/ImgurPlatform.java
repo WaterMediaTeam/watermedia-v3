@@ -120,8 +120,6 @@ public final class ImgurPlatform implements Platform {
             final Image img = res.data();
             LOGGER.debug(IT, "Imgur resolved image '{}' ({})", id, img.type());
             return new Resolution(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
-        } catch (final PlatformException e) {
-            throw e;
         } catch (final RuntimeException e) {
             throw new PlatformException(NAME, "Unexpected API response for " + uri, e);
         }

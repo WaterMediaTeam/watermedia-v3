@@ -10,8 +10,8 @@ import java.util.Arrays;
  *
  * @param frames   decoded frames, each a single tightly packed buffer laid out in {@code format}
  * @param format   pixel layout of every frame
- * @param width    frame width; the widest frame when frames differ in size
- * @param height   frame height; the tallest frame when frames differ in size
+ * @param width    frame width; {@link ImageReader#readAll()} reports the last frame's width after filters
+ * @param height   frame height; {@link ImageReader#readAll()} reports the last frame's height after filters
  * @param delays   per-frame delay in milliseconds; {@code 0} advances to the next frame immediately
  * @param duration single-cycle playback time, the sum of every entry in {@code delays}; use
  *                 {@link #duration(boolean)} for the repeat-aware value

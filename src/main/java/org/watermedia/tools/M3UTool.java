@@ -240,10 +240,7 @@ public final class M3UTool {
                 version = DataTool.parseInt(line.substring(15), 1);
             }
             else if (line.startsWith("#EXT-X-MEDIA:")) {
-                // PARSE KEY=VALUE / KEY="VALUE" PAIRS FROM THE TAG BODY (KEYS KEPT AS-IS)
-                final Map<String, String> a = new HashMap<>();
-                final Matcher am = ATTR.matcher(line.substring(13));
-                while (am.find()) a.put(am.group(1), am.group(2) != null ? am.group(2) : am.group(3));
+                final Map<String, String> a = attributes(line.substring(13), false);
                 final String type = a.get("TYPE");
                 final String groupId = a.get("GROUP-ID");
                 if (type != null && groupId != null) {
@@ -276,11 +273,7 @@ public final class M3UTool {
                 }
                 final URI uri = resolve(source, peeked, warned);
                 if (uri != null) {
-                    // PARSE KEY=VALUE / KEY="VALUE" PAIRS FROM THE TAG BODY (KEYS KEPT AS-IS)
-                    final Map<String, String> a = new HashMap<>();
-                    final Matcher am = ATTR.matcher(line.substring(18));
-                    while (am.find()) a.put(am.group(1), am.group(2) != null ? am.group(2) : am.group(3));
-
+                    final Map<String, String> a = attributes(line.substring(18), false);
                     int w = 0, h = 0;
                     final String res = a.get("RESOLUTION");
                     if (res != null) {
@@ -298,13 +291,13 @@ public final class M3UTool {
                         if (r != null) name = r.name();
                     }
 
-                    // A NEGATIVE OR NaN FRAME-RATE IS GARBAGE THE QUALITY RECORDS DOWNSTREAM WOULD REJECT
-                    final double fps = DataTool.parseDouble(a.get("FRAME-RATE"), 30d);
+                    // A MISSING, NEGATIVE, NaN OR OVERSIZED FRAME-RATE IS UNKNOWN, WHICH THE QUALITY RECORDS READ AS ZERO
+                    final double fps = DataTool.parseDouble(a.get("FRAME-RATE"), 0d);
                     variants.add(new Variant(
                             uri,
                             DataTool.parseLong(a.get("BANDWIDTH"), 0),
                             w, h,
-                            fps >= 0d ? fps : 0d, // NaN AND NEGATIVES BOTH MAP TO ZERO
+                            fps > 0d && fps <= Float.MAX_VALUE ? fps : 0d,
                             a.get("CODECS"),
                             videoGroup,
                             a.get("AUDIO"),
@@ -407,12 +400,7 @@ public final class M3UTool {
                 final String header = commaIdx >= 0 ? text.substring(0, commaIdx) : text;
                 title = commaIdx >= 0 ? text.substring(commaIdx + 1).trim() : null;
 
-                // IPTV KEYS ARE LOWER-CASED FOR STABLE tvg-* LOOKUPS
-                attrs = new HashMap<>();
-                final Matcher m = ATTR.matcher(header);
-                while (m.find()) {
-                    attrs.put(m.group(1).toLowerCase(Locale.ROOT), m.group(2) != null ? m.group(2) : m.group(3));
-                }
+                attrs = attributes(header, true);
                 continue;
             }
 
@@ -441,6 +429,14 @@ public final class M3UTool {
     // ================================================================================================
     // UTILITIES
     // ================================================================================================
+
+    // KEY=VALUE / KEY="VALUE" PAIRS OF A TAG BODY; IPTV KEYS ARE LOWER-CASED FOR STABLE tvg-* LOOKUPS
+    private static Map<String, String> attributes(final String body, final boolean lower) {
+        final Map<String, String> attrs = new HashMap<>();
+        final Matcher m = ATTR.matcher(body);
+        while (m.find()) attrs.put(lower ? m.group(1).toLowerCase(Locale.ROOT) : m.group(1), m.group(2) != null ? m.group(2) : m.group(3));
+        return attrs;
+    }
 
     // RESOLVES spec AGAINST base: ANY STREAMING SCHEME FFMPEG SPEAKS PASSES, BUT ONLY A LOCAL PLAYLIST MAY LIST LOCAL
     // FILES AND NONE MAY LIST ARCHIVES. A SKIPPED ENTRY YIELDS NULL; warned LOGS ONLY THE FIRST ONE OF A PLAYLIST

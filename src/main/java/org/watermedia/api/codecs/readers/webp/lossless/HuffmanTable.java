@@ -15,7 +15,6 @@ public final class HuffmanTable {
     // WHICH RESOLVE WITHOUT READING BITS AND THEREFORE NEVER TOUCH IT
     private final int[] lookup;
     // PRE-COMPUTED REVERSED LONG CODES (len > LOOKUP_BITS) FOR FAST SLOW-PATH LINEAR SCAN
-    private final int[] longLens;
     private final int[] longCodes;   // ALREADY REVERSED FOR LSB-FIRST COMPARE
     private final int[] longSymbols;
     // PER-LENGTH START INDICES: LONG ENTRIES OF LENGTH len OCCUPY [longStart[len], longStart[len+1])
@@ -25,11 +24,9 @@ public final class HuffmanTable {
     private final boolean isSingleSymbol;
     private final int singleSymbolValue;
 
-    private HuffmanTable(final int[] lookup,
-                         final int[] longLens, final int[] longCodes, final int[] longSymbols, final int[] longStart, final int longMaxLen,
+    private HuffmanTable(final int[] lookup, final int[] longCodes, final int[] longSymbols, final int[] longStart, final int longMaxLen,
                          final boolean isSingleSymbol, final int singleSymbolValue) {
         this.lookup = lookup;
-        this.longLens = longLens;
         this.longCodes = longCodes;
         this.longSymbols = longSymbols;
         this.longStart = longStart;
@@ -100,11 +97,6 @@ public final class HuffmanTable {
 
     /** Builds a canonical LSB-first table from symbol lengths; rejects over-subscribed codes. */
     public static HuffmanTable build(final int[] codeLengths, final int alphabetSize) throws CodecException {
-        if (codeLengths == null || codeLengths.length == 0) {
-            // EMPTY TABLE - SINGLE SYMBOL 0
-            return singleSymbolTable(0);
-        }
-
         // COUNT CODE LENGTHS AND FIND SINGLE SYMBOL IF PRESENT
         final int[] lengthCount = new int[16];
         int maxLen = 0;
@@ -215,7 +207,7 @@ public final class HuffmanTable {
             while (startPos < longCount && longLens[startPos] == len) startPos++;
         }
 
-        return new HuffmanTable(lookup, longLens, longCodes, longSymbols, longStart, longMaxLen, false, 0);
+        return new HuffmanTable(lookup, longCodes, longSymbols, longStart, longMaxLen, false, 0);
     }
 
     /** Builds a one-symbol zero-bit table or a two-symbol one-bit table. */
@@ -229,42 +221,13 @@ public final class HuffmanTable {
         for (int i = 0; i < LOOKUP_SIZE; i++) {
             lookup[i] = ((i & 1) == 0 ? (sym0 << 8) : (sym1 << 8)) | 1;
         }
-        return new HuffmanTable(lookup, NO_LONG, NO_LONG, NO_LONG, NO_LONG_START, 0, false, 0);
+        return new HuffmanTable(lookup, NO_LONG, NO_LONG, NO_LONG_START, 0, false, 0);
     }
 
     // A ONE-SYMBOL CODE COSTS ZERO BITS (RFC 9649), SO NO LOOKUP ARRAY IS BUILT AT ALL: ALLOCATING
     // ONE WOULD MAKE A 20-BIT HUFFMAN GROUP COST KILOBYTES OF LIVE TABLES NOBODY EVER READS
     private static HuffmanTable singleSymbolTable(final int symbol) {
-        return new HuffmanTable(null, NO_LONG, NO_LONG, NO_LONG, NO_LONG_START, 0, true, symbol);
-    }
-
-    /** Returns a summary of the lookup coverage and distinct coded symbols for diagnostics. */
-    public String debugInfo() {
-        if (this.isSingleSymbol) return "HuffmanTable[singleSymbol=" + this.singleSymbolValue + "]";
-
-        int nonZeroLookup = 0;
-        int maxLookupLen = 0;
-        for (int i = 0; i < LOOKUP_SIZE; i++) {
-            final int len = this.lookup[i] & 0xFF;
-            if (len > 0) nonZeroLookup++;
-            if (len > maxLookupLen) maxLookupLen = len;
-        }
-
-        // DISTINCT SYMBOLS ACROSS BOTH LOOKUP ENTRIES AND THE LONG-CODE LIST
-        int symbolsWithCode = this.longLens.length;
-        final boolean[] seen = new boolean[65536];
-        for (int i = 0; i < LOOKUP_SIZE; i++) {
-            final int entry = this.lookup[i];
-            if ((entry & 0xFF) == 0) continue;
-            final int sym = entry >>> 8;
-            if (sym < seen.length && !seen[sym]) {
-                seen[sym] = true;
-                symbolsWithCode++;
-            }
-        }
-
-        return "HuffmanTable[lookupNonZero=" + nonZeroLookup + ", maxLookupLen=" + maxLookupLen +
-                ", symbolsWithCode=" + symbolsWithCode + ", maxCodeLen=" + Math.max(maxLookupLen, this.longMaxLen) + "]";
+        return new HuffmanTable(null, NO_LONG, NO_LONG, NO_LONG_START, 0, true, symbol);
     }
 
     private static int reverseBits(int value, final int numBits) {

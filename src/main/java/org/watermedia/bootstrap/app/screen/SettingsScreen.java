@@ -88,7 +88,7 @@ public final class SettingsScreen extends Screen {
     // SAVE; A null (METHOD RENAMED/HIDDEN UPSTREAM) SURFACES LATER AS A FAILED SAVE STATE
     private static final Method CONFIG_SAVE;
     static {
-        Method save = null;
+        Method save;
         try {
             save = ConfigSpec.class.getDeclaredMethod("save");
             save.setAccessible(true);
@@ -109,7 +109,6 @@ public final class SettingsScreen extends Screen {
     // TREE SLOTS — BUILT ONCE IN build(), REFILLED ON SPEC/SECTION SWITCHES
     private Header header;
     private TabScroll tabs;
-    private Button reset;
     private Parent sectionColumn;
     private Text paneTitle;
     private Text paneDetail;
@@ -157,7 +156,7 @@ public final class SettingsScreen extends Screen {
 
         // SPEC TAB STRIP — HORIZONTALLY SCROLLABLE FOLDER TABS UNDER THE HEADER WITH RESET PINNED RIGHT:
         // [ APP ][ INSTANCE ][ … more specs, scroll → ] ................. [ RESET TO DEFAULT ]
-        this.reset = new Button("RESET TO DEFAULT").icon("reset")
+        final Button reset = new Button("RESET TO DEFAULT").icon("reset")
                 .accent(AppTheme.AMBER).textColor(AppTheme.TEXT_SOFT)
                 .size(Math.max(190, Button.width(this.text, "RESET TO DEFAULT", "", "reset", 12) + 24), Theme.BUTTON)
                 .gravity(Gravity.CENTER)
@@ -167,10 +166,10 @@ public final class SettingsScreen extends Screen {
                 });
         // THE TABS SCROLL HORIZONTALLY (WEIGHT 1 VIEWPORT); THE RESET ACTION IS A PINNED, NON-SCROLLING
         // SIBLING. TabStrip HOSTS BOTH AND DRAWS THE OPEN-FOLDER BASELINE ACROSS THE WHOLE STRIP.
-        this.tabs = new TabScroll().spacing(6).height(MAX_PARENT).weight(1f);
+        this.tabs = new TabScroll().height(MAX_PARENT).weight(1f);
         final TabStrip strip = new TabStrip();
         strip.spacing(12).width(MAX_PARENT).height(TAB_H).padding(new Spacing(12, 22, 0, 22));
-        strip.add(this.tabs).add(this.reset);
+        strip.add(this.tabs).add(reset);
 
         // SECTIONS — CLEAN LEFT COLUMN, MRL-STYLE: HEAD ROW (NEON BAR + LABEL) OVER A FLAT PLATE
         this.sectionColumn = Parent.column().spacing(2).width(MAX_PARENT);
@@ -995,16 +994,11 @@ public final class SettingsScreen extends Screen {
 
         private static final int STEP = 48; // PX PER WHEEL NOTCH
 
-        private int spacing;
+        private static final int SPACING = 6; // GAP BETWEEN TABS
         private int scrollX;
         private int maxScrollX;
         private int naturalWidth; // SUM OF TAB WIDTHS + GAPS — THE SCROLLABLE CONTENT WIDTH
         private boolean followActive; // ON A SPEC SWITCH, BRING THE ACTIVE TAB INTO VIEW ON THE NEXT LAYOUT
-
-        private TabScroll spacing(final int gap) {
-            this.spacing = Math.max(0, gap);
-            return this;
-        }
 
         private void followActive() {
             this.followActive = true;
@@ -1017,7 +1011,7 @@ public final class SettingsScreen extends Screen {
             for (final Element<?> child: this.children) {
                 if (!child.visible()) continue;
                 child.measure(innerAvailWidth, innerAvailHeight); // TABS WRAP THEIR WIDTH, FILL THE HEIGHT
-                if (!first) total += this.spacing;
+                if (!first) total += SPACING;
                 first = false;
                 total += child.measuredWidth();
             }
@@ -1041,7 +1035,7 @@ public final class SettingsScreen extends Screen {
             boolean first = true;
             for (final Element<?> child: this.children) {
                 if (!child.visible()) continue;
-                if (!first) x += this.spacing;
+                if (!first) x += SPACING;
                 first = false;
                 child.layout(x, y);
                 x += child.measuredWidth();
@@ -1055,7 +1049,7 @@ public final class SettingsScreen extends Screen {
             boolean first = true;
             for (final Element<?> child: this.children) {
                 if (!child.visible()) continue;
-                if (!first) x += this.spacing;
+                if (!first) x += SPACING;
                 first = false;
                 if (child instanceof final SpecTab tab && tab.index == SettingsScreen.this.activeSpecIndex) {
                     final int right = x + child.measuredWidth();
@@ -2064,14 +2058,13 @@ public final class SettingsScreen extends Screen {
             throw new IllegalArgumentException("Unsupported number type: " + this.valueType.getSimpleName());
         }
 
-        @SuppressWarnings({"unchecked", "rawtypes"})
         private void setValue(final Object next) {
             final Object previous = this.field.get();
             try {
-                ((IConfigField) this.field).set0(next);
+                this.field.set0(next);
             } catch (final RuntimeException e) {
                 try {
-                    ((IConfigField) this.field).set0(previous);
+                    this.field.set0(previous);
                 } catch (final RuntimeException ignored) {
                 }
                 throw e;

@@ -233,6 +233,7 @@ public final class AppBootstrap {
         return jars;
     }
 
+    // THE DIRECTORY IS A PARAMETER SO THE TESTS EXTRACT INTO THEIR OWN TEMPORARY FOLDER
     private static Path extract(final String resource, final Path directory) throws IOException {
         try (final InputStream input = AppBootstrap.class.getResourceAsStream(resource)) {
             if (input == null) throw new IOException("Missing bundled library: " + resource);

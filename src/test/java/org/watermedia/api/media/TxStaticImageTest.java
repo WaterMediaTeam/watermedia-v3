@@ -8,13 +8,12 @@ import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies the {@link TxMediaPlayer} static-image path end to end: a single-frame
- * PNG loads, reaches its first GPU upload, and release tears down the engine
- * cleanly.
+ * Verifies the {@link TxMediaPlayer} static-image path end to end on an SVG: the source loads through its reader,
+ * uploads one frame, and the player's release frees the graphics engine.
  */
 @DisplayName("TxMediaPlayer static image")
 public class TxStaticImageTest {
@@ -26,61 +25,24 @@ public class TxStaticImageTest {
     static void boot() { MediaBootstrap.client(); }
 
     @Test
-    @DisplayName("Static PNG loads and uploads one frame")
-    void testStaticPngLoadsAndUploadsOneFrame() {
-        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
-
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
-        assertNotNull(player);
-
-        try {
-            player.start();
-            assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
-
-            assertTrue(player.canPlay());
-            assertTrue(player.width() > 0);
-            assertTrue(player.height() > 0);
-            assertTrue(gfx.uploadCount() >= 1);
-        } finally {
-            player.stop();
-            player.release();
-        }
-
-        // GFX OWNERSHIP IS EXTERNAL — TEAR DOWN THE ENGINE MANUALLY AND VERIFY THE HOOK FIRES.
-        gfx.release();
-        assertTrue(gfx.released());
-    }
-
-    @Test
-    @DisplayName("Static SVG loads and uploads one frame end-to-end")
+    @DisplayName("Static SVG loads, uploads one frame and its release frees the engine")
     void testStaticSvgLoadsAndUploadsOneFrame() {
         // EXERCISES MRL → TxMediaPlayer → openSource → SvgReader: openSource MUST NOT REJECT THE
         // SOURCE ON ITS CONTENT-TYPE HEADER (MRL ALREADY ROUTED IT AND CodecsAPI.reader VALIDATES THE BYTES)
         final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.SVG_DIR.resolve("car-filled-color.svg")));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
-
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
         final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
-        assertNotNull(player);
-
         try {
-            player.start();
+            assertTrue(player.start());
             assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
-
             assertTrue(player.canPlay());
             assertTrue(player.width() > 0);
             assertTrue(player.height() > 0);
-            assertTrue(gfx.uploadCount() >= 1);
+            assertEquals(1L, gfx.uploadCount(), "a still uploads its single frame once");
         } finally {
-            player.stop();
             player.release();
         }
-
-        gfx.release();
-        assertTrue(gfx.released());
+        assertTrue(gfx.released(), "the player's release frees its graphics engine");
     }
 }

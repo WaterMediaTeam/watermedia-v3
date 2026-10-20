@@ -663,7 +663,7 @@ public class HomeScreen extends Screen {
             r.twoLine = linked || (stage == 2 && entry.present && entry.valid && !errored);
             r.name.text(entry.name).color(entry.present ? AppTheme.TEXT : AppTheme.TEXT_SOFT);
             r.url.visible(linked).text(entry.url);
-            r.bar.visible(stage == 2 && entry.present && !linked).progress(pct / 100f);
+            r.bar.visible(stage == 2 && entry.present).progress(pct / 100f);
             r.size.text(entry.sizeLabel);
             final String tag = stage == 2 && errored
                     ? "ERROR"
@@ -755,9 +755,7 @@ public class HomeScreen extends Screen {
         private final List<MediaTile> mediaElements = new ArrayList<>();
         private final List<EntertainmentTile> entElements = new ArrayList<>();
         private UploadTip tip;
-        private int leftW;
         private int rightXRel;
-        private int rightW;
         private int tileW;
         private int rightXAbs;
         private int entYAbs;
@@ -794,21 +792,21 @@ public class HomeScreen extends Screen {
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             final int gap = 18;
             final int colGap = 10;
-            this.leftW = Math.max(330, (innerAvailWidth - gap) / 2);
-            this.rightXRel = this.leftW + gap;
-            this.rightW = innerAvailWidth - this.rightXRel;
-            this.tileW = Math.max(160, (this.rightW - colGap) / 2);
+            final int leftW = Math.max(330, (innerAvailWidth - gap) / 2);
+            this.rightXRel = leftW + gap;
+            final int rightW = innerAvailWidth - this.rightXRel;
+            this.tileW = Math.max(160, (rightW - colGap) / 2);
             for (final ActionTile tile: this.actionElements) {
-                tile.size(this.leftW, 56);
-                tile.measure(this.leftW, 56);
+                tile.size(leftW, 56);
+                tile.measure(leftW, 56);
             }
             for (final MediaTile tile: this.mediaElements) {
                 tile.size(this.tileW, TILE_H);
                 tile.measure(this.tileW, TILE_H);
             }
             for (final EntertainmentTile tile: this.entElements) {
-                tile.size(this.rightW, 72);
-                tile.measure(this.rightW, 72);
+                tile.size(rightW, 72);
+                tile.measure(rightW, 72);
             }
             if (this.tip != null && this.tip.visible()) this.tip.measure(innerAvailWidth, innerAvailHeight);
             this.contentWidth = innerAvailWidth;

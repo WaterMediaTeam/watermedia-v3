@@ -25,7 +25,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.NoSuchElementException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -38,10 +37,10 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * Verifies the JPEG decoder over baseline and APP-marker fixtures across the four common chroma
  * layouts, plus its metadata and the split between unsupported and malformed streams.
  *
- * <p>Three tests are emitted per fixture: a structural check on the BGRA reader output, a
- * native pixel-format probe (color stays BGRA, grayscale stays one luma byte per pixel), and a
- * tolerance-bounded pixel comparison against a pre-generated PAM reference. Tolerances are
- * relaxed because JPEG decoders legitimately differ at the IDCT/upsampling layer.
+ * <p>Two tests are emitted per fixture: a native pixel-format probe (color stays BGRA, grayscale
+ * stays one luma byte per pixel) and a tolerance-bounded pixel comparison of the requested BGRA
+ * output against a pre-generated PAM reference. Tolerances are relaxed because JPEG decoders
+ * legitimately differ at the IDCT/upsampling layer.
  */
 @DisplayName("JPEG decoder")
 public class JpegTest {
@@ -62,7 +61,7 @@ public class JpegTest {
     }
 
     @TestFactory
-    @DisplayName("Decode shape, native format and pixel match")
+    @DisplayName("Native format and pixel match")
     Iterable<DynamicTest> testJPEGFixtures() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final Fixture fixture: List.of(
@@ -73,24 +72,6 @@ public class JpegTest {
                 new Fixture(5, "jpeg444_all_appx_markers", PixelFormat.BGRA),
                 new Fixture(6, "jpeg420prog_unpadded", PixelFormat.BGRA)
         )) {
-            // BGRA STREAM SHAPE CHECK
-            tests.add(dynamicTest("JPEG decode [" + fixture.id + " " + fixture.encoding + "]", () -> {
-                final ByteBuffer source = ByteBuffer.wrap(Fixtures.readAll(fixture.jpeg()));
-                try (final ImageReader reader = CodecsAPI.reader(source, PixelFormat.BGRA)) {
-                    assertEquals("JPEG", reader.name());
-                    assertEquals(2, source.position(), "JPEG SOI should be consumed by CodecsAPI");
-                    assertTrue(reader.width() > 0);
-                    assertTrue(reader.height() > 0);
-                    assertEquals(PixelFormat.BGRA, reader.pixelFormat());
-                    assertEquals(1, reader.frameCount());
-                    assertTrue(reader.hasNext());
-
-                    final ByteBuffer frame = reader.next();
-                    assertTrue(frame.isDirect());
-                    assertEquals(reader.width() * reader.height() * 4, frame.remaining());
-                }
-            }));
-
             // NATIVE LAYOUT — NO FORMAT REQUESTED: COLOR IS CONVERTED TO BGRA, GRAYSCALE STAYS ONE BYTE PER PIXEL
             tests.add(dynamicTest("JPEG native format [" + fixture.id + " " + fixture.encoding + "]", () -> {
                 final ByteBuffer source = ByteBuffer.wrap(Fixtures.readAll(fixture.jpeg()));
@@ -253,18 +234,6 @@ public class JpegTest {
             final CodecException e = assertMalformed(unknown);
             assertTrue(e.getMessage().contains("FF01"), e.getMessage());
             assertMalformed(Arrays.copyOf(plain, sof(plain) + 6));
-        }
-
-        @Test
-        @DisplayName("next() past the frame throws NoSuchElementException and a closed reader IllegalStateException")
-        void endAndClose() throws IOException {
-            final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(Fixtures.JPEG_BASELINE)));
-            reader.next();
-            assertFalse(reader.hasNext());
-            assertThrows(NoSuchElementException.class, reader::next);
-            reader.close();
-            assertThrows(IllegalStateException.class, reader::hasNext);
-            assertThrows(IllegalStateException.class, reader::reset);
         }
 
         private static CodecException assertMalformed(final byte[] jpeg) {

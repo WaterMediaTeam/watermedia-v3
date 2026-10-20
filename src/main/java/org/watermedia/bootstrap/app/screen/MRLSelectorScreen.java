@@ -55,6 +55,7 @@ import static org.lwjgl.glfw.GLFW.*;
 public final class MRLSelectorScreen extends Screen {
 
     private static final long LOAD_TIMEOUT_MS = 30000L;
+    private static final int CORNER = 10; // AMBER CORNER TRIANGLE SIDE
 
     // CACHED, REFERENCE-STABLE KEYBIND LISTS — LET KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
     private static final List<Keybind> KEYS_LOADING = List.of(new Keybind("ESC", "Cancel"));
@@ -154,7 +155,7 @@ public final class MRLSelectorScreen extends Screen {
         this.stopLoad();
         this.groupSubscriptions.clear();
         this.thumbSubscribed.clear();
-        this.search.value("").focused(false);
+        this.search.clear().focused(false);
         this.applyFilter();
         this.list.selection(0);
         this.subscribeGroupMRLs();
@@ -585,13 +586,13 @@ public final class MRLSelectorScreen extends Screen {
     }
 
     // PORT OF THE AMBER CORNER TRIANGLE — ROW-STRIP RASTER (THE CANVAS HAS NO TRIANGLE PRIMITIVE)
-    private static void triangle(final Canvas canvas, final int x, final int y, final int size, final boolean left) {
-        canvas.glow(x, y, size, size, 0f, AppTheme.AMBER, 0.32f);
-        for (int i = 0; i < size; i++) {
+    private static void triangle(final Canvas canvas, final int x, final int y, final boolean left) {
+        canvas.glow(x, y, CORNER, CORNER, 0f, AppTheme.AMBER, 0.32f);
+        for (int i = 0; i < CORNER; i++) {
             if (left) {
-                canvas.fill(x, y + i, size - i, 1f, AppTheme.AMBER);
+                canvas.fill(x, y + i, CORNER - i, 1f, AppTheme.AMBER);
             } else {
-                canvas.fill(x + size - 1 - i, y + i, i + 1, 1f, AppTheme.AMBER);
+                canvas.fill(x + CORNER - 1 - i, y + i, i + 1, 1f, AppTheme.AMBER);
             }
         }
     }
@@ -857,8 +858,8 @@ public final class MRLSelectorScreen extends Screen {
             canvas.gradientV(x, this.panelY, w, this.panelH,
                     AppTheme.alpha(AppTheme.BG_2, 217), AppTheme.alpha(AppTheme.BG_1, 217));
             canvas.stroke(x, this.panelY, w, this.panelH, AppTheme.STROKE_BRIGHT, 1f);
-            triangle(canvas, x - 1, this.panelY - 1, 10, true);
-            triangle(canvas, x + w - 9, this.panelY + this.panelH - 9, 10, false);
+            triangle(canvas, x - 1, this.panelY - 1, true);
+            triangle(canvas, x + w - CORNER + 1, this.panelY + this.panelH - CORNER + 1, false);
 
             final MRL mrl = MRLSelectorScreen.this.mrlOf(sel);
             final String title = MRLSelectorScreen.this.text.truncateToWidth(sel.name().toUpperCase(Locale.ROOT), w - 410, AppTheme.TEXT_SECTION, Font.BOLD);
@@ -957,8 +958,8 @@ public final class MRLSelectorScreen extends Screen {
             return this;
         }
 
-        private SearchField value(final String v) {
-            this.value = v == null ? "" : v;
+        private SearchField clear() {
+            this.value = "";
             return this;
         }
 

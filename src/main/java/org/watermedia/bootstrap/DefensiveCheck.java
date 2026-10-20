@@ -168,10 +168,16 @@ public final class DefensiveCheck {
         final List<String> footprints = new ArrayList<>();
         try {
             final Path directory = (gameDir == null ? Path.of("") : gameDir).toAbsolutePath().normalize();
-            for (final String footprint: FOOTPRINTS) if (Files.exists(directory.resolve(footprint))) footprints.add(directory.resolve(footprint).toString());
+            for (final String footprint: FOOTPRINTS) {
+                final Path path = directory.resolve(footprint);
+                if (Files.exists(path)) footprints.add(path.toString());
+            }
             for (final String base: new String[] { System.getenv("APPDATA"), System.getProperty("user.home") }) {
                 if (base == null) continue;
-                for (final String store: RUNTIME_STORES) if (Files.isDirectory(Path.of(base, store))) footprints.add(Path.of(base, store).toString());
+                for (final String store: RUNTIME_STORES) {
+                    final Path path = Path.of(base, store);
+                    if (Files.isDirectory(path)) footprints.add(path.toString());
+                }
             }
         } catch (final Throwable ignored) {}
         if (footprints.isEmpty()) LOGGER.debug(IT, "No TLauncher signature found");

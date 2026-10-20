@@ -22,15 +22,15 @@ public final class DdsFixture {
             case BC7 -> 98;
             default -> throw new IllegalArgumentException("Unsupported BC fixture: " + format);
         };
-        final int frameBytes = Math.toIntExact((((long) width + 3) / 4) * (((long) height + 3) / 4) * format.blockBytes());
-        // WRITE THE DDS AND DX10 PREFIX IN LITTLE-ENDIAN CONTAINER ORDER.
+        // WRITE THE DDS AND DX10 PREFIX IN LITTLE-ENDIAN CONTAINER ORDER; THE PITCH STAYS 0 BECAUSE READERS DERIVE FRAME
+        // SIZES FROM THE BLOCK GRID, WHICH LETS THE PENTEST CORPUS DECLARE DIMENSIONS WHOSE BLOCK BYTES OVERFLOW AN int
         final ByteBuffer header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
         header.putInt(0x20534444);
         header.putInt(124);
         header.putInt(0x1 | 0x2 | 0x4 | 0x1000 | 0x80000);
         header.putInt(height);
         header.putInt(width);
-        header.putInt(frameBytes);
+        header.putInt(0);
         header.putInt(0);
         header.putInt(1);
         header.position(header.position() + 44);

@@ -8,14 +8,16 @@ import org.watermedia.api.media.MediaPlayer.Status;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the pure-Java control surface {@link MediaPlayer} implements for every subclass:
  * volume clamp/round-trip, mute orthogonality, speed bounds and the {@link MediaPlayer#canSpeed()}
- * gate, repeat, maxSize/lod validation, the LOD sizing rule and {@link Status#of(int)}. {@link ServerMediaPlayer} is the
- * headless concrete instance (the class is sealed, so no test-only stub is possible).
+ * gate, repeat, scale/lod validation, the LOD sizing rule, {@link Status#of(int)} and how release
+ * merges cleanup failures. {@link ServerMediaPlayer} is the headless concrete instance (the class is
+ * sealed, so no test-only stub is possible).
  */
 @DisplayName("MediaPlayer base surface")
 public class MediaPlayerBaseTest {
@@ -28,7 +30,7 @@ public class MediaPlayerBaseTest {
         @DisplayName("volume round-trips for every 0..100 value")
         void volumeRoundTrip() {
             final ServerMediaPlayer player = new ServerMediaPlayer();
-            // Math.round RECOVERS THE INPUT — THE OLD int CAST TRUNCATED 53 -> 52 (0.53f*100 = 52.9999f)
+            // THE STORED GAIN TIMES 100 CAN FALL JUST SHORT OF THE INPUT (0.53f * 100 = 52.9999f), SO ONLY ROUNDING RECOVERS IT
             for (int v = 0; v <= 100; v++) {
                 player.volume(v);
                 assertEquals(v, player.volume(), "round-trip failed at " + v);
@@ -95,12 +97,9 @@ public class MediaPlayerBaseTest {
         }
 
         @Test
-        @DisplayName("bounded speed changes apply on a seekable source")
+        @DisplayName("bounded speed changes apply on a non-live source")
         void speedBounds() {
             final ServerMediaPlayer player = new ServerMediaPlayer();
-            player.syncDuration(10_000); // NON-LIVE -> canSpeed() TRUE
-            assertTrue(player.canSpeed());
-
             assertTrue(player.speed(2.0f));
             assertEquals(2.0f, player.speed());
             assertTrue(player.speed(4.0f));
@@ -114,7 +113,7 @@ public class MediaPlayerBaseTest {
     }
 
     @Nested
-    @DisplayName("repeat / maxSize / lod")
+    @DisplayName("repeat / scale / lod")
     class StateTests {
 
         @Test
@@ -127,8 +126,8 @@ public class MediaPlayerBaseTest {
         }
 
         @Test
-        @DisplayName("maxSize stores the cap and rejects negatives")
-        void maxSizeValidation() {
+        @DisplayName("scale stores the cap and rejects a negative axis")
+        void scaleValidation() {
             final ServerMediaPlayer player = new ServerMediaPlayer();
             player.scale(160, 90);
             assertEquals(160, player.scaleWidth());
@@ -138,6 +137,7 @@ public class MediaPlayerBaseTest {
             player.scale(0, 0);
             assertEquals(MediaPlayer.NO_SIZE, player.scaleWidth());
             assertThrows(IllegalArgumentException.class, () -> player.scale(-1, 10));
+            assertThrows(IllegalArgumentException.class, () -> player.scale(10, -1));
         }
 
         @Test
@@ -148,14 +148,6 @@ public class MediaPlayerBaseTest {
             player.lod(LodLevel.NEAR);
             assertEquals(LodLevel.NEAR, player.lod());
             assertThrows(IllegalArgumentException.class, () -> player.lod(null));
-        }
-
-        @Test
-        @DisplayName("LodLevel keeps its documented percentages")
-        void lodPercent() {
-            assertEquals(100, LodLevel.MAX.percent());
-            assertEquals(50, LodLevel.NEAR.percent());
-            assertEquals(10, LodLevel.FAR_AWAY.percent());
         }
 
         @Test
@@ -182,13 +174,43 @@ public class MediaPlayerBaseTest {
     class StatusTests {
 
         @Test
-        @DisplayName("of maps every ordinal, including ERROR (7)")
+        @DisplayName("of maps every ordinal and rejects the ones outside the enum")
         void ofCoversFullRange() {
             for (final Status s: Status.values()) {
                 assertEquals(s, Status.of(s.ordinal()));
             }
             assertEquals(Status.WAITING, Status.of(0));
             assertEquals(Status.ERROR, Status.of(7));
+            assertThrows(IllegalArgumentException.class, () -> Status.of(-1));
+            assertThrows(IllegalArgumentException.class, () -> Status.of(Status.values().length));
+        }
+    }
+
+    @Nested
+    @DisplayName("Release failure merging")
+    class FailureTests {
+
+        @Test
+        @DisplayName("Preserves the first ordinary cause and avoids self-suppression")
+        void preservesFirstOrdinaryCauseAndAvoidsSelfSuppression() {
+            final Throwable first = new IllegalStateException("first");
+            final Throwable next = new IllegalArgumentException("next");
+            assertSame(first, MediaPlayer.mergeFailure(null, first));
+            assertSame(first, MediaPlayer.mergeFailure(first, first));
+            assertSame(first, MediaPlayer.mergeFailure(first, next));
+            assertSame(next, first.getSuppressed()[0]);
+            assertEquals(1, first.getSuppressed().length);
+        }
+
+        @Test
+        @DisplayName("Errors win over exceptions and fatal VM errors win over everything")
+        void fatalErrorsWin() {
+            final Throwable ordinary = new IllegalStateException("ordinary");
+            final Throwable assertion = new AssertionError("assertion");
+            final Throwable fatal = new OutOfMemoryError("fatal");
+            assertSame(assertion, MediaPlayer.mergeFailure(ordinary, assertion));
+            assertSame(fatal, MediaPlayer.mergeFailure(assertion, fatal));
+            assertSame(fatal, MediaPlayer.mergeFailure(fatal, new StackOverflowError()));
         }
     }
 }

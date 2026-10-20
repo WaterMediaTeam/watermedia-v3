@@ -18,6 +18,7 @@ public final class RenderEngine {
     private static final int FLOATS_PER_VERTEX = 8;
     // SHARED UI VERTEX CAPACITY — THE GL BACKEND SIZES ITS STREAM VBO TO THE SAME VALUE; KEEP THEM IN SYNC.
     private static final int MAX_VERTICES = 8192;
+    private static final int ARC_SEGMENTS = 10; // PER ROUNDED CORNER
     // SDF SOFT-RECT FALLOFF DISTANCES (PIXELS) — GLOW MATCHES THE OLD 10-FILL SPREAD (10 * 2.2); SHADOW IS
     // A SMALLER OFFSET HALO. TUNE THESE IF THE GLOW/SHADOW READS TOO TIGHT OR TOO SOFT.
     private static final float GLOW_SOFTNESS = 22f;
@@ -289,10 +290,10 @@ public final class RenderEngine {
         this.fill(x + radius, y, w - 2 * radius, h);
         this.fill(x, y + radius, radius, h - 2 * radius);
         this.fill(x + w - radius, y + radius, radius, h - 2 * radius);
-        this.fillArc(x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5), 10);
-        this.fillArc(x + w - radius, y + radius, radius, (float) (Math.PI * 1.5), (float) (Math.PI * 2), 10);
-        this.fillArc(x + w - radius, y + h - radius, radius, 0, (float) (Math.PI * 0.5), 10);
-        this.fillArc(x + radius, y + h - radius, radius, (float) (Math.PI * 0.5), (float) Math.PI, 10);
+        this.fillArc(x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5));
+        this.fillArc(x + w - radius, y + radius, radius, (float) (Math.PI * 1.5), (float) (Math.PI * 2));
+        this.fillArc(x + w - radius, y + h - radius, radius, 0, (float) (Math.PI * 0.5));
+        this.fillArc(x + radius, y + h - radius, radius, (float) (Math.PI * 0.5), (float) Math.PI);
     }
 
     public void fillRounded(final float x, final float y, final float w, final float h, final float radius,
@@ -341,12 +342,11 @@ public final class RenderEngine {
         }
         radius = Math.min(radius, Math.min(w, h) / 2f);
         this.lineWidth(lineWidth);
-        final int segments = 10;
         int idx = 0;
-        idx = this.putArc(idx, x + w - radius, y + radius, radius, (float) (-Math.PI / 2), 0f, segments);
-        idx = this.putArc(idx, x + w - radius, y + h - radius, radius, 0f, (float) (Math.PI / 2), segments);
-        idx = this.putArc(idx, x + radius, y + h - radius, radius, (float) (Math.PI / 2), (float) Math.PI, segments);
-        idx = this.putArc(idx, x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5), segments);
+        idx = this.putArc(idx, x + w - radius, y + radius, radius, (float) (-Math.PI / 2), 0f);
+        idx = this.putArc(idx, x + w - radius, y + h - radius, radius, 0f, (float) (Math.PI / 2));
+        idx = this.putArc(idx, x + radius, y + h - radius, radius, (float) (Math.PI / 2), (float) Math.PI);
+        idx = this.putArc(idx, x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5));
         this.draw(DrawMode.LINE_LOOP, idx, false);
     }
 
@@ -479,23 +479,21 @@ public final class RenderEngine {
         }
     }
 
-    private void fillArc(final float cx, final float cy, final float radius,
-                         final float startAngle, final float endAngle, final int segments) {
+    private void fillArc(final float cx, final float cy, final float radius, final float startAngle, final float endAngle) {
         this.put(0, cx, cy, 0f, 0f, this.color);
-        for (int i = 0; i <= segments; i++) {
-            final float angle = startAngle + (endAngle - startAngle) * i / segments;
+        for (int i = 0; i <= ARC_SEGMENTS; i++) {
+            final float angle = startAngle + (endAngle - startAngle) * i / ARC_SEGMENTS;
             this.put(1 + i, cx + (float) Math.cos(angle) * radius,
                     cy + (float) Math.sin(angle) * radius,
                     0f, 0f, this.color);
         }
-        this.draw(DrawMode.TRIANGLE_FAN, 2 + segments, false);
+        this.draw(DrawMode.TRIANGLE_FAN, 2 + ARC_SEGMENTS, false);
     }
 
-    private int putArc(final int startIdx, final float cx, final float cy, final float radius,
-                       final float startAngle, final float endAngle, final int segments) {
+    private int putArc(final int startIdx, final float cx, final float cy, final float radius, final float startAngle, final float endAngle) {
         int idx = startIdx;
-        for (int i = 0; i <= segments; i++) {
-            final float angle = startAngle + (endAngle - startAngle) * i / segments;
+        for (int i = 0; i <= ARC_SEGMENTS; i++) {
+            final float angle = startAngle + (endAngle - startAngle) * i / ARC_SEGMENTS;
             this.put(idx++, cx + (float) Math.cos(angle) * radius,
                     cy + (float) Math.sin(angle) * radius,
                     0f, 0f, this.color);

@@ -91,6 +91,9 @@ import static org.lwjgl.system.MemoryUtil.NULL;
  */
 public class WaterMediaApp {
     private static final Marker IT = MarkerManager.getMarker(WaterMediaApp.class.getSimpleName());
+    // LOG FILES PAST EITHER LIMIT ARE NOT UPLOADED TO MCLOGS
+    private static final long UPLOAD_LIMIT_BYTES = 10L * 1_024 * 1_024;
+    private static final int UPLOAD_LIMIT_LINES = 25_000;
     private static final AppContext ctx = new AppContext();
     private static final ScreenManager screens = new ScreenManager();
 
@@ -398,7 +401,7 @@ public class WaterMediaApp {
     public static void reapplyUiScale() {
         final String pref = RenderSystem.uiScalePreference();
         float factor;
-        if (pref == null || pref.equalsIgnoreCase("auto")) {
+        if (pref.equalsIgnoreCase("auto")) {
             factor = computeAutoUiScale();
         } else {
             try {
@@ -423,7 +426,7 @@ public class WaterMediaApp {
     // AUTO FACTOR — max(WINDOW-MONITOR CONTENT SCALE, RESOLUTION HEURISTIC height/1080), SNAPPED TO 0.25
     // STEPS AND CLAMPED TO [1.0, 3.0]. THE RESOLUTION TERM CATCHES HIGH-RES PANELS THE OS REPORTS AT 100%.
     private static float computeAutoUiScale() {
-        float contentScale = 1f;
+        final float contentScale;
         try (final MemoryStack stack = stackPush()) {
             final FloatBuffer sx = stack.mallocFloat(1);
             final FloatBuffer sy = stack.mallocFloat(1);
@@ -1036,7 +1039,7 @@ public class WaterMediaApp {
                 entry.valid = true;
                 final long size = Files.size(path);
                 entry.sizeLabel = MathUtil.displayBytes(size);
-                if (size > 10L * 1024L * 1024L || exceedsLineLimit(path, 25_000)) {
+                if (size > UPLOAD_LIMIT_BYTES || exceedsLineLimit(path)) {
                     entry.valid = false;
                     entry.state = "INVALID";
                     ctx.upload.error = true;
@@ -1059,11 +1062,11 @@ public class WaterMediaApp {
         ctx.upload.files.add(entry);
     }
 
-    private static boolean exceedsLineLimit(final Path path, final int maxLines) throws IOException {
+    private static boolean exceedsLineLimit(final Path path) throws IOException {
         try (final BufferedReader reader = lenientReader(path)) {
             int lines = 0;
             while (reader.readLine() != null) {
-                if (++lines > maxLines) return true;
+                if (++lines > UPLOAD_LIMIT_LINES) return true;
             }
             return false;
         }
@@ -1463,7 +1466,7 @@ public class WaterMediaApp {
         try {
             final TreeSet<String> names = new TreeSet<>();
             try (final PointerPointer<Pointer> opaque = new PointerPointer<>(1L)) {
-                opaque.put(0L, (Pointer) null);
+                opaque.put(0L, null);
                 AVCodec c;
                 while ((c = avcodec.av_codec_iterate(opaque)) != null) {
                     if (avcodec.av_codec_is_decoder(c) == 0) continue;

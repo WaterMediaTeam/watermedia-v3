@@ -17,20 +17,6 @@ public abstract class WaterMediaModule {
         this.start();
     }
 
-    /** Combines cleanup failures without hiding a fatal VM error behind an ordinary exception. */
-    public static Throwable mergeFailure(final Throwable previous, final Throwable next) {
-        if (next == null) throw new IllegalArgumentException("The next failure is required");
-        if (previous == null || previous == next) return next;
-        final boolean previousFatal = previous instanceof VirtualMachineError;
-        final boolean nextFatal = next instanceof VirtualMachineError;
-        if ((nextFatal && !previousFatal) || (next instanceof Error && !(previous instanceof Error))) {
-            next.addSuppressed(previous);
-            return next;
-        }
-        previous.addSuppressed(next);
-        return previous;
-    }
-
     // A PART THE MODULE CAN LIVE WITHOUT FAILED; THE MODULE KEEPS LOADING AND WaterMedia LISTS THE CAUSE
     protected final synchronized void failure(final Throwable cause) {
         if (cause == null) throw new IllegalArgumentException("A failure needs its cause");

@@ -13,80 +13,32 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link TxMediaPlayer#displayTime(long)}: a static image with a finite display duration
- * must transition to ENDED via the passive clock so a status-driven playlist advances off
- * {@code ended()}, while an unlimited (default) static image shows forever.
+ * Verifies that a {@link TxMediaPlayer} static image without a {@link TxMediaPlayer#displayTime(long)} shows forever and
+ * reports no duration; the timed case is covered by {@link TxControlContractTest}.
  */
 @DisplayName("TxMediaPlayer static image display time")
 public class TxDisplayTimeTest {
 
     private static final long MRL_TIMEOUT_MS = 2_000L;
     private static final long PLAYER_TIMEOUT_MS = 3_000L;
-    private static final long DISPLAY_MS = 300L;
+    private static final long OBSERVE_MS = 400L;
 
     @BeforeAll
     static void boot() { MediaBootstrap.client(); }
 
-    // CAPTURES THE publishStatus TRANSITION FROM THE STATUS-QUERY THREAD; volatile FOR VISIBILITY.
-    private static final class StatusCapture implements MediaPlayer.StatusListener {
-        private volatile Status from;
-        private volatile Status to;
-        @Override public void onStatus(final MediaPlayer player, final Status prev, final Status next) { this.from = prev; this.to = next; }
-    }
-
-    @Test
-    @DisplayName("A timed static image transitions to ENDED after displayTime")
-    void testTimedStaticEnds() {
-        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.JPEG_BASELINE));
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
-
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
-        final StatusCapture cap = new StatusCapture();
-        player.onStatus(cap);
-
-        try {
-            player.displayTime(DISPLAY_MS);
-            player.start();
-            assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
-            // THE DISPLAY DURATION IS REPORTED AS THE PLAYER DURATION.
-            assertEquals(DISPLAY_MS, player.duration());
-
-            // THE PASSIVE CLOCK MUST DRIVE THE STILL IMAGE TO ENDED WITHOUT ANY LIFECYCLE THREAD.
-            assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.ENDED));
-            assertTrue(player.ended());
-            assertEquals(Status.PLAYING, cap.from);
-            assertEquals(Status.ENDED, cap.to);
-        } finally {
-            player.stop();
-            player.release();
-        }
-        gfx.release();
-    }
-
     @Test
     @DisplayName("An unlimited static image never ends")
-    void testUnlimitedStaticNeverEnds() throws InterruptedException {
+    void testUnlimitedStaticNeverEnds() {
         final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.JPEG_BASELINE));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
-
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
-
+        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, new HeadlessGFXEngine(false));
         try {
-            // NO displayTime SET (ms <= 0) — CURRENT BEHAVIOUR: SHOW FOREVER.
-            player.start();
+            assertTrue(player.start());
             assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
-
-            Thread.sleep(400L);
-            assertFalse(player.ended(), "an unlimited static image must not transition to ENDED");
+            assertFalse(PlayerWait.awaitCondition(player::ended, OBSERVE_MS), "an unlimited static image must not transition to ENDED");
             assertEquals(0L, player.duration());
         } finally {
-            player.stop();
             player.release();
         }
-        gfx.release();
     }
 }

@@ -9,13 +9,13 @@ import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies the {@link TxMediaPlayer} frame-step semantics: while paused, {@code nextFrame()}
- * advances {@code time()} and {@code previousFrame()} rewinds it; the player must
- * remain in {@link Status#PAUSED} throughout.
+ * Verifies the {@link TxMediaPlayer} frame-step semantics: stepping is refused while playing, and while paused
+ * {@code nextFrame()} advances {@code time()} and {@code previousFrame()} rewinds it, the player staying in
+ * {@link Status#PAUSED} throughout.
  */
 @DisplayName("TxMediaPlayer frame step")
 public class TxFrameStepTest {
@@ -28,23 +28,20 @@ public class TxFrameStepTest {
     static void boot() { MediaBootstrap.client(); }
 
     @Test
-    @DisplayName("nextFrame and previousFrame move the clock while paused")
+    @DisplayName("nextFrame and previousFrame move the clock only while paused")
     void testNextAndPreviousFrameMoveClockWhilePaused() {
         final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("2.gif")));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
-
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
-        assertNotNull(player);
-
+        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, new HeadlessGFXEngine(false));
         try {
-            player.start();
-            assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
+            player.repeat(true); // THE ANIMATION MUST NOT END WHILE THE STEPS ARE CHECKED
+            assertTrue(player.start());
+            assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING));
+            assertFalse(player.nextFrame(), "a playing animation refuses to step");
+            assertFalse(player.previousFrame(), "a playing animation refuses to step back");
 
-            player.pause();
+            assertTrue(player.pause());
             assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PAUSED));
-
             final long initial = player.time();
 
             assertTrue(player.nextFrame());
@@ -56,7 +53,6 @@ public class TxFrameStepTest {
             assertTrue(PlayerWait.awaitCondition(() -> player.time() < afterNext, STEP_SETTLE_MS));
             assertEquals(Status.PAUSED, player.status());
         } finally {
-            player.stop();
             player.release();
         }
     }

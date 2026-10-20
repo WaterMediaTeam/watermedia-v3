@@ -517,15 +517,9 @@ public final class VP8LossyDecoder {
             final int band = COEFF_BANDS[n];
             final int[] p = probs[type][band][Math.min(ctx, 2)];
 
-            final int token;
-            if (prevZero) {
-                if (!br.readBool(p[1])) token = 0;
-                else token = decodeTokenVal(br, p);
-            } else {
-                if (!br.readBool(p[0])) break;
-                if (!br.readBool(p[1])) token = 0;
-                else token = decodeTokenVal(br, p);
-            }
+            // AFTER A ZERO TOKEN THE EOB BRANCH IS SKIPPED: ONLY THE ZERO/NON-ZERO DECISION IS CODED
+            if (!prevZero && !br.readBool(p[0])) break;
+            final int token = br.readBool(p[1]) ? decodeTokenVal(br, p) : 0;
 
             final int absVal;
             if (token == 0) {
@@ -1056,11 +1050,11 @@ public final class VP8LossyDecoder {
                         filterSimpleV(yPln, yOff + 8, yStr, limit);
                         filterSimpleV(yPln, yOff + 12, yStr, limit);
                     }
-                    if (mbY > 0) filterSimpleH(yPln, yOff, yStr, 16, mbLim);
+                    if (mbY > 0) filterSimpleH(yPln, yOff, yStr, mbLim);
                     if (fInner) {
-                        filterSimpleH(yPln, yOff + 4 * yStr, yStr, 16, limit);
-                        filterSimpleH(yPln, yOff + 8 * yStr, yStr, 16, limit);
-                        filterSimpleH(yPln, yOff + 12 * yStr, yStr, 16, limit);
+                        filterSimpleH(yPln, yOff + 4 * yStr, yStr, limit);
+                        filterSimpleH(yPln, yOff + 8 * yStr, yStr, limit);
+                        filterSimpleH(yPln, yOff + 12 * yStr, yStr, limit);
                     }
                 } else {
                     if (mbX > 0) filterMBV(yPln, yOff, yStr, 16, iLim, mbLim, hevThr);
@@ -1105,8 +1099,8 @@ public final class VP8LossyDecoder {
         }
     }
 
-    private static void filterSimpleH(final byte[] p, final int off, final int str, final int len, final int lim) {
-        for (int i = 0; i < len; i++) {
+    private static void filterSimpleH(final byte[] p, final int off, final int str, final int lim) {
+        for (int i = 0; i < 16; i++) {
             final int idx = off + i;
             final int p1 = p[idx - 2 * str] & 0xFF, p0 = p[idx - str] & 0xFF;
             final int q0 = p[idx] & 0xFF, q1 = p[idx + str] & 0xFF;

@@ -12,6 +12,7 @@ import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.readers.webp.FourCC;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.FrameReplay;
 import org.watermedia.test.support.PamImage;
 import org.watermedia.test.support.PixelDiff;
 
@@ -23,32 +24,25 @@ import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.NoSuchElementException;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
  * Verifies the WebP decoder, consolidating lossless, lossy, animated and container coverage.
  *
- * <p>Lossless fixtures are compared pixel-perfectly against {@code dwebp}-generated PAMs.
- * Lossy fixtures use relaxed similarity bounds because VP8 implementations legitimately
- * differ in DCT rounding, quantization and loop-filter behavior. Animated fixtures only
- * exercise multi-frame decoding (dwebp doesn't reference-render animated WebP).
- *
- * <p>Shape checks use the no-arg overload, proving every WebP shape natively delivers
- * {@link PixelFormat#BGRA}; pixel comparisons request it explicitly.
+ * <p>Lossless fixtures are compared pixel-perfectly against {@code dwebp}-generated PAMs. Lossy fixtures use relaxed
+ * similarity bounds because VP8 implementations legitimately differ in DCT rounding, quantization and loop-filter
+ * behavior. Both decode through the no-arg overload and assert {@link PixelFormat#BGRA}, the native layout of every
+ * WebP shape; animated fixtures are covered by the reset() replay, which {@code dwebp} has no reference for.
  */
 @DisplayName("WebP decoder")
 public class WebpTest {
@@ -58,34 +52,90 @@ public class WebpTest {
     private static final double LOSSY_MAX_DIFF_PERCENTAGE = 30.0;
     private static final int LOSSY_SMALL_THRESHOLD = 10;
 
-    // LOSSLESS MUST BE PIXEL-PERFECT
-    private static final int LOSSLESS_TOLERANCE = 0;
+    @TestFactory
+    @DisplayName("Lossless pixel match")
+    Iterable<DynamicTest> testLossless() {
+        final List<DynamicTest> tests = new ArrayList<>();
+        for (final Path imageFile: listWebp(Fixtures.WEBP_LOSSLESS_DIR)) {
+            final String name = imageFile.getFileName().toString();
+            tests.add(dynamicTest("LOSSLESS data match [" + name + "]", () -> {
+                final PixelDiff diff = diff(imageFile, Fixtures.WEBP_LOSSLESS_DIR, 0);
+                assertEquals(0, diff.maxDiff(), String.format(Locale.ROOT, "Pixel data mismatch for %s - max diff: %d, %.2f%% of values differ",
+                        name, diff.maxDiff(), diff.percentAboveSmall()));
+            }));
+        }
+        return tests;
+    }
 
-    @Test
-    @DisplayName("EXIF orientation 6 rotates static and animated pictures 90 degrees clockwise and swaps their size")
-    void orientationRotates() throws IOException {
-        // A LITTLE-ENDIAN TIFF WHOSE IFD0 HOLDS ONE ENTRY: ORIENTATION (0x0112), SHORT, COUNT 1, VALUE 6
-        final byte[] exif = { 'I', 'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0 };
-        for (final Path fixture: List.of(Fixtures.WEBP_LOSSLESS, Fixtures.WEBP_ANIMATED)) {
-            final byte[] plain = Fixtures.readAll(fixture);
-            final ImageData upright = CodecsAPI.decode(plain, PixelFormat.BGRA);
-            final int w = upright.width(), h = upright.height();
-            final byte[] tagged = withExif(plain, exif, w, h);
-            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(tagged))) {
-                assertEquals(6, reader.metadata().value(CodecsAPI.METAKEY_ORIENTATION), fixture + " orientation key");
-                assertArrayEquals(exif, (byte[]) reader.metadata().value(CodecsAPI.METAKEY_EXIF), fixture + " EXIF payload");
-            }
-            final ImageData turned = CodecsAPI.decode(tagged, PixelFormat.BGRA);
-            assertEquals(h, turned.width(), fixture + " rotated width");
-            assertEquals(w, turned.height(), fixture + " rotated height");
-            assertEquals(upright.frames().length, turned.frames().length, fixture + " frames");
-            for (int f = 0; f < upright.frames().length; f++) {
-                final IntBuffer a = upright.frames()[f].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
-                final IntBuffer b = turned.frames()[f].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
-                // OUTPUT PIXEL (x, y) COMES FROM SOURCE PIXEL (y, h - 1 - x)
-                for (final int[] p: new int[][] { { 0, 0 }, { h - 1, 0 }, { 0, w - 1 }, { h / 2, w / 3 }, { h - 1, w - 1 } }) {
-                    final int x = p[0], y = p[1];
-                    assertEquals(a.get((h - 1 - x) * w + y), b.get(y * h + x), fixture + " frame " + f + " pixel " + x + "," + y);
+    @TestFactory
+    @DisplayName("Lossy similarity")
+    Iterable<DynamicTest> testLossy() {
+        final List<DynamicTest> tests = new ArrayList<>();
+        for (final Path imageFile: listWebp(Fixtures.WEBP_LOSSY_DIR)) {
+            final String name = imageFile.getFileName().toString();
+            tests.add(dynamicTest("LOSSY similarity [" + name + "]", () -> {
+                final PixelDiff diff = diff(imageFile, Fixtures.WEBP_LOSSY_DIR, LOSSY_SMALL_THRESHOLD);
+                assertTrue(diff.maxDiff() <= LOSSY_MAX_DIFF_TOLERANCE, String.format(Locale.ROOT,
+                        "Lossy %s has extreme pixel difference - max: %d (limit: %d), mean: %.2f, %.2f%% above threshold %d",
+                        name, diff.maxDiff(), LOSSY_MAX_DIFF_TOLERANCE, diff.meanDiff(), diff.percentAboveSmall(), LOSSY_SMALL_THRESHOLD));
+                assertTrue(diff.percentAboveSmall() <= LOSSY_MAX_DIFF_PERCENTAGE, String.format(Locale.ROOT,
+                        "Lossy %s has too many differing pixels - %.2f%% above threshold %d (limit: %.1f%%), max diff: %d, mean diff: %.2f",
+                        name, diff.percentAboveSmall(), LOSSY_SMALL_THRESHOLD, LOSSY_MAX_DIFF_PERCENTAGE, diff.maxDiff(), diff.meanDiff()));
+            }));
+        }
+        return tests;
+    }
+
+    @TestFactory
+    @DisplayName("reset() replay")
+    Iterable<DynamicTest> testReset() {
+        final List<DynamicTest> tests = new ArrayList<>();
+        // EVERY ANIMATED FIXTURE PLUS ONE STATIC OF EACH CODEC: reset() MUST REPLAY ALL SHAPES
+        final List<Path> files = new ArrayList<>(listWebp(Fixtures.WEBP_ANIMATED_DIR));
+        files.add(Fixtures.WEBP_LOSSLESS);
+        files.add(Fixtures.WEBP_LOSSY_DIR.resolve("1.webp"));
+        for (final Path imageFile: files) {
+            final String name = imageFile.getParent().getFileName() + "/" + imageFile.getFileName();
+            tests.add(dynamicTest("RESET replay [" + name + "]", () -> {
+                try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(imageFile)))) {
+                    final List<byte[]> first = FrameReplay.verify(reader, name);
+                    assertEquals(reader.frameCount(), first.size(), "scan() and the decoder disagree on " + name);
+                }
+            }));
+        }
+        return tests;
+    }
+
+    @Nested
+    @DisplayName("Orientation")
+    class Orientation {
+
+        @Test
+        @DisplayName("EXIF orientation 6 rotates static and animated pictures 90 degrees clockwise and swaps their size")
+        void orientationRotates() throws IOException {
+            // A LITTLE-ENDIAN TIFF WHOSE IFD0 HOLDS ONE ENTRY: ORIENTATION (0x0112), SHORT, COUNT 1, VALUE 6
+            final byte[] exif = { 'I', 'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0 };
+            for (final Path fixture: List.of(Fixtures.WEBP_LOSSLESS, Fixtures.WEBP_ANIMATED)) {
+                final byte[] plain = Fixtures.readAll(fixture);
+                final ImageData upright = CodecsAPI.decode(plain, PixelFormat.BGRA);
+                final int w = upright.width(), h = upright.height();
+                final byte[] tagged = withExif(plain, exif, w, h);
+                try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(tagged))) {
+                    assertEquals(6, reader.metadata().value(CodecsAPI.METAKEY_ORIENTATION), fixture + " orientation key");
+                    assertArrayEquals(exif, (byte[]) reader.metadata().value(CodecsAPI.METAKEY_EXIF), fixture + " EXIF payload");
+                }
+                final ImageData turned = CodecsAPI.decode(tagged, PixelFormat.BGRA);
+                assertEquals(h, turned.width(), fixture + " rotated width");
+                assertEquals(w, turned.height(), fixture + " rotated height");
+                assertEquals(upright.frames().length, turned.frames().length, fixture + " frames");
+                for (int f = 0; f < upright.frames().length; f++) {
+                    final IntBuffer a = upright.frames()[f].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
+                    final IntBuffer b = turned.frames()[f].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
+                    // OUTPUT PIXEL (x, y) COMES FROM SOURCE PIXEL (y, h - 1 - x)
+                    for (final int[] p: new int[][] { { 0, 0 }, { h - 1, 0 }, { 0, w - 1 }, { h / 2, w / 3 }, { h - 1, w - 1 } }) {
+                        final int x = p[0], y = p[1];
+                        assertEquals(a.get((h - 1 - x) * w + y), b.get(y * h + x), fixture + " frame " + f + " pixel " + x + "," + y);
+                    }
                 }
             }
         }
@@ -185,18 +235,23 @@ public class WebpTest {
                 assertEquals(image.frames().length, reader.readAll().frames().length);
             }
         }
+    }
 
-        @Test
-        @DisplayName("next() past the last frame throws NoSuchElementException and a closed reader IllegalStateException")
-        void endAndClose() throws IOException {
-            final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(Fixtures.WEBP_LOSSLESS)));
-            reader.next();
-            assertFalse(reader.hasNext());
-            assertThrows(NoSuchElementException.class, reader::next);
-            reader.close();
-            assertThrows(IllegalStateException.class, reader::hasNext);
-            assertThrows(IllegalStateException.class, reader::reset);
-        }
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // DECODES A STILL WITH THE NO-ARG OVERLOAD, CHECKS IT IS NATIVE TIGHTLY PACKED BGRA AND DIFFS IT AGAINST raw/<name>.pam
+    private static PixelDiff diff(final Path imageFile, final Path dir, final int smallDiff) throws IOException {
+        final ImageData decoded = CodecsAPI.decode(Fixtures.readAll(imageFile));
+        assertEquals(PixelFormat.BGRA, decoded.format(), imageFile + " decodes natively to BGRA");
+        assertEquals(decoded.width() * decoded.height() * 4, decoded.frames()[0].remaining(), imageFile + " frame size");
+        final Path pamPath = dir.resolve("raw").resolve(imageFile.getFileName().toString().replace(".webp", ".pam"));
+        assertTrue(Files.exists(pamPath), "Reference PAM file not found: " + pamPath.toAbsolutePath() + " - Run dwebp to generate reference data");
+        final PamImage reference = PamImage.read(pamPath);
+        final byte[] actualRgba = PamImage.bgraToRgba(decoded.frames()[0], decoded.width(), decoded.height());
+        assertEquals(reference.pixels().length, actualRgba.length, "Pixel data size mismatch for " + imageFile);
+        return PixelDiff.compare(reference.pixels(), actualRgba, smallDiff);
     }
 
     // APPENDS ONE CHUNK TO AN EXTENDED FILE AND RECOUNTS THE RIFF SIZE; WITHOUT pad AN ODD BODY ENDS THE FILE UNPADDED
@@ -235,182 +290,10 @@ public class WebpTest {
         return Arrays.copyOf(out.array(), out.position());
     }
 
-    @TestFactory
-    @DisplayName("Lossless decode and pixel match")
-    Iterable<DynamicTest> testLossless() {
-        final List<DynamicTest> tests = new ArrayList<>();
-        for (final Path imageFile: listWebp(Fixtures.WEBP_LOSSLESS_DIR)) {
-            final String name = imageFile.getFileName().toString();
-
-            tests.add(dynamicTest("LOSSLESS decode [" + name + "]",
-                    () -> assertDecodeShape(imageFile, false)));
-
-            tests.add(dynamicTest("LOSSLESS data match [" + name + "]", () -> {
-                final ImageData decoded = CodecsAPI.decode(Fixtures.readAll(imageFile), PixelFormat.BGRA);
-                assertNotNull(decoded, "WEBP signature not recognized");
-                final Path pamPath = Fixtures.WEBP_LOSSLESS_DIR.resolve("raw")
-                        .resolve(name.replace(".webp", ".pam"));
-                assertTrue(Files.exists(pamPath),
-                        "Reference PAM file not found: " + pamPath.toAbsolutePath()
-                                + " - Run dwebp to generate reference data");
-                final PamImage reference = PamImage.read(pamPath);
-                final byte[] actualRgba = PamImage.bgraToRgba(decoded.frames()[0],
-                        decoded.width(), decoded.height());
-
-                assertEquals(reference.pixels().length, actualRgba.length,
-                        "Pixel data size mismatch - reference: " + reference.pixels().length
-                                + ", java: " + actualRgba.length);
-
-                final PixelDiff diff = PixelDiff.compare(reference.pixels(), actualRgba, LOSSLESS_TOLERANCE);
-                assertTrue(diff.maxDiff() <= LOSSLESS_TOLERANCE,
-                        String.format(
-                                "Pixel data mismatch for %s - max diff: %d (tolerance: %d), %.2f%% of values exceed tolerance",
-                                name, diff.maxDiff(), LOSSLESS_TOLERANCE, diff.percentAboveSmall()));
-            }));
-        }
-        return tests;
-    }
-
-    @TestFactory
-    @DisplayName("Lossy decode and similarity")
-    Iterable<DynamicTest> testLossy() {
-        final List<DynamicTest> tests = new ArrayList<>();
-        for (final Path imageFile: listWebp(Fixtures.WEBP_LOSSY_DIR)) {
-            final String name = imageFile.getFileName().toString();
-
-            tests.add(dynamicTest("LOSSY decode [" + name + "]",
-                    () -> assertDecodeShape(imageFile, false)));
-
-            tests.add(dynamicTest("LOSSY similarity [" + name + "]", () -> {
-                final ImageData decoded = CodecsAPI.decode(Fixtures.readAll(imageFile), PixelFormat.BGRA);
-                assertNotNull(decoded, "WEBP signature not recognized");
-                final Path pamPath = Fixtures.WEBP_LOSSY_DIR.resolve("raw")
-                        .resolve(name.replace(".webp", ".pam"));
-                assertTrue(Files.exists(pamPath),
-                        "Reference PAM file not found: " + pamPath.toAbsolutePath()
-                                + " - Run dwebp to generate reference data");
-                final PamImage reference = PamImage.read(pamPath);
-                final byte[] actualRgba = PamImage.bgraToRgba(decoded.frames()[0],
-                        decoded.width(), decoded.height());
-
-                assertEquals(reference.pixels().length, actualRgba.length,
-                        "Pixel data size mismatch - reference: " + reference.pixels().length
-                                + ", java: " + actualRgba.length);
-
-                final PixelDiff diff = PixelDiff.compare(reference.pixels(), actualRgba, LOSSY_SMALL_THRESHOLD);
-                assertTrue(diff.maxDiff() <= LOSSY_MAX_DIFF_TOLERANCE,
-                        String.format(
-                                "Lossy %s has extreme pixel difference - max: %d (limit: %d), mean: %.2f, %.2f%% above threshold %d",
-                                name, diff.maxDiff(), LOSSY_MAX_DIFF_TOLERANCE,
-                                diff.meanDiff(), diff.percentAboveSmall(), LOSSY_SMALL_THRESHOLD));
-                assertTrue(diff.percentAboveSmall() <= LOSSY_MAX_DIFF_PERCENTAGE,
-                        String.format(
-                                "Lossy %s has too many differing pixels - %.2f%% above threshold %d (limit: %.1f%%), max diff: %d, mean diff: %.2f",
-                                name, diff.percentAboveSmall(), LOSSY_SMALL_THRESHOLD,
-                                LOSSY_MAX_DIFF_PERCENTAGE, diff.maxDiff(), diff.meanDiff()));
-            }));
-        }
-        return tests;
-    }
-
-    @TestFactory
-    @DisplayName("Animated decode")
-    Iterable<DynamicTest> testAnimated() {
-        final List<DynamicTest> tests = new ArrayList<>();
-        for (final Path imageFile: listWebp(Fixtures.WEBP_ANIMATED_DIR)) {
-            final String name = imageFile.getFileName().toString();
-            // ANIMATED-ONLY — dwebp DOES NOT GENERATE A REFERENCE FOR ANIMATED WEBP
-            tests.add(dynamicTest("ANIMATED decode [" + name + "]",
-                    () -> assertDecodeShape(imageFile, true)));
-        }
-        return tests;
-    }
-
-    @TestFactory
-    @DisplayName("reset() replay")
-    Iterable<DynamicTest> testReset() {
-        final List<DynamicTest> tests = new ArrayList<>();
-        // EVERY ANIMATED FIXTURE PLUS ONE STATIC OF EACH CODEC — reset() MUST REPLAY ALL SHAPES
-        final List<Path> files = new ArrayList<>(listWebp(Fixtures.WEBP_ANIMATED_DIR));
-        files.add(Fixtures.WEBP_LOSSLESS);
-        files.add(Fixtures.WEBP_LOSSY_DIR.resolve("1.webp"));
-        for (final Path imageFile: files) {
-            final String name = imageFile.getParent().getFileName() + "/" + imageFile.getFileName();
-            tests.add(dynamicTest("RESET replay [" + name + "]", () -> {
-                final ByteBuffer source = ByteBuffer.wrap(Fixtures.readAll(imageFile));
-                try (final ImageReader reader = CodecsAPI.reader(source, PixelFormat.BGRA)) {
-                    final long[] delays = reader.delays().clone();
-                    final List<byte[]> first = decodeFrameHashes(reader);
-                    assertFalse(first.isEmpty(), "No frames decoded for " + name);
-
-                    // FIRST RESET — REPLAY MUST BE BYTE-IDENTICAL AND METADATA MUST SURVIVE
-                    assertTrue(reader.reset(), "reset() must be supported for " + name);
-                    assertArrayEquals(delays, reader.delays(), "Delays changed after reset for " + name);
-                    assertReplayMatches(first, decodeFrameHashes(reader), name);
-
-                    // SECOND RESET — reset() MUST BE REPEATABLE
-                    assertTrue(reader.reset(), "Second reset() must be supported for " + name);
-                    assertReplayMatches(first, decodeFrameHashes(reader), name);
-                }
-            }));
-        }
-        return tests;
-    }
-
-    // HASH FRAMES INSTEAD OF COPYING THEM — LARGE FIXTURES TIMES THREE DECODE PASSES WOULD BLOW
-    // THE 512MB DIRECT-MEMORY BUDGET OF THE TEST JVM, AND SHA-256 EQUALITY IS BYTE-IDENTITY
-    private static List<byte[]> decodeFrameHashes(final ImageReader reader) throws IOException, NoSuchAlgorithmException {
-        final MessageDigest sha = MessageDigest.getInstance("SHA-256");
-        final List<byte[]> hashes = new ArrayList<>();
-        while (reader.hasNext()) {
-            sha.update(reader.next().duplicate());
-            hashes.add(sha.digest());
-        }
-        return hashes;
-    }
-
-    private static void assertReplayMatches(final List<byte[]> expected, final List<byte[]> replay, final String name) {
-        assertEquals(expected.size(), replay.size(), "Frame count changed after reset for " + name);
-        for (int i = 0; i < expected.size(); i++) {
-            assertArrayEquals(expected.get(i), replay.get(i),
-                    "Frame " + i + " not byte-identical after reset for " + name);
-        }
-    }
-
-    // SHARED DECODE-SHAPE ASSERTION — REUSED ACROSS THREE FACTORIES; THE NATIVE LAYOUT MUST BE BGRA-SIZED
-    private static void assertDecodeShape(final Path imageFile, final boolean expectAnimated) throws IOException {
-        final byte[] bytes = Fixtures.readAll(imageFile);
-        final ImageData result = CodecsAPI.decode(bytes);
-        assertNotNull(result, "WEBP signature not recognized for: " + imageFile.getFileName());
-
-        assertTrue(result.width() > 0, "Width must be positive");
-        assertTrue(result.height() > 0, "Height must be positive");
-        assertNotNull(result.frames(), "Frames array is null");
-        assertTrue(result.frames().length > 0, "No frames decoded");
-
-        if (expectAnimated) {
-            assertTrue(result.frames().length > 1,
-                    "Animated WebP should have multiple frames, got: " + result.frames().length);
-            assertEquals(result.frames().length, result.delays().length,
-                    "Delay array length must match frame count");
-            assertTrue(result.duration() > 0, "Animation duration must be positive");
-        }
-
-        final int expectedBufferSize = result.width() * result.height() * 4;
-        for (int i = 0; i < result.frames().length; i++) {
-            final ByteBuffer frame = result.frames()[i];
-            assertNotNull(frame, "Frame " + i + " is null");
-            assertEquals(expectedBufferSize, frame.capacity(), "Frame " + i + " buffer size mismatch");
-        }
-    }
-
     private static List<Path> listWebp(final Path dir) {
         assertTrue(Files.exists(dir), "Test folder does not exist: " + dir);
         try (final Stream<Path> entries = Files.list(dir)) {
-            final List<Path> images = entries
-                    .filter(p -> p.getFileName().toString().toLowerCase().endsWith(".webp"))
-                    .sorted()
-                    .toList();
+            final List<Path> images = entries.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".webp")).sorted().toList();
             assertFalse(images.isEmpty(), "Test folder is empty: " + dir);
             return images;
         } catch (final IOException e) {

@@ -19,6 +19,7 @@ public final class Header extends Group<Header> {
 
     /** Fixed header height in pixels. */
     public static final int H = 124;
+    private static final int BANNER_H = 100;
 
     private String name = "";
     private String sub;
@@ -94,11 +95,11 @@ public final class Header extends Group<Header> {
 
         final int bannerX = x + 18;
         final int bannerW = MathUtil.clamp((int) (w * 0.40f), 430, 665);
-        final int actualBannerW = this.bannerWidth(bannerW, 100);
+        final int actualBannerW = this.bannerWidth(bannerW);
         final int sepX = bannerX + actualBannerW + 14;
         canvas.fill(sepX, y + 38, 4, 42, AppTheme.AMBER);
         canvas.glow(sepX - 1, y + 38, 6, 42, 0f, AppTheme.AMBER, 0.24f);
-        this.drawBanner(canvas, bannerX, y + 10, bannerW, 100);
+        this.drawBanner(canvas, bannerX, y + 10, bannerW);
 
         final int titleX = sepX + 24;
         int rightReserve = this.right != null && !this.right.isEmpty()
@@ -142,17 +143,17 @@ public final class Header extends Group<Header> {
         return this.ctx.text.width(label.toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY) + 28;
     }
 
-    private void drawBanner(final Canvas canvas, final int x, final int y, final int maxW, final int maxH) {
+    private void drawBanner(final Canvas canvas, final int x, final int y, final int maxW) {
         if (this.ctx.assets.bannerId <= 0 || this.ctx.assets.bannerWidth <= 0 || this.ctx.assets.bannerHeight <= 0) return;
-        final float scale = Math.min((float) maxW / this.ctx.assets.bannerWidth, (float) maxH / this.ctx.assets.bannerHeight);
+        final float scale = Math.min((float) maxW / this.ctx.assets.bannerWidth, (float) BANNER_H / this.ctx.assets.bannerHeight);
         final int w = (int) (this.ctx.assets.bannerWidth * scale);
         final int h = (int) (this.ctx.assets.bannerHeight * scale);
-        canvas.image(this.ctx.assets.bannerId, x, y + (maxH - h) / 2f, w, h, null);
+        canvas.image(this.ctx.assets.bannerId, x, y + (BANNER_H - h) / 2f, w, h, null);
     }
 
-    private int bannerWidth(final int maxW, final int maxH) {
+    private int bannerWidth(final int maxW) {
         if (this.ctx.assets.bannerId <= 0 || this.ctx.assets.bannerWidth <= 0 || this.ctx.assets.bannerHeight <= 0) return maxW;
-        final float scale = Math.min((float) maxW / this.ctx.assets.bannerWidth, (float) maxH / this.ctx.assets.bannerHeight);
+        final float scale = Math.min((float) maxW / this.ctx.assets.bannerWidth, (float) BANNER_H / this.ctx.assets.bannerHeight);
         return (int) (this.ctx.assets.bannerWidth * scale);
     }
 }

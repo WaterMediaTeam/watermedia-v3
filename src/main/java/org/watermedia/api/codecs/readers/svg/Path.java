@@ -65,17 +65,17 @@ final class Path {
         }
         final double cx = Math.min(rx, w / 2), cy = Math.min(ry, h / 2);
         final double ox = cx * KAPPA, oy = cy * KAPPA;
-        final double x0 = x, x1 = x + cx, x2 = x + w - cx, x3 = x + w;
-        final double y0 = y, y1 = y + cy, y2 = y + h - cy, y3 = y + h;
-        this.moveTo(x1, y0);
-        this.lineTo(x2, y0);
-        this.cubicTo(x2 + ox, y0, x3, y1 - oy, x3, y1);
+        final double x1 = x + cx, x2 = x + w - cx, x3 = x + w;
+        final double y1 = y + cy, y2 = y + h - cy, y3 = y + h;
+        this.moveTo(x1, y);
+        this.lineTo(x2, y);
+        this.cubicTo(x2 + ox, y, x3, y1 - oy, x3, y1);
         this.lineTo(x3, y2);
         this.cubicTo(x3, y2 + oy, x2 + ox, y3, x2, y3);
         this.lineTo(x1, y3);
-        this.cubicTo(x1 - ox, y3, x0, y2 + oy, x0, y2);
-        this.lineTo(x0, y1);
-        this.cubicTo(x0, y1 - oy, x1 - ox, y0, x1, y0);
+        this.cubicTo(x1 - ox, y3, x, y2 + oy, x, y2);
+        this.lineTo(x, y1);
+        this.cubicTo(x, y1 - oy, x1 - ox, y, x1, y);
         this.close();
     }
 

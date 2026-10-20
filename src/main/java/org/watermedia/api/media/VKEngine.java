@@ -559,7 +559,7 @@ public final class VKEngine extends GFXEngine {
             } else if (bufs[i].remaining() < needed[i]) {
                 if (!this.shortWarned) LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, bufs[i].remaining(), needed[i]);
                 this.shortWarned = true;
-            } else if (bufs[i].isDirect()) {
+            } else {
                 rowLen[i] = strides[i] / spec.texelBytes; // A TIGHT STRIDE (0) IS ALSO VULKAN'S TIGHT ROW LENGTH
                 continue;
             }
@@ -726,7 +726,7 @@ public final class VKEngine extends GFXEngine {
             slot.submitted = true;
             this.head++;
         } catch (final RuntimeException | LinkageError e) {
-            this.fail("Upload", e);
+            this.fail(e);
         }
     }
 
@@ -1185,9 +1185,9 @@ public final class VKEngine extends GFXEngine {
         this.failWarned = true;
     }
 
-    private void fail(final String op, final Throwable cause) {
+    private void fail(final Throwable cause) {
         this.failed = true;
-        if (!this.failWarned) LOGGER.error(IT, "{} failed; frames are dropped until the next format", op, cause);
+        if (!this.failWarned) LOGGER.error(IT, "Upload failed; frames are dropped until the next format", cause);
         this.failWarned = true;
     }
 

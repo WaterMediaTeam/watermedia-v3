@@ -62,10 +62,9 @@ public final class VP8LosslessDecoder {
         LOGGER.trace(IT, "No more transforms, position: {}", reader.snapshot());
 
         // READ COLOR CACHE INFO
-        int colorCacheBits = 0;
         ColorCache colorCache = null;
         if (reader.readBool()) {
-            colorCacheBits = reader.read(4);
+            final int colorCacheBits = reader.read(4);
             LOGGER.trace(IT, "Main color cache bits: {}", colorCacheBits);
             colorCache = new ColorCache(colorCacheBits);
         } else {
@@ -215,12 +214,11 @@ public final class VP8LosslessDecoder {
 
             if (code < 256) {
                 // LITERAL ARGB
-                final int green = code;
                 final int red = group.red().read(reader);
                 final int blue = group.blue().read(reader);
                 final int alpha = group.alpha().read(reader);
 
-                final int argb = (alpha << 24) | (red << 16) | (green << 8) | blue;
+                final int argb = (alpha << 24) | (red << 16) | (code << 8) | blue;
                 pixels[pos++] = argb;
                 if (colorCache != null) colorCache.insert(argb);
                 if (++x == width) { x = 0; y++; }

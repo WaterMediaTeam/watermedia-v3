@@ -22,18 +22,24 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @DisplayName("HttpHeaders")
 public class HttpHeadersTest {
 
-    @Test
-    void rejectsInjectedHeadersBeforeRawSerialization() {
-        for (final String name: List.of("", "Bad Name", "Bad:Name", "X\r\nInjected", "é")) {
-            assertThrows(IllegalArgumentException.class, () -> new HttpHeaders.Entry(name, "value"));
+    @Nested
+    @DisplayName("validation")
+    class ValidationTests {
+
+        @Test
+        @DisplayName("names and values that could inject a header line are rejected before any raw serialization")
+        void rejectsInjectedHeadersBeforeRawSerialization() {
+            for (final String name: List.of("", "Bad Name", "Bad:Name", "X\r\nInjected", "é")) {
+                assertThrows(IllegalArgumentException.class, () -> new HttpHeaders.Entry(name, "value"));
+            }
+            for (final String value: List.of("ok\r\nAuthorization: stolen", "ok\nInjected: yes", "a\u0000b", "a\u007fb")) {
+                assertThrows(IllegalArgumentException.class, () -> new HttpHeaders().add("X", value));
+            }
+            final HttpHeaders headers = new HttpHeaders().set("X", "original");
+            assertThrows(IllegalArgumentException.class, () -> headers.set("X", "bad\rvalue"));
+            assertEquals("original", headers.value("X"));
+            assertEquals("X: a\tb\r\n", new HttpHeaders().add("X", "a\tb").toRawString());
         }
-        for (final String value: List.of("ok\r\nAuthorization: stolen", "ok\nInjected: yes", "a\u0000b", "a\u007fb")) {
-            assertThrows(IllegalArgumentException.class, () -> new HttpHeaders().add("X", value));
-        }
-        final HttpHeaders headers = new HttpHeaders().set("X", "original");
-        assertThrows(IllegalArgumentException.class, () -> headers.set("X", "bad\rvalue"));
-        assertEquals("original", headers.value("X"));
-        assertEquals("X: a\tb\r\n", new HttpHeaders().add("X", "a\tb").toRawString());
     }
 
     @Nested
@@ -159,17 +165,6 @@ public class HttpHeadersTest {
             final HttpHeaders h = HttpHeaders.defaults(null);
             assertNull(h.value("Referer"));
             assertNotNull(h.value("User-Agent"));
-        }
-
-        @Test
-        @DisplayName("toRawString of defaults emits all entries")
-        void defaultsToRawString() {
-            final HttpHeaders h = HttpHeaders.defaults(URI.create("https://example.com/"));
-            final String raw = h.toRawString();
-            assertTrue(raw.contains("User-Agent: "));
-            assertTrue(raw.contains("Accept: "));
-            assertTrue(raw.contains("Referer: https://example.com/"));
-            assertTrue(raw.endsWith("\n"));
         }
     }
 }

@@ -98,9 +98,9 @@ public record NetpbmHeader(int version, int width, int height, Integer depth, In
             throw new CodecException("Invalid MAXVAL: " + maxVal + ". Must be between 1 and 65535.");
 
         if (version == 7) {
-            // ENFORCE THE UPPER BOUND THE MESSAGE ALREADY CLAIMS; AN UNBOUNDED DEPTH OVERFLOWS THE RASTER MATH
-            if (depth == null || depth <= 0 || depth > 65_535)
-                throw new CodecException("Invalid DEPTH: " + depth + ". Must be between 1 and 65535.");
+            // THE TUPLE TYPE BELOW BOUNDS DEPTH TO 1..4; A MISSING OR NON-POSITIVE ONE IS MALFORMED WHATEVER THE TYPE
+            if (depth == null || depth <= 0)
+                throw new CodecException("Invalid DEPTH: " + depth + ". Must be greater than 0.");
 
             // DEPTH SIZES EVERY ROW AND IS THE ONE RASTER DIMENSION THE PIXEL CAP DOES NOT COVER, SO IT IS BOUND TO
             // THE TUPLE TYPE: "DEPTH 65535 / TUPLTYPE RGB" IS A 2 GiB ROW DESCRIBED BY 69 BYTES. ANY OTHER TUPLE TYPE
@@ -149,9 +149,8 @@ public record NetpbmHeader(int version, int width, int height, Integer depth, In
             // & 0xFF: A BARE CAST SIGN-EXTENDS 0x80.. INTO U+FF80.., CORRUPTING THE TOKEN AND DOUBLING ITS FOOTPRINT
             final char c = (char) (buf.get() & 0xFF);
             if (c == '#') {
-                // A COMMENT ENDS THE CURRENT TOKEN AND RUNS TO END OF LINE. SWALLOWING ITS NEWLINE IN A
-                // COMMENT BRANCH IS WHAT MERGED "1#x\n6384" INTO THE SINGLE TOKEN "16384" — EVERY
-                // REFERENCE DECODER READS THAT AS TWO TOKENS, SO THE FORGED DIMENSION WAS A DIFFERENTIAL
+                // A COMMENT ENDS THE CURRENT TOKEN AND RUNS TO END OF LINE, SO "1#x\n6384" STAYS THE TWO
+                // TOKENS EVERY REFERENCE DECODER READS INSTEAD OF MERGING INTO "16384"
                 while (buf.hasRemaining() && buf.get() != '\n') { /* SKIP THE COMMENT BODY */ }
                 if (!sb.isEmpty()) break;
                 continue;

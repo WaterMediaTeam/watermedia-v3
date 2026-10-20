@@ -10,7 +10,6 @@ import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.UnsupportedFormatException;
-import org.watermedia.api.codecs.readers.netpbm.NetpbmHeader;
 import org.watermedia.test.support.Fixtures;
 
 import java.io.IOException;
@@ -21,9 +20,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -31,13 +31,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Verifies the Netpbm reader: a header parser smoke test over every fixture, a decode test that runs
- * {@link ImageReader#next()} for each binary variant and asserts the first BGRA pixel and that
- * {@link ImageReader#reset()} replays the raster, hand-written plain (ASCII), 16-bit and PAM alpha
- * rasters checked pixel by pixel, and the split between unsupported and malformed headers.
+ * Verifies the Netpbm reader: a decode test that runs {@link ImageReader#next()} for every binary
+ * fixture and asserts its size, its first BGRA pixel and that {@link ImageReader#reset()} replays the
+ * raster, hand-written plain (ASCII), 16-bit and PAM alpha rasters checked pixel by pixel, and the
+ * split between unsupported and malformed headers.
  */
 @DisplayName("Netpbm reader")
 public class NetpbmTest {
@@ -54,35 +53,18 @@ public class NetpbmTest {
     );
 
     @TestFactory
-    @DisplayName("Parse header")
-    Iterable<DynamicTest> testNetpbmHeaders() {
-        final List<DynamicTest> tests = new ArrayList<>();
-        for (final Path file: netpbmFixtures()) {
-            tests.add(DynamicTest.dynamicTest("Parse " + file.getFileName(), () -> {
-                try {
-                    final ByteBuffer buffer = ByteBuffer.wrap(Fixtures.readAll(file));
-                    final NetpbmHeader header = NetpbmHeader.parse(buffer);
-                    assertTrue(header.version() >= 4 && header.version() <= 7,
-                            "Invalid version for file: " + file.getFileName());
-                    assertTrue(header.width() > 0, "Width should be greater than 0 for file: " + file.getFileName());
-                    assertTrue(header.height() > 0, "Height should be greater than 0 for file: " + file.getFileName());
-                } catch (final Exception e) {
-                    fail("Failed to parse file: " + file.getFileName() + " due to exception: " + e.getMessage());
-                }
-            }));
-        }
-        return tests;
-    }
-
-    @TestFactory
     @DisplayName("Decode first frame and reset")
     Iterable<DynamicTest> testNetpbmDecode() {
+        final List<Path> fixtures = netpbmFixtures();
+        // A DELETED OR RENAMED FIXTURE FAILS LOUDLY INSTEAD OF SILENTLY DROPPING ITS CASE
+        final Set<String> names = new HashSet<>();
+        for (final Path file: fixtures) names.add(file.getFileName().toString());
+        assertEquals(FIRST_PIXEL.keySet(), names, "every expected fixture is on disk and every fixture has an expectation");
         final List<DynamicTest> tests = new ArrayList<>();
-        for (final Path file: netpbmFixtures()) {
+        for (final Path file: fixtures) {
             final String name = file.getFileName().toString();
-            final Integer expected = FIRST_PIXEL.get(name);
-            if (expected == null) continue;
             tests.add(DynamicTest.dynamicTest("Decode " + name, () -> {
+                final Integer expected = FIRST_PIXEL.get(name);
                 try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(file)))) {
                     assertEquals(600, reader.width(), name);
                     assertEquals(600, reader.height(), name);
@@ -158,7 +140,7 @@ public class NetpbmTest {
     }
 
     @Nested
-    @DisplayName("Refusals and contract")
+    @DisplayName("Refusals")
     class Refusals {
 
         @Test
@@ -185,17 +167,6 @@ public class NetpbmTest {
             assertThrows(IllegalArgumentException.class, () -> new NetpbmReader(ByteBuffer.wrap(bytes(" 1 1 255\n", new byte[1])), 8));
         }
 
-        @Test
-        @DisplayName("next() past the frame throws NoSuchElementException and a closed reader IllegalStateException")
-        void endAndClose() throws IOException {
-            final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(bytes("P5 1 1 255\n", new byte[] { 7 })));
-            reader.next();
-            assertFalse(reader.hasNext());
-            assertThrows(NoSuchElementException.class, reader::next);
-            reader.close();
-            assertThrows(IllegalStateException.class, reader::hasNext);
-            assertThrows(IllegalStateException.class, reader::reset);
-        }
     }
 
     private static ImageData decode(final String text) throws IOException {

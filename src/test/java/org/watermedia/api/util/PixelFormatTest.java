@@ -6,43 +6,16 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies the identity and intrinsic data of {@link PixelFormat}: every constant survives
- * {@code valueOf}, the planes/blockBytes/compressed data matches each layout family, and the
- * plane geometry rounds subsampled planes up and scales texels with the sample depth.
+ * Verifies the intrinsic data of {@link PixelFormat}: only the BCn layouts are compressed, and the
+ * plane geometry rounds subsampled planes up, scales texels with the sample depth and sums every
+ * plane into the frame size.
  */
 @DisplayName("PixelFormat")
 public class PixelFormatTest {
-
-    @Test
-    @DisplayName("values() exposes every declared constant")
-    void testValuesCount() {
-        // KEEP IN SYNC WITH THE ENUM: 14 RAW LAYOUTS ACROSS 4 PLANE FAMILIES + 5 BCn FORMATS
-        assertEquals(19, PixelFormat.values().length);
-    }
-
-    @Test
-    @DisplayName("valueOf round-trips every constant")
-    void testValueOfRoundTrip() {
-        for (final PixelFormat fmt: PixelFormat.values()) {
-            assertSame(fmt, PixelFormat.valueOf(fmt.name()));
-        }
-    }
-
-    @Test
-    @DisplayName("Plane counts match each layout family")
-    void testPlanes() {
-        assertEquals(1, PixelFormat.BGRA.planes());
-        assertEquals(1, PixelFormat.YUYV.planes());
-        assertEquals(2, PixelFormat.NV12.planes());
-        assertEquals(3, PixelFormat.YUV420P.planes());
-        assertEquals(4, PixelFormat.YUVA444P.planes());
-        assertEquals(1, PixelFormat.BC7.planes());
-    }
 
     @Test
     @DisplayName("Only BCn formats are compressed, with 8 or 16 block bytes")

@@ -537,7 +537,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             return;
         }
 
-        if (!this.gfx.preload(data.frames(), 0))
+        if (!this.gfx.preload(data.frames()))
             throw new IOException("GFXEngine rejected preloaded frame textures for: " + this.source);
         this.gfx.frame(0);
 
@@ -675,9 +675,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     // AND ABSORBS PAUSE / SEEK / STEP TRIGGERS WITHOUT LEAKING DECODE WORK.
     private ImageReader playStream(ImageReader reader, final int serial) throws InterruptedException, IOException {
         while (!Thread.currentThread().isInterrupted()) {
-            // HOT maxSize/LOD CHANGES — FRAMES DECODED FROM NOW ON SCALE TO THE NEW
-            // TARGET; FRAMES ALREADY QUEUED KEEP THEIR SIZE AND DRAIN FIRST
-            // (uploadBuffer RECONFIGURES THE ENGINE WHEN THE SIZE FLIPS).
+            // HOT scale/LOD CHANGES: FRAMES DECODED FROM NOW ON SCALE TO THE NEW TARGET, FRAMES ALREADY QUEUED KEEP
+            // THEIR SIZE AND DRAIN FIRST (uploadBuffer RECONFIGURES THE ENGINE WHEN THE SIZE FLIPS)
             this.applyTarget();
 
             // STOP
@@ -1051,7 +1050,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.uploadBuffer(this.copyFrame(frame), this.outWidth, this.outHeight);
     }
 
-    // COPIES A FRAME INTO A BORROWED POOL BUFFER (DOWNSCALING WHEN A maxSize/LOD
+    // COPIES A FRAME INTO A BORROWED POOL BUFFER (DOWNSCALING WHEN A scale/LOD
     // TARGET IS ACTIVE) AND LEAVES IT FLIPPED FOR READING.
     private ByteBuffer copyFrame(final ByteBuffer src) {
         final ByteBuffer dst = this.borrowBuffer();
@@ -1066,9 +1065,8 @@ public final class TxMediaPlayer extends MediaPlayer {
         return dst;
     }
 
-    // RESOLVES THE UPLOAD TARGET FROM maxSize/LOD AND REBUILDS THE BUFFER BUDGET ON
-    // CHANGE. UNSCALABLE FORMATS UPLOAD AT SOURCE SIZE. CALLED ONLY FROM THE
-    // PREPARE/LIFECYCLE THREAD SO outWidth/outHeight NEVER TEAR AGAINST A DECODE.
+    // RESOLVES THE UPLOAD TARGET FROM scale/LOD AND REBUILDS THE BUFFER BUDGET ON CHANGE; UNSCALABLE FORMATS UPLOAD AT
+    // SOURCE SIZE. CALLED ONLY FROM THE PREPARE/LIFECYCLE THREAD SO outWidth/outHeight NEVER TEAR AGAINST A DECODE
     private void applyTarget() throws IOException {
         int w = this.sourceWidth;
         int h = this.sourceHeight;
@@ -1291,7 +1289,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public void displayTime(final long ms) {
-        // STATIC-IMAGE DISPLAY DURATION; ms <= 0 KEEPS THE UNLIMITED SHOW (CURRENT BEHAVIOUR).
+        // STATIC-IMAGE DISPLAY DURATION; ms <= 0 SHOWS THE STILL UNTIL IT IS STOPPED
         this.displayTimeMs = ms;
         // (RE)ARM AT ONCE IF A STATIC IMAGE IS ALREADY LIVE; OTHERWISE showStatic ARMS IT AT LOAD.
         if (this.loaded && !this.animated && this.texTimeline == null) this.armStaticClock();
@@ -1339,6 +1337,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     // RECORDS
     // ==========================================================================
     // SINGLE PRE-DECODED FRAME HELD IN THE PREFETCH QUEUE. CARRIES ITS OWN UPLOAD
-    // DIMENSIONS SO FRAMES QUEUED BEFORE A HOT maxSize/LOD CHANGE DRAIN CORRECTLY.
+    // DIMENSIONS SO FRAMES QUEUED BEFORE A HOT scale/LOD CHANGE DRAIN CORRECTLY.
     private record PrefetchedFrame(ByteBuffer pixels, long delay, int index, int width, int height) {}
 }

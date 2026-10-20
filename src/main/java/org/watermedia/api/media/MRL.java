@@ -393,7 +393,7 @@ public final class MRL {
         catch (final Throwable t) { LOGGER.error(IT, "Listener failed for {}", this.uri, t); }
     }
 
-    /** Returns the link this MRL was created for, as given by the caller. */
+    /** Returns the link this MRL stands for: the caller's URI, the file URI a relative path resolved to, or an {@code mrl-error:} marker around input that never resolved. */
     public URI uri() { return this.uri; }
 
     /** Returns the current state, marking expired loaded sources as EXPIRED. */
@@ -534,7 +534,8 @@ public final class MRL {
             qualities = Collections.unmodifiableMap(new EnumMap<>(qualities));
             audioTracks = audioTracks == null ? List.of() : List.copyOf(audioTracks);
             subtitleTracks = subtitleTracks == null ? List.of() : List.copyOf(subtitleTracks);
-            headers = new HttpHeaders(headers).freeze(); // SHARED ACROSS PLAYER THREADS: NEVER MUTABLE
+            // SHARED ACROSS PLAYER THREADS: NEVER MUTABLE, AND A BAG A PLATFORM ALREADY FROZE IS REUSED AS IS
+            headers = headers != null && headers.frozen() ? headers : new HttpHeaders(headers).freeze();
         }
 
         /**

@@ -44,8 +44,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>
  * When {@code ARB_buffer_storage} (OpenGL 4.4) is available, pixel data is written by the
  * <em>producer</em> thread directly into a persistently-mapped PBO ring, so the render thread only
- * issues {@code glTexSubImage2D} from buffer offsets and a fence. Without it, the engine falls
- * back to the classic double-buffered PBO upload performed on the render thread.
+ * issues {@code glTexSubImage2D} from buffer offsets and a fence. Without it, and always for an
+ * engine built without a render thread, frames go through a double-buffered PBO upload performed
+ * on the render thread.
  * <p>
  * Supports direct upload (BGRA, RGBA, RGB), packed YUV (YUYV/UYVY), semi-planar (NV12/NV21/P010),
  * planar YUV (420P/422P/444P), planar YUVA (with alpha), and grayscale (GRAY).
@@ -210,7 +211,6 @@ public final class GLEngine extends GFXEngine {
     private long ringProduced;            // GUARDED BY ringLock
     private long ringConsumed;            // RENDER THREAD ONLY
     private int ringBufferId;             // RENDER THREAD ONLY
-    private ByteBuffer ringMapped;        // RENDER THREAD ONLY (KEEPS THE MAPPING REACHABLE)
     private final long[] ringFences = new long[RING_SLOTS];
     private Boolean ringCapable;          // LAZY ARB_buffer_storage PROBE (RENDER THREAD)
 
@@ -334,7 +334,7 @@ public final class GLEngine extends GFXEngine {
     }
 
     @Override
-    boolean preload(final ByteBuffer[] frames, final int stride) {
+    boolean preload(final ByteBuffer[] frames) {
         if (frames == null || frames.length == 0 || this.released) return false;
         for (final ByteBuffer frame: frames) {
             if (frame == null || !frame.isDirect()) return false;
@@ -349,7 +349,7 @@ public final class GLEngine extends GFXEngine {
                 final int[] textures = new int[frames.length];
                 for (int i = 0; i < frames.length; i++) {
                     textures[i] = this.newTexture();
-                    if (!this.uploadDirectTexture(textures[i], frames[i], stride)) {
+                    if (!this.uploadDirectTexture(textures[i], frames[i])) {
                         this.orphanTextures(textures);
                         return false;
                     }
@@ -384,7 +384,7 @@ public final class GLEngine extends GFXEngine {
                 genBox[0] = this.frameTexGen;
                 final int[] textures = new int[frames.length];
                 textures[0] = this.newTexture();
-                if (!this.uploadDirectTexture(textures[0], frames[0], stride)) {
+                if (!this.uploadDirectTexture(textures[0], frames[0])) {
                     this.orphanTextures(textures);
                     genBox[0] = -1;
                     return;
@@ -405,12 +405,9 @@ public final class GLEngine extends GFXEngine {
                 try {
                     final int[] textures = texBox[0];
                     textures[index] = this.newTexture();
-                    if (this.uploadDirectTexture(textures[index], frames[index], stride)) {
-                        this.frameTexReady = index + 1;
-                    } else {
-                        // ABORT THE TAIL — ADVANCING ready PAST A FAILED FRAME WOULD EXPOSE AN EMPTY TEXTURE
-                        genBox[0] = -1;
-                    }
+                    // A FAILED FRAME ABORTS THE TAIL: ADVANCING ready PAST IT WOULD EXPOSE AN EMPTY TEXTURE
+                    if (this.uploadDirectTexture(textures[index], frames[index])) this.frameTexReady = index + 1;
+                    else genBox[0] = -1;
                 } finally {
                     env.restore();
                 }
@@ -480,7 +477,7 @@ public final class GLEngine extends GFXEngine {
             }
             case 32 -> {
                 this.glInternalR = GL30.GL_R32F;
-                this.glInternalRG = GL30.GL_RG16F; // CLOSEST FOR 32-BIT FLOAT PAIRS
+                this.glInternalRG = GL30.GL_RG32F;
                 this.glType = GL11.GL_FLOAT;
             }
             default -> { // 8-BIT
@@ -511,9 +508,6 @@ public final class GLEngine extends GFXEngine {
     // IN THE LATEST-WINS SLOT; THE SHARED HUB QUEUES AT MOST ONE BATCHED DRAIN PER RENDER THREAD.
     @Override
     void push(final ByteBuffer[] bufs, final int[] strides) {
-        for (final ByteBuffer buf: bufs) {
-            if (buf == null || !buf.isDirect()) return;
-        }
         try {
             if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
                 // SYNCHRONOUS PATH: ALREADY ON THE RENDER THREAD (OR NO THREAD CONTRACT AT ALL)
@@ -613,8 +607,8 @@ public final class GLEngine extends GFXEngine {
         if (this.conv != CONV_NONE) this.convertToRGBA();
     }
 
-    // UPLOAD FROM CLIENT MEMORY: RESPEC ON FIRST FRAME/SIZE CHANGE, LEGACY DOUBLE-BUFFERED PBOS
-    // IN STEADY STATE; AFTERWARDS THE RING IS ARMED (OR REGROWN) SO LATER FRAMES SKIP THIS PATH.
+    // UPLOAD FROM CLIENT MEMORY: RESPEC ON FIRST FRAME/SIZE CHANGE, LEGACY DOUBLE-BUFFERED PBOS IN STEADY STATE; AN ENGINE
+    // WITH A RENDER THREAD THEN ARMS (OR REGROWS) THE RING SO LATER OFF-THREAD FRAMES SKIP THIS PATH
     private boolean uploadClient(final Submission s) {
         long total = 0L;
         boolean respec = this.firstFrame || !this.pboReady;
@@ -645,40 +639,35 @@ public final class GLEngine extends GFXEngine {
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             for (int i = 0; i < this.planes.length; i++) {
                 final Plane p = this.planes[i];
-                final long addr = s.addrs[i];
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
                 GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, p.align(s.strides[i]));
                 GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
-                GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, addr);
+                GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, s.addrs[i]);
                 this.checkGLError("plane texImage");
-                this.seedPBO(i * NUM_PBOS, needs[i], addr);
                 this.planeBytes[i] = needs[i];
             }
             this.pboWriteIdx = 0;
             this.pboReady = true;
         } else {
-            final int readIdx = this.pboWriteIdx;
-            final int writeIdx = (readIdx + 1) % NUM_PBOS;
+            // THE FRAME GOES INTO THE PBO THE PREVIOUS UPLOAD DID NOT USE AND THE TEXTURE READS IT FROM THERE, SO IT SHOWS THIS
+            // FRAME WHILE THE GPU MAY STILL BE COPYING OUT OF THE OTHER ONE
+            final int writeIdx = (this.pboWriteIdx + 1) % NUM_PBOS;
             for (int i = 0; i < this.planes.length; i++) {
                 final Plane p = this.planes[i];
+                GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[i * NUM_PBOS + writeIdx]);
+                GL15.nglBufferData(GL21.GL_PIXEL_UNPACK_BUFFER, this.planeBytes[i], s.addrs[i], GL15.GL_STREAM_DRAW);
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
                 GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, p.align(s.strides[i]));
                 GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
-                GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[i * NUM_PBOS + readIdx]);
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, 0L);
                 if (GL_CHECKS) this.checkGLError("plane PBO texSub");
             }
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-            for (int i = 0; i < this.planes.length; i++) {
-                this.seedPBO(i * NUM_PBOS + writeIdx, this.planeBytes[i], s.addrs[i]);
-            }
             this.pboWriteIdx = writeIdx;
         }
 
-        // ARM (OR REGROW) THE PERSISTENT RING SO THE PRODUCER THREAD TAKES OVER THE MEMCPY
-        if (this.ringAddr == 0L || total > this.ringSlotBytes) {
-            this.armRing(total);
-        }
+        // ONLY AN OFF-THREAD PRODUCER WRITES THE RING, SO AN ENGINE WITHOUT A RENDER THREAD NEVER MAPS ONE
+        if (this.renderThread != null && (this.ringAddr == 0L || total > this.ringSlotBytes)) this.armRing(total);
         return true;
     }
 
@@ -756,7 +745,6 @@ public final class GLEngine extends GFXEngine {
         }
         synchronized (this.ringLock) {
             this.ringBufferId = id;
-            this.ringMapped = mapped;
             this.ringSlotBytes = slotBytes;
             this.ringProduced = 0L;
             this.ringRetired = 0L;
@@ -783,7 +771,6 @@ public final class GLEngine extends GFXEngine {
                     this.ringFences[i] = 0L;
                 }
             }
-            this.ringMapped = null;
             this.ringSlotBytes = 0L;
             this.ringProduced = 0L;
             this.ringRetired = 0L;
@@ -974,15 +961,16 @@ public final class GLEngine extends GFXEngine {
     }
 
     // A DIRECT FORMAT HAS ONE PLANE, ALREADY LAID OUT BY buildPlanes(), SO A PRELOADED FRAME UPLOADS THROUGH IT
-    private boolean uploadDirectTexture(final int texture, final ByteBuffer buffer, final int stride) {
+    // PRELOADED FRAMES ARE TIGHTLY PACKED, SO THE PLANE DESCRIBES THEM WITH STRIDE 0
+    private boolean uploadDirectTexture(final int texture, final ByteBuffer buffer) {
         final Plane p = this.planes[0];
-        if (this.required(p, 0, stride, buffer.remaining()) < 0L) return false;
+        if (this.required(p, 0, 0, buffer.remaining()) < 0L) return false;
         final long addr = MemoryUtil.memAddress(buffer);
         if (addr == 0L) return false;
 
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
-        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, p.align(stride));
-        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(stride));
+        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, p.align(0));
+        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(0));
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, 0);
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
@@ -1068,17 +1056,9 @@ public final class GLEngine extends GFXEngine {
         return tex;
     }
 
-    private void seedPBO(final int pboArrayIndex, final long sizeBytes, final long dataAddress) {
-        final int pboId = this.pbos[pboArrayIndex];
-        if (pboId == 0) return;
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, pboId);
-        GL15.nglBufferData(GL21.GL_PIXEL_UNPACK_BUFFER, sizeBytes, dataAddress, GL15.GL_STREAM_DRAW);
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-    }
-
-    private static int compileShader(final String vertSrc, final String fragSrc) {
+    private static int compileShader(final String fragSrc) {
         final int vert = GL20.glCreateShader(GL20.GL_VERTEX_SHADER);
-        GL20.glShaderSource(vert, vertSrc);
+        GL20.glShaderSource(vert, VERTEX_SHADER);
         GL20.glCompileShader(vert);
         if (GL20.glGetShaderi(vert, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
             LOGGER.error(IT, "Failed to compile vertex shader: {}", GL20.glGetShaderInfoLog(vert, 1024));
@@ -1309,7 +1289,7 @@ public final class GLEngine extends GFXEngine {
         // COMPILES A KIND ONCE; ALL PROGRAMS SHARE ONE UNIFORM SCHEME, SO ONE RESOLVE LOOP COVERS EVERY KIND
         void compile(final int kind, final PixelFormat format) {
             if (this.programs[kind] != 0 || (this.failKinds & (1 << kind)) != 0) return;
-            final int prog = compileShader(VERTEX_SHADER, FRAGMENTS[kind]);
+            final int prog = compileShader(FRAGMENTS[kind]);
             if (prog == 0) {
                 this.failKinds |= 1 << kind;
                 return;

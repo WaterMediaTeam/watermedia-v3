@@ -30,9 +30,8 @@ public final class ApiGuideExample {
         return WaterMedia.status();
     }
 
-    public static MRL refresh(MRL mrl) {
-        mrl = mrl.reload();
-        return mrl;
+    public static MRL refresh(final MRL mrl) {
+        return mrl.reload();
     }
 
     public static GFXEngine graphics(final String type, final Thread renderThread, final Executor executor,

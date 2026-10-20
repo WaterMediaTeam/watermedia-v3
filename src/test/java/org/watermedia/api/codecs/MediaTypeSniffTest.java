@@ -7,6 +7,7 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.test.support.Fixtures;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -16,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
- * Verifies {@link CodecsAPI#mediaType} classifies streams from their leading bytes. Real
+ * Verifies {@link CodecsAPI#sniff(InputStream)} classifies streams from their leading bytes. Real
  * on-disk fixtures cover the decodable image formats; synthetic minimal headers cover the
  * container/codec signatures (video, audio, subtitles) that have no fixture.
  */

@@ -13,11 +13,11 @@ import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Headless tests for {@link RenderEngine}'s CPU-side batching against a recording {@link RenderBackend}
- * stub: flush coalescing, ortho-projection dedupe and the logical-to-physical clip rounding. No GPU.
+ * Verifies {@link RenderEngine}'s CPU-side batching against a recording {@link RenderBackend} stub:
+ * flush coalescing, ortho-projection dedupe and the logical-to-physical clip rounding. No GPU.
  */
 @DisplayName("RenderEngine batching")
-class RenderEngineBatchTest {
+public class RenderEngineBatchTest {
 
     private RecordingBackend backend;
     private RenderEngine engine;
@@ -52,14 +52,14 @@ class RenderEngineBatchTest {
     @Test
     @DisplayName("clip rounds edges (not sizes) by the UI scale")
     void clipRounding() {
-        this.engine.uiScale(2f);
-        this.engine.clip(1, 1, 10, 10, 100);
-        // px=round(1*2)=2, pw=round((1+10)*2)-2=20, canvas=round(100*2)=200
+        // A FRACTIONAL SCALE TELLS THE TWO ROUNDINGS APART: ROUNDING THE 1 PX SIZE WOULD GIVE 2, THE FAR EDGE GIVES 3 - 2 = 1
+        this.engine.uiScale(1.5f);
+        this.engine.clip(1, 1, 1, 1, 100);
         assertEquals(2, this.backend.clipX);
         assertEquals(2, this.backend.clipY);
-        assertEquals(20, this.backend.clipW);
-        assertEquals(20, this.backend.clipH);
-        assertEquals(200, this.backend.clipCanvas);
+        assertEquals(1, this.backend.clipW);
+        assertEquals(1, this.backend.clipH);
+        assertEquals(150, this.backend.clipCanvas);
     }
 
     // RECORDS THE ENGINE'S BACKEND CALLS; EVERY GPU METHOD IS AN INERT NO-OP.

@@ -12,9 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/**
- * Verifies {@link MediaQuality} classification, navigation and lookup helpers.
- */
+/** Verifies {@link MediaQuality} classification from dimensions and the closest-available lookup. */
 @DisplayName("MediaQuality")
 public class MediaQualityTest {
 
@@ -48,7 +46,7 @@ public class MediaQualityTest {
         }
 
         @Test
-        @DisplayName("known sizes below 144 map to LOWEST")
+        @DisplayName("known sizes under the first threshold map to LOWEST, and 144 and 240 climb the first two steps")
         void tinySizesAreLowest() {
             assertSame(MediaQuality.LOWEST, MediaQuality.of(1, 1));
             assertSame(MediaQuality.LOWEST, MediaQuality.of(256, 143));
@@ -75,6 +73,12 @@ public class MediaQualityTest {
         void portraitUsesSmallerSide() {
             // MATH.MIN(1080, 1920) == 1080 -> HIGHER
             assertSame(MediaQuality.HIGHER, MediaQuality.of(1080, 1920));
+        }
+
+        @Test
+        @DisplayName("of(int) delegates to of(int, int) with same width/height")
+        void singleResolution() {
+            assertEquals(MediaQuality.of(1080, 1080), MediaQuality.of(1080));
         }
     }
 
@@ -119,16 +123,10 @@ public class MediaQualityTest {
         }
 
         @Test
-        @DisplayName("walks outward until a match is found")
-        void walksOutward() {
+        @DisplayName("the only available quality is picked however far it sits from the preferred one")
+        void farthestNeighbour() {
             final Set<MediaQuality> available = EnumSet.of(MediaQuality.LOWEST);
             assertSame(MediaQuality.LOWEST, MediaQuality.closest(available, MediaQuality.ULTRA_8K));
         }
-    }
-
-    @Test
-    @DisplayName("of(int) delegates to of(int, int) with same width/height")
-    void singleResolution() {
-        assertEquals(MediaQuality.of(1080, 1080), MediaQuality.of(1080));
     }
 }

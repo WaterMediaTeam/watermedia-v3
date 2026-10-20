@@ -337,7 +337,7 @@ public final class TextRenderer {
         }
 
         // RASTERIZES PRINTABLE ASCII AND SHELF-PACKS IT INTO ONE TEXTURE, RECORDING EACH GLYPH'S UV RECT
-        private int buildAtlas() {
+        private void buildAtlas() {
             final List<PackedGlyph> packed = new ArrayList<>();
             int penX = GUTTER;
             int penY = GUTTER;
@@ -378,7 +378,6 @@ public final class TextRenderer {
                         (pg.x() + bmp.width()) / (float) atlasWidth, (pg.y() + bmp.height()) / (float) atlasHeight,
                         bmp.width(), bmp.height(), bmp.offsetX(), bmp.offsetY(), bmp.advance()));
             }
-            return textureId;
         }
 
         private CharGlyph glyph(final char c) {

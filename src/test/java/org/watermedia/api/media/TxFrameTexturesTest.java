@@ -37,9 +37,8 @@ public class TxFrameTexturesTest {
         final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
         try {
             player.scale(CAP, CAP);
-            player.start();
+            assertTrue(player.start());
             assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
 
             final ByteBuffer[] frames = gfx.preloadedFrames();
             assertNotNull(frames, "A capped animation within the budget must take the frame-texture path");
@@ -51,7 +50,6 @@ public class TxFrameTexturesTest {
             final long bytes = gfx.format().frameBytes(player.width(), player.height(), 8);
             for (final ByteBuffer frame: frames) assertEquals(bytes, frame.remaining());
         } finally {
-            player.stop();
             player.release();
         }
     }

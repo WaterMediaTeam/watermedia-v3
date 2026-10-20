@@ -85,22 +85,20 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
         final ByteBuffer buffer = ByteBuffer.wrap(data, entryDataStart, entryDataLength).order(ByteOrder.BIG_ENDIAN);
 
         for (int i = 0; i < entryCount; i++) {
-            final int red, green, blue, alpha, frequency;
-
+            final int red, green, blue, alpha;
             if (sampleDepth == 8) {
                 red = buffer.get() & 0xFF;
                 green = buffer.get() & 0xFF;
                 blue = buffer.get() & 0xFF;
                 alpha = buffer.get() & 0xFF;
-                frequency = buffer.getShort() & 0xFFFF;
             } else { // 16-BIT
                 red = buffer.getShort() & 0xFFFF;
                 green = buffer.getShort() & 0xFFFF;
                 blue = buffer.getShort() & 0xFFFF;
                 alpha = buffer.getShort() & 0xFFFF;
-                frequency = buffer.getShort() & 0xFFFF;
             }
-
+            // THE FREQUENCY IS 16-BIT AT EITHER SAMPLE DEPTH
+            final int frequency = buffer.getShort() & 0xFFFF;
             entries[i] = new SPLTEntry(red, green, blue, alpha, frequency);
         }
 

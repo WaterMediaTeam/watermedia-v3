@@ -11,12 +11,14 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Shared client bootstrap; required native jobs fail instead of silently skipping missing binaries. */
 public final class MediaBootstrap {
     private static boolean attempted;
     private static boolean ffmpeg;
+    private static Throwable failure;
 
     private MediaBootstrap() {}
 
@@ -31,10 +33,12 @@ public final class MediaBootstrap {
                     WaterMedia.start("WMTEST", tmp, Path.of("").toAbsolutePath(), true);
                 }
                 ffmpeg = MediaAPI.ffmpegLoaded();
-            } catch (final Exception | LinkageError failure) {
-                throw new AssertionError("The client bootstrap failed", failure);
+            } catch (final Exception | LinkageError e) {
+                failure = e;
             }
         }
+        // EVERY LATER CALLER FAILS WITH THE BOOTSTRAP CAUSE INSTEAD OF A MISLEADING ERROR OF ITS OWN
+        if (failure != null) throw new AssertionError("The client bootstrap failed", failure);
         if (!ffmpeg && Boolean.getBoolean("watermedia.test.requireNatives"))
             throw new AssertionError("Required FFmpeg natives did not load: " + WaterMedia.status().failures());
         return ffmpeg;

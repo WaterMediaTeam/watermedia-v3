@@ -84,7 +84,7 @@ final class NetworkCache {
         LOGGER.info(IT, "Media network cache initialized at {} ({} entries, {} bytes)", store.dir, store.index.size(), store.totalBytes);
     }
 
-    /** Reads bounded HTTP bytes; concurrent requests share one download per key. */
+    /** Reads at most {@code maxBytes} of any NetRequest source; enabled HTTP(S) reads go through the cache, sharing one download per key. */
     public static CachedBytes read(final URI uri, final HttpHeaders headers, final String accept,
                                    final long maxBytes, final boolean enabled) throws IOException {
         final Store store = active;
@@ -120,9 +120,9 @@ final class NetworkCache {
     }
 
     /**
-     * Returns a cached media file, or null when disabled, uncacheable, oversized or a playlist. Only
-     * bounded responses are downloaded: a missing Content-Length or an ICY stream is an endless
-     * source and fails fast so the caller streams it directly.
+     * Returns a cached media file, or null when the cache is off, the source is not HTTP(S), or the body is a playlist, not
+     * cacheable by its headers or could not be stored. Only bounded responses are downloaded: a body over {@code maxBytes},
+     * a missing Content-Length or an ICY stream fails with an IOException so the caller streams the source directly.
      */
     public static CachedFile readFile(final URI uri, final HttpHeaders headers, final String accept,
                                       final long maxBytes, final boolean enabled) throws IOException {

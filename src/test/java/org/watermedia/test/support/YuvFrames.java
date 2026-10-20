@@ -6,8 +6,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.function.IntBinaryOperator;
 
+import static org.junit.jupiter.api.Assertions.fail;
+
 /**
- * Builds raw frame planes for the GPU engine tests and computes the colors they must show, straight from the
+ * Builds raw frame planes for the engine tests and computes the colors they must show, straight from the
  * standard formulas (BT.601/709/2020 matrices, limited and full range, SMPTE ST 2084) so a wrong shader constant
  * cannot hide behind the same wrong constant in the test.
  */
@@ -16,6 +18,13 @@ public final class YuvFrames {
     public static final double SDR_WHITE_NITS = 203.0;
 
     private YuvFrames() {}
+
+    /** A direct plane holding exactly the given unsigned bytes, at position 0. */
+    public static ByteBuffer direct(final int... bytes) {
+        final ByteBuffer buffer = BufferUtils.createByteBuffer(bytes.length);
+        for (int i = 0; i < bytes.length; i++) buffer.put(i, (byte) bytes[i]);
+        return buffer;
+    }
 
     /** A plane of {@code rows} rows of {@code rowBytes} bytes, {@code stride} apart (0 = tight), ending right after its last row. */
     public static ByteBuffer plane(final int stride, final int rowBytes, final int rows, final IntBinaryOperator sample) {
@@ -85,6 +94,15 @@ public final class YuvFrames {
     /** Returns the 8-bit gray an HDR gray of {@code nits} shows below the highlight knee (0.75 of SDR white). */
     public static int hdrGray(final double nits) {
         return byteOf(Math.pow(nits / SDR_WHITE_NITS, 1.0 / 2.4));
+    }
+
+    /** Asserts every pixel of an RGBA readback shows {@code rgba} (red, green, blue, alpha) within {@code tolerance} codes. */
+    public static void assertUniform(final ByteBuffer frame, final int[] rgba, final int tolerance, final String what) {
+        for (int i = 0; i < frame.capacity(); i++) {
+            final int shown = frame.get(i) & 0xFF;
+            if (Math.abs(shown - rgba[i % 4]) > tolerance)
+                fail(what + ": pixel " + i / 4 + " channel " + i % 4 + " shows " + shown + " instead of " + rgba[i % 4]);
+        }
     }
 
     // UTILITY

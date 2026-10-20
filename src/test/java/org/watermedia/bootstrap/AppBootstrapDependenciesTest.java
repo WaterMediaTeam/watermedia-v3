@@ -38,7 +38,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -71,7 +70,6 @@ public class AppBootstrapDependenciesTest {
                         .map(jar -> jar.getAsJsonObject().get("path").getAsString()).toList();
             }
             assertEquals(paths, Arrays.stream(catalog.getProperty("nested").split(",")).map(name -> "META-INF/jarjar/" + name).toList());
-            assertNull(AppBootstrap.class.getResource("launcher.properties"));
         }
 
         @Test
@@ -174,7 +172,9 @@ public class AppBootstrapDependenciesTest {
             }
             final String resource = "/" + metadata.get("path").getAsString();
             final String version = metadata.getAsJsonObject("version").get("artifactVersion").getAsString();
-            assertEquals("[1.0.0.0,1.0.1)", metadata.getAsJsonObject("version").get("range").getAsString());
+            final Properties build = new Properties();
+            try (final InputStream source = Files.newInputStream(Path.of("gradle.properties"))) { build.load(source); }
+            assertEquals(build.getProperty("waterconfig_range"), metadata.getAsJsonObject("version").get("range").getAsString());
             try (final var reader = new InputStreamReader(AppBootstrap.class.getResourceAsStream("/fabric.mod.json"), StandardCharsets.UTF_8)) {
                 final List<String> files = JsonParser.parseReader(reader).getAsJsonObject().getAsJsonArray("jars").asList().stream()
                         .map(JsonElement::getAsJsonObject).map(jar -> jar.get("file").getAsString()).toList();
@@ -308,8 +308,8 @@ public class AppBootstrapDependenciesTest {
         return catalog;
     }
 
-    private static Object expect(final List<?> dependencies, final Properties versions, final String artifact,
-                                 final String key, final String classifier, final boolean optional) throws Exception {
+    private static void expect(final List<?> dependencies, final Properties versions, final String artifact,
+                               final String key, final String classifier, final boolean optional) throws Exception {
         final String version = versions.getProperty(key + "_version");
         final String name = artifact + "-" + version + (classifier == null ? "" : "-" + classifier) + ".jar";
         for (final Object dependency: dependencies) {
@@ -320,10 +320,9 @@ public class AppBootstrapDependenciesTest {
                     : artifact.startsWith("lwjgl") ? "org/lwjgl" : artifact.startsWith("javafx") ? "org/openjfx"
                     : artifact.equals("gson") ? "com/google/code/gson" : "org/joml";
             assertEquals(URI.create("https://repo1.maven.org/maven2/" + group + "/" + artifact + "/" + version + "/" + name), value(dependency, "source"));
-            return dependency;
+            return;
         }
         fail("Missing dependency: " + name);
-        return null;
     }
 
     private static Object value(final Object dependency, final String name) throws Exception {

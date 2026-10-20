@@ -92,7 +92,7 @@ public class NetRequestTest {
             try (final LocalHttp server = LocalHttp.start("/data", exchange -> LocalHttp.respond(exchange, "text/plain", body, 0))) {
                 final URI uri = server.uri("/data");
                 try (final NetRequest request = NetRequest.create(uri).maxBytes(64).send()) { assertThrows(IOException.class, request::text); }
-                try (final NetRequest request = NetRequest.create(uri).maxBytes(1024).send()) { assertEquals(200, body.length == request.text().length() ? 200 : 0); }
+                try (final NetRequest request = NetRequest.create(uri).maxBytes(1024).send()) { assertEquals(new String(body, StandardCharsets.UTF_8), request.text()); }
                 final Path output = directory.resolve("data");
                 try (final NetRequest request = NetRequest.create(uri).maxBytes(64).send()) {
                     assertThrows(IOException.class, () -> request.download(output, "0".repeat(64)));
@@ -122,7 +122,7 @@ public class NetRequestTest {
                     received.append(ex.getRequestHeaders().getFirst(name)).append('\n');
                 }
                 LocalHttp.respond(ex, "text/plain", received.toString().getBytes(StandardCharsets.UTF_8), 0);
-            }); final LocalHttp redirector = redirect(target.uri("/final").toString(), 302); final NetRequest req = NetRequest.create(redirector.uri("/start"))
+            }); final LocalHttp redirector = redirect(target.uri("/final").toString()); final NetRequest req = NetRequest.create(redirector.uri("/start"))
                     .header("Authorization", "Bearer test")
                     .header("X-WaterMedia-Token", "test")
                     .header("Cookie", "session=test")
@@ -171,18 +171,6 @@ public class NetRequestTest {
                 for (final String name: List.of("Authorization", "Proxy-Authorization", "Cookie", "X-WaterMedia-Token")) {
                     assertNull(headers.value(name), name + " leaked to " + target);
                 }
-            }
-        }
-
-        @Test
-        @DisplayName("A 302 redirect is followed to the final URI")
-        void followsRedirect() throws IOException {
-            try (final LocalHttp target = LocalHttp.start("/final", ex -> LocalHttp.respond(ex, "text/plain", "done".getBytes(), 0));
-                 final LocalHttp redirector = redirect(target.uri("/final").toString(), 302);
-                 final NetRequest req = NetRequest.create(redirector.uri("/start")).send()) {
-                assertEquals(200, req.statusCode());
-                assertEquals("done", req.text());
-                assertTrue(req.uri().getPath().endsWith("/final"));
             }
         }
 
@@ -241,7 +229,7 @@ public class NetRequestTest {
                 zip.closeEntry();
             }
             for (final String location: List.of(secret.toUri().toString(), "jar:" + archive.toUri() + "!/x")) {
-                try (final LocalHttp server = redirect(location, 302)) {
+                try (final LocalHttp server = redirect(location)) {
                     final IOException failure = assertThrows(IOException.class, () -> NetRequest.create(server.uri("/start")).send());
                     assertTrue(failure.getMessage().startsWith("Redirect to unsupported scheme"), failure.getMessage());
                 }
@@ -326,18 +314,6 @@ public class NetRequestTest {
     class BodyTests {
 
         @Test
-        @DisplayName("A plain GET returns 200 and the configured body")
-        void simpleGet() throws IOException {
-            try (final LocalHttp server = LocalHttp.start("/text", ex -> LocalHttp.respond(ex, "text/plain", "hello".getBytes(), 0));
-                 final NetRequest req = NetRequest.create(server.uri("/text")).send()) {
-                assertEquals(200, req.statusCode());
-                assertEquals("hello", req.text());
-                assertNotNull(req.contentType());
-                assertTrue(req.contentType().contains("text/plain"));
-            }
-        }
-
-        @Test
         @DisplayName("json() binds application/json, text/json and +json subtypes, and skips other types unread")
         void jsonContentTypes() throws IOException {
             try (final LocalHttp server = LocalHttp.start("/", ex -> {
@@ -400,10 +376,12 @@ public class NetRequestTest {
         }
 
         @Test
-        @DisplayName("The body can be read only once")
+        @DisplayName("A plain GET exposes its status and content type, and the body can be read only once")
         void singleRead() throws IOException {
             try (final LocalHttp server = LocalHttp.start("/text", ex -> LocalHttp.respond(ex, "text/plain", "hello".getBytes(), 0));
                  final NetRequest req = NetRequest.create(server.uri("/text")).send()) {
+                assertEquals(200, req.statusCode());
+                assertTrue(String.valueOf(req.contentType()).contains("text/plain"));
                 assertEquals("hello", req.text());
                 final IllegalStateException again = assertThrows(IllegalStateException.class, req::text);
                 assertEquals("The response body was already read", again.getMessage());
@@ -445,11 +423,11 @@ public class NetRequestTest {
     }
 
     // UTILITY
-    // SERVES /start AS A REDIRECT TO location WITH THE GIVEN STATUS
-    private static LocalHttp redirect(final String location, final int status) {
+    // SERVES /start AS A 302 REDIRECT TO location
+    private static LocalHttp redirect(final String location) {
         return LocalHttp.start("/start", ex -> {
             ex.getResponseHeaders().set("Location", location);
-            ex.sendResponseHeaders(status, -1);
+            ex.sendResponseHeaders(302, -1);
             ex.close();
         });
     }

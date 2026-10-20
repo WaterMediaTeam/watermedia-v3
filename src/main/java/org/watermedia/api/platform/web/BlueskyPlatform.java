@@ -111,8 +111,6 @@ public final class BlueskyPlatform implements Platform {
 
             LOGGER.debug(IT, "Bluesky resolved {} media entry(es) for post '{}'", entries.size(), postId);
             return new Resolution(Instant.now().plus(TTL), entries);
-        } catch (final PlatformException e) {
-            throw e;
         } catch (final RuntimeException e) {
             throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }

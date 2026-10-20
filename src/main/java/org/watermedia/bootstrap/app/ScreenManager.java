@@ -91,14 +91,4 @@ final class ScreenManager {
     public void releaseMediaAll() {
         for (final Screen screen: this.screens.values()) screen.releaseMedia();
     }
-
-    /** Whether the active screen animates every frame. */
-    public boolean continuous() {
-        return this.current != null && this.current.continuous();
-    }
-
-    /** Whether a text input on the active screen holds keyboard focus. */
-    public boolean textInputActive() {
-        return this.current != null && this.current.textInputActive();
-    }
 }

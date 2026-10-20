@@ -14,9 +14,8 @@ public record PixelDiff(int maxDiff, double meanDiff, int valuesAboveSmall, int 
      * to report the fraction of bytes that drifted noticeably).
      */
     public static PixelDiff compare(final byte[] reference, final byte[] actual, final int smallDiffThreshold) {
-        if (reference.length != actual.length) {
+        if (reference.length != actual.length)
             throw new IllegalArgumentException("Length mismatch: ref=" + reference.length + " actual=" + actual.length);
-        }
         int maxDiff = 0;
         long total = 0L;
         int aboveSmall = 0;

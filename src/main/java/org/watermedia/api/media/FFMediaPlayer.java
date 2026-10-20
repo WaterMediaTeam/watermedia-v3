@@ -129,7 +129,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private AVFormatContext trackFormatContext;
     private AVCodecContext videoCodecContext;
     private AVCodecContext audioCodecContext;
-    private SwsContext swsContext;        // FORMAT CONVERSION AND/OR maxSize/LOD DOWNSCALE
+    private SwsContext swsContext;        // FORMAT CONVERSION AND/OR scale/LOD DOWNSCALE
     private SwrContext swrContext;
 
     // HW
@@ -258,9 +258,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     // QUALITY SWITCH) THE ENGINE QUEUE STILL HOLDS PRE-SEEK AUDIO AND MUST BE FLUSHED.
     private int lastAudioUploadSerial = -1;
 
-    // ADAPTIVE FRAME DROPPING
-    private double renderDebtSec;
-
     // PERFORMANCE COUNTERS
     private long perfLastCheckMs;
     private long perfLastClockMs;
@@ -305,7 +302,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         synchronized (this.lifecycleLock) {
             // release() FREES gfx/sfx — REBUILDING THE PIPELINE ON DEAD ENGINES WOULD CRASH ON UPLOAD
             if (this.released) {
-                LOGGER.warn(IT, "start() ignored — player already released");
+                LOGGER.debug(IT, "start() ignored — player already released");
                 return false;
             }
             LOGGER.debug(IT, "Start requested (quality={}, paused={}, at={}ms)", this.quality, paused, seekMs);
@@ -840,7 +837,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (seekMs >= 0) this.clock.requestSeek(seekMs, true);
             this.totalSkippedFrames = 0;
             this.totalRenderedFrames = 0;
-            this.renderDebtSec = 0;
+            double renderDebtSec = 0; // ADAPTIVE FRAME DROPPING: CONVERT+UPLOAD TIME OWED TO THE FRAME BUDGET
             this.qualityRequest = false; // this.quality IS ALREADY THE LATEST — A STALE SWITCH WOULD REBUILD THE FRESH PIPELINE
             // STARVATION DETECTION
             long starvationStartMs = 0;
@@ -1021,19 +1018,18 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                         // ADAPTIVE FRAME DROP
                         final double frameDurSec = this.clock.frameDurationSec();
-                        if (this.renderDebtSec >= frameDurSec) {
+                        if (renderDebtSec >= frameDurSec) {
                             final FrameQueue.Slot nextSlot = this.videoFrameQueue.peekNext();
                             if (nextSlot != null) {
-                                this.renderDebtSec -= frameDurSec;
+                                renderDebtSec -= frameDurSec;
                                 this.videoFrameQueue.next();
                                 this.totalSkippedFrames++;
                                 continue;
                             }
                         }
 
-                        // DETERMINE UPLOAD PATH — maxSize/LOD MAY REQUIRE A DOWNSCALE BEFORE UPLOAD.
-                        // THE TARGET IS RESOLVED PER FRAME, SO HOT LOD CHANGES APPLY WITHOUT
-                        // TOUCHING THE DECODE PIPELINE OR THE CLOCK.
+                        // scale/LOD MAY REQUIRE A DOWNSCALE BEFORE UPLOAD; THE TARGET IS RESOLVED PER FRAME, SO HOT LOD
+                        // CHANGES APPLY WITHOUT TOUCHING THE DECODE PIPELINE OR THE CLOCK
                         if (slot.format != this.cachedUploadFmt) {
                             this.cachedUploadFmt = slot.format;
                             this.cachedUploadMapping = FFTool.pixels(slot.format);
@@ -1132,9 +1128,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // TRACK RENDER DEBT (CONVERT+UPLOAD TIME VS FRAME BUDGET)
                         final double workSec = (System.nanoTime() - workStart) / 1_000_000_000.0;
                         if (workSec > frameDurSec) {
-                            this.renderDebtSec += (workSec - frameDurSec);
+                            renderDebtSec += (workSec - frameDurSec);
                         } else {
-                            this.renderDebtSec = Math.max(0, this.renderDebtSec - (frameDurSec - workSec));
+                            renderDebtSec = Math.max(0, renderDebtSec - (frameDurSec - workSec));
                         }
 
                         // CONSUME (frameSec ALREADY HOLDS THE PTS — slot IS RECYCLED BY next())
@@ -2151,11 +2147,13 @@ public final class FFMediaPlayer extends MediaPlayer {
         LOGGER.info(IT, "Successfully switched quality to {}", this.quality);
     }
 
-    private String resolveInputUrl(final URI uri, final boolean allowCache) {
+    // RESOLVES WHAT FFMPEG OPENS FOR uri: THE CACHED FILE WHEN THE NETWORK CACHE HOLDS OR STORES THE BODY, OTHERWISE THE
+    // SOURCE ITSELF; null WHEN A stop()/RESTART CUT THE CACHE WAIT SHORT, SO THE CALLER NEVER OPENS THE ABANDONED SOURCE
+    private String resolveInputUrl(final URI uri) {
         // PLAYLISTS ARE NEVER CACHED BY EXTENSION (THE CACHE ALSO REJECTS THEM BY CONTENT TYPE, BUT ONLY
         // AFTER DOWNLOADING); THE SCHEME AND CONFIG GATES LIVE INSIDE NetworkCache.readFile
         final String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
-        if (allowCache && !path.endsWith(".m3u8") && !path.endsWith(".mpd")) {
+        if (!path.endsWith(".m3u8") && !path.endsWith(".mpd")) {
             try {
                 final NetworkCache.CachedFile cached = NetworkCache.readFile(
                         uri,
@@ -2168,6 +2166,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     return cached.path().toAbsolutePath().toString();
                 }
             } catch (final IOException e) {
+                if (this.ioAbortRequested) return null;
                 LOGGER.debug(IT, "FFMediaPlayer cache bypass for {}", uri, e);
             }
         }
@@ -2213,7 +2212,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         final var uri = this.source.uri(this.quality);
         super.quality(this.source.qualityOf(uri));
 
-        final String url = this.resolveInputUrl(uri, true);
+        final String url = this.resolveInputUrl(uri);
+        if (url == null) return false;
 
         if (this.formatContext != null) {
             avformat.avformat_close_input(this.formatContext);
@@ -2364,7 +2364,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             final var uri = this.source.uri(this.quality);
             super.quality(this.source.qualityOf(uri));
             LOGGER.debug(IT, "Resolved quality {}", this.quality);
-            final String url = this.resolveInputUrl(uri, true);
+            final String url = this.resolveInputUrl(uri);
+            if (url == null) return false;
 
             final var audioTracks = this.source.audioTracks();
             Track audioTrack = null;
@@ -2441,6 +2442,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (audioTrack != null) {
                 this.useAudioTrack = this.initAudioTrack(audioTrack);
                 if (!this.useAudioTrack) {
+                    // A stop()/RESTART CUT THE TRACK OPEN SHORT: THE WHOLE SETUP IS ABANDONED, THERE IS NOTHING TO FALL BACK TO
+                    if (this.ioAbortRequested) return false;
                     LOGGER.warn(IT, "Audio track failed to open, falling back to main audio stream");
                     for (int i = 0; i < this.formatContext.nb_streams(); i++) {
                         final AVStream stream = this.formatContext.streams(i);
@@ -2511,7 +2514,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
-        final String trackUrl = this.resolveInputUrl(trackUri, true);
+        final String trackUrl = this.resolveInputUrl(trackUri);
+        if (trackUrl == null) return false;
 
         this.trackFormatContext = avformat.avformat_alloc_context();
         if (this.interruptCallback != null) {
@@ -2523,7 +2527,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.applyInputOptions(trackOptions);
 
             if (avformat.avformat_open_input(this.trackFormatContext, trackUrl, null, trackOptions) < 0) {
-                LOGGER.error(IT, "Failed to open audio track input: {}", trackUrl);
+                if (!this.ioAbortRequested) LOGGER.error(IT, "Failed to open audio track input: {}", trackUrl);
                 this.trackFormatContext = null;
                 return false;
             }
@@ -2532,7 +2536,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
 
         if (avformat.avformat_find_stream_info(this.trackFormatContext, (PointerPointer<?>) null) < 0) {
-            LOGGER.error(IT, "Failed to find stream info for audio track");
+            if (!this.ioAbortRequested) LOGGER.error(IT, "Failed to find stream info for audio track");
             avformat.avformat_close_input(this.trackFormatContext);
             this.trackFormatContext = null;
             return false;
@@ -2646,7 +2650,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final FFTool.Pixels initialMapping = FFTool.pixels(this.videoCodecContext.pix_fmt());
         if (initialMapping != null) {
-            // PRE-CONFIGURE THE ENGINE WITH THE UPLOAD TARGET (maxSize/LOD APPLIED) SO
+            // PRE-CONFIGURE THE ENGINE WITH THE UPLOAD TARGET (scale/LOD APPLIED) SO
             // THE FIRST FRAME DOESN'T PAY AN EXTRA RECONFIGURATION
             final int targetW = scaled(w, this.scaleWidth, this.lod.percent());
             final int targetH = scaled(h, this.scaleHeight, this.lod.percent());

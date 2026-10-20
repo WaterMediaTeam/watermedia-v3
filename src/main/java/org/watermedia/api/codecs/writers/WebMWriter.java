@@ -71,7 +71,7 @@ public final class WebMWriter extends ImageWriter {
     // FFMPEG PIPELINE
     private AVFormatContext muxer;
     private AVCodecContext encoder;
-    private AVStream stream;
+    private final AVStream stream;
     private SwsContext scaler;
     private AVFrame srcFrame;   // BINDS THE CALLER'S BUFFER (NO STORAGE OF ITS OWN)
     private AVFrame yuvFrame;   // YUV420P ENCODER INPUT
@@ -137,7 +137,7 @@ public final class WebMWriter extends ImageWriter {
             this.encoder.color_trc(avutil.AVCOL_TRC_BT709);
             this.encoder.color_range(avutil.AVCOL_RANGE_MPEG);
             this.encoder.time_base(this.timeBase);
-            this.encoder.framerate(new AVRational().num(fps).den(1));
+            try (final AVRational framerate = new AVRational().num(fps).den(1)) { this.encoder.framerate(framerate); }
             this.encoder.bit_rate(0); // 0 BITRATE + CRF => CONSTANT QUALITY
             // WEBM WANTS THE CODEC EXTRADATA IN THE CONTAINER HEADER, NOT INLINE PER PACKET
             if ((this.muxer.oformat().flags() & avformat.AVFMT_GLOBALHEADER) != 0)
@@ -260,7 +260,7 @@ public final class WebMWriter extends ImageWriter {
         try {
             if (this.muxer != null && this.encoder != null) {
                 // FLUSH THE ENCODER LOOKAHEAD, THEN FINALIZE THE CONTAINER (PATCHES Duration + Cues)
-                if (avcodec.avcodec_send_frame(this.encoder, (AVFrame) null) >= 0) this.drain();
+                if (avcodec.avcodec_send_frame(this.encoder, null) >= 0) this.drain();
                 final int trailer = avformat.av_write_trailer(this.muxer);
                 if (trailer < 0) throw FFTool.failure("av_write_trailer", trailer);
             }
@@ -269,7 +269,7 @@ public final class WebMWriter extends ImageWriter {
             final AVIOContext pb = this.muxer != null ? this.muxer.pb() : null;
             if (!FFTool.isNull(pb)) {
                 avformat.avio_close(pb);
-                this.muxer.pb((AVIOContext) null);
+                this.muxer.pb(null);
             }
             if (this.tempFile != null && Files.exists(this.tempFile)) Files.copy(this.tempFile, this.out);
         } finally {
@@ -299,7 +299,7 @@ public final class WebMWriter extends ImageWriter {
         if (this.encoder != null) { avcodec.avcodec_free_context(this.encoder); this.encoder = null; }
         if (this.muxer != null) {
             final AVIOContext pb = this.muxer.pb();
-            if (!FFTool.isNull(pb)) { avformat.avio_close(pb); this.muxer.pb((AVIOContext) null); }
+            if (!FFTool.isNull(pb)) { avformat.avio_close(pb); this.muxer.pb(null); }
             avformat.avformat_free_context(this.muxer);
             this.muxer = null;
         }

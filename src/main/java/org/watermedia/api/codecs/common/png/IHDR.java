@@ -46,9 +46,8 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     /** Returns the byte distance used by PNG filters, at least one for packed samples; reserved color types throw. */
     public int bytesPerPixel() throws CodecException {
         final int samplesPerPixel = switch (ColorType.of(this.colorType)) {
-            case GREYSCALE -> 1;
+            case GREYSCALE, INDEXED -> 1;
             case TRUECOLOR -> 3;
-            case INDEXED -> 1;
             case GREYSCALE_ALPHA -> 2;
             case TRUECOLOR_ALPHA -> 4;
             case FORBIDDEN_1, FORBIDDEN_5 -> throw new CodecException("Forbidden color type: " + this.colorType);

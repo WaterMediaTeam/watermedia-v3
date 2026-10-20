@@ -186,12 +186,10 @@ public final class CodecsAPI {
      *
      * @throws UnsupportedFormatException if the leading bytes don't match any supported format
      * @throws IOException                on malformed bitstream
-     * @throws IllegalArgumentException   when {@code source} is null or {@code requestedFormat} is another layout
+     * @throws IllegalArgumentException   when {@code source} is null or the matched reader is asked for another layout
      */
     public static ImageReader reader(final ByteBuffer source, final PixelFormat requestedFormat) throws IOException {
         if (source == null) throw new IllegalArgumentException("Source cannot be null");
-        if (requestedFormat != null && requestedFormat != PixelFormat.BGRA && requestedFormat != PixelFormat.RGBA && requestedFormat != PixelFormat.GRAY)
-            throw new IllegalArgumentException("Readers deliver BGRA, RGBA or GRAY, not " + requestedFormat);
         final int start = source.position();
         try {
             if (DataTool.startsWith(source, start, PNG_HEADER)) {
@@ -257,7 +255,7 @@ public final class CodecsAPI {
      * @param requestedFormat {@link PixelFormat#BGRA}, {@link PixelFormat#RGBA} or {@link PixelFormat#GRAY}, or {@code null} for the reader's own layout
      * @return the decoded frames, their layout, delays and repeat count
      * @throws IOException on unsupported format or malformed bitstream
-     * @throws IllegalArgumentException when {@code data} is null or {@code requestedFormat} is another layout
+     * @throws IllegalArgumentException when {@code data} is null or the matched reader is asked for another layout
      * @see #reader(ByteBuffer, PixelFormat)
      */
     public static ImageData decode(final byte[] data, final PixelFormat requestedFormat) throws IOException {

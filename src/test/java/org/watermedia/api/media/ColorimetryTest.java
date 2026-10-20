@@ -3,6 +3,7 @@ package org.watermedia.api.media;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.api.codecs.writers.WebMWriter;
 import org.watermedia.api.media.Colorimetry.Matrix;
 import org.watermedia.api.media.Colorimetry.Transfer;
@@ -150,7 +151,7 @@ public class ColorimetryTest {
 
         @Test
         @DisplayName("A WebM tagged BT.709 limited reaches the engine as BT.709 even at an SD size, with BT.709 luma")
-        void webmTagsReachTheEngine() throws Exception {
+        void webmTagsReachTheEngine(@TempDir final Path directory) throws Exception {
             assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
             // A MAGENTA WHOSE LUMA DIFFERS BY ABOUT 23 CODES BETWEEN BT.601 AND BT.709
             final int r = 230, g = 20, b = 230;
@@ -162,8 +163,7 @@ public class ColorimetryTest {
                 frame.flip();
                 for (int f = 0; f < 10; f++) writer.writeFrame(frame);
             }
-            final Path file = Files.createTempFile("wm-color-", ".webm");
-            file.toFile().deleteOnExit();
+            final Path file = directory.resolve("color.webm");
             Files.write(file, out.toByteArray());
 
             final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(file));

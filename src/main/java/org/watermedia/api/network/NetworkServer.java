@@ -146,7 +146,6 @@ public final class NetworkServer {
                     } finally {
                         watchdog.finish();
                         WATCHDOG.remove();
-                        Thread.interrupted();
                     }
                 }));
                 server.start();

@@ -13,18 +13,13 @@ import org.watermedia.test.support.PlayerWait;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies the {@link TxMediaPlayer} upload-scaling pipeline ({@code maxSize} +
- * {@link LodLevel}) end to end against a known-size fixture, asserting on the
- * dimensions the engine is actually configured with ({@code width()}/{@code height()})
- * versus the untouched native size ({@code sourceWidth()}/{@code sourceHeight()}).
- *
- * <p>The static PNG fixture is {@code 150x150}, which keeps the expected results
- * easy to verify by hand. Scaling is applied <b>before</b> {@code start()} because
- * static images bake their upload size at preparation time.
+ * Verifies that {@link TxMediaPlayer} uploads at the size {@code scale} and {@link LodLevel} resolve to, asserting on
+ * the dimensions the engine is configured with ({@code width()}/{@code height()}) versus the untouched native size
+ * ({@code sourceWidth()}/{@code sourceHeight()}). The sizing rule itself is pinned by {@link MediaPlayerBaseTest}; a
+ * static image bakes its upload size at preparation, while a streaming animation picks up a LOD change on the fly.
  */
 @DisplayName("TxMediaPlayer scaling")
 public class TxScalingTest {
@@ -32,173 +27,109 @@ public class TxScalingTest {
     private static final long MRL_TIMEOUT_MS = 2_000L;
     private static final long PLAYER_TIMEOUT_MS = 3_000L;
     private static final long HOT_CHANGE_MS = 3_000L;
-
-    private static final int NATIVE = 150; // src/test/resources/png/2.png IS 150x150
+    // Fixtures.PNG_STATIC IS 64x40; THE CAP KEEPS ITS ASPECT
+    private static final int NATIVE_WIDTH = 64;
+    private static final int NATIVE_HEIGHT = 40;
+    private static final int CAP_WIDTH = 32;
+    private static final int CAP_HEIGHT = 20;
 
     @BeforeAll
     static void boot() { MediaBootstrap.client(); }
 
-    // BUILDS A STATIC-IMAGE PLAYER, APPLIES THE GIVEN SCALING CONFIG, STARTS IT AND
-    // WAITS UNTIL THE FIRST FRAME IS LIVE SO width()/height() REFLECT THE UPLOAD SIZE.
-    private static TxMediaPlayer startStatic(final HeadlessGFXEngine gfx, final Consumer<TxMediaPlayer> config) {
-        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+    @Nested
+    @DisplayName("Static image")
+    class StaticImage {
 
-        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
-        config.accept(player);
-        player.start();
-        assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-        assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
-        return player;
-    }
-
-    @Test
-    @DisplayName("No scaling uploads the native size")
-    void testNoScalingUploadsNativeSize() {
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> {});
-        try {
-            assertEquals(NATIVE, player.sourceWidth());
-            assertEquals(NATIVE, player.sourceHeight());
-            assertEquals(NATIVE, player.width());
-            assertEquals(NATIVE, player.height());
-            assertEquals(LodLevel.MAX, player.lod());
-        } finally {
-            player.stop();
-            player.release();
+        @Test
+        @DisplayName("No scaling uploads the native size")
+        void testNoScalingUploadsNativeSize() {
+            final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
+            final TxMediaPlayer player = startStatic(gfx, p -> {});
+            try {
+                assertEquals(NATIVE_WIDTH, player.sourceWidth());
+                assertEquals(NATIVE_HEIGHT, player.sourceHeight());
+                assertEquals(NATIVE_WIDTH, player.width());
+                assertEquals(NATIVE_HEIGHT, player.height());
+                assertEquals(1L, gfx.uploadCount(), "a still uploads its single frame once");
+            } finally {
+                player.release();
+            }
         }
-    }
 
-    @Test
-    @DisplayName("maxSize caps the upload below the native size")
-    void testMaxSizeCapsBelowNative() {
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> p.scale(100, 100));
-        try {
-            // min(150, 100) = 100 ON EACH AXIS; SOURCE SIZE IS LEFT UNTOUCHED
-            assertEquals(100, player.width());
-            assertEquals(100, player.height());
-            assertEquals(NATIVE, player.sourceWidth());
-            assertEquals(100, player.scaleWidth());
-        } finally {
-            player.stop();
-            player.release();
+        @Test
+        @DisplayName("scale caps the upload below the native size")
+        void testScaleCapsBelowNative() {
+            final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
+            final TxMediaPlayer player = startStatic(gfx, p -> p.scale(CAP_WIDTH, CAP_HEIGHT));
+            try {
+                // THE SOURCE SIZE IS LEFT UNTOUCHED
+                assertEquals(CAP_WIDTH, player.width());
+                assertEquals(CAP_HEIGHT, player.height());
+                assertEquals(NATIVE_WIDTH, player.sourceWidth());
+                assertEquals(NATIVE_HEIGHT, player.sourceHeight());
+            } finally {
+                player.release();
+            }
         }
-    }
 
-    @Test
-    @DisplayName("maxSize above the native size never upscales")
-    void testMaxSizeNeverUpscales() {
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> p.scale(4000, 4000));
-        try {
-            assertEquals(NATIVE, player.width());
-            assertEquals(NATIVE, player.height());
-        } finally {
-            player.stop();
-            player.release();
-        }
-    }
-
-    @Test
-    @DisplayName("maxSize 0 means unlimited")
-    void testZeroMaxSizeIsUnlimited() {
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> p.scale(0, 0));
-        try {
-            assertEquals(NATIVE, player.width());
-            assertEquals(NATIVE, player.height());
-        } finally {
-            player.stop();
-            player.release();
-        }
-    }
-
-    @Test
-    @DisplayName("LOD halves the dimensions")
-    void testLodHalvesDimensions() {
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> p.lod(LodLevel.NEAR));
-        try {
-            // 150 * 50% = 75, EVEN-CLAMPED DOWN TO 74 FOR CHROMA ALIGNMENT
-            assertEquals(74, player.width());
-            assertEquals(74, player.height());
-        } finally {
-            player.stop();
-            player.release();
-        }
-    }
-
-    @Test
-    @DisplayName("maxSize and LOD compose")
-    void testMaxSizeAndLodCompose() {
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> {
-            p.scale(100, 100);
-            p.lod(LodLevel.NEAR);
-        });
-        try {
-            // min(150, 100) = 100, THEN * 50% = 50
-            assertEquals(50, player.width());
-            assertEquals(50, player.height());
-        } finally {
-            player.stop();
-            player.release();
-        }
-    }
-
-    @Test
-    @DisplayName("Hot LOD change shrinks the live upload (streaming GIF)")
-    void testHotLodChangeShrinksUpload() {
-        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
-
-        // HeadlessGFXEngine(false) DISABLES THE FRAME-TEXTURE FAST PATH SO THE GIF RUNS THE
-        // STREAMING LIFECYCLE (MODE 3), WHERE applyTarget() RE-RUNS EVERY LOOP ITERATION.
-        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
-        try {
-            player.start();
-            assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
-
-            final int fullWidth = player.width();
-            assertTrue(fullWidth > 0);
-            assertEquals(player.sourceWidth(), fullWidth);
-
-            // CHANGE LOD ON THE FLY — THE STREAMING LOOP MUST PICK IT UP AND UPLOAD SMALLER
-            player.lod(LodLevel.FAR_AWAY);
-            assertTrue(PlayerWait.awaitCondition(() -> player.width() < fullWidth, HOT_CHANGE_MS),
-                    "upload width should shrink after a hot LOD change");
-        } finally {
-            player.stop();
-            player.release();
+        @Test
+        @DisplayName("scale and LOD compose")
+        void testScaleAndLodCompose() {
+            final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
+            final TxMediaPlayer player = startStatic(gfx, p -> {
+                p.scale(CAP_WIDTH, CAP_HEIGHT);
+                p.lod(LodLevel.NEAR);
+            });
+            try {
+                // THE CAP FIRST, THEN 50% OF IT
+                assertEquals(CAP_WIDTH / 2, player.width());
+                assertEquals(CAP_HEIGHT / 2, player.height());
+            } finally {
+                player.release();
+            }
         }
     }
 
     @Nested
-    @DisplayName("Argument validation")
-    class Validation {
+    @DisplayName("Streaming animation")
+    class Streaming {
 
-        private TxMediaPlayer newPlayer() {
-            final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
+        @Test
+        @DisplayName("Hot LOD change shrinks the live upload")
+        void testHotLodChangeShrinksUpload() {
+            final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
             assertTrue(mrl.await(MRL_TIMEOUT_MS));
-            return new TxMediaPlayer(mrl, 0, new HeadlessGFXEngine());
-        }
+            // HeadlessGFXEngine(false) DISABLES THE FRAME-TEXTURE FAST PATH SO THE GIF RUNS THE
+            // STREAMING LIFECYCLE (MODE 3), WHERE applyTarget() RE-RUNS EVERY LOOP ITERATION.
+            final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, new HeadlessGFXEngine(false));
+            try {
+                assertTrue(player.start());
+                assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
+                final int fullWidth = player.width();
+                assertTrue(fullWidth > 0);
+                assertEquals(player.sourceWidth(), fullWidth);
 
-        @Test
-        @DisplayName("Negative maxSize is rejected")
-        void testNegativeMaxSizeRejected() {
-            final TxMediaPlayer player = this.newPlayer();
-            assertThrows(IllegalArgumentException.class, () -> player.scale(-1, 10));
-            assertThrows(IllegalArgumentException.class, () -> player.scale(10, -1));
+                // CHANGE LOD ON THE FLY — THE STREAMING LOOP MUST PICK IT UP AND UPLOAD SMALLER
+                player.lod(LodLevel.FAR_AWAY);
+                assertTrue(PlayerWait.awaitCondition(() -> player.width() < fullWidth, HOT_CHANGE_MS),
+                        "upload width should shrink after a hot LOD change");
+            } finally {
+                player.release();
+            }
         }
+    }
 
-        @Test
-        @DisplayName("Null LOD is rejected")
-        void testNullLodRejected() {
-            final TxMediaPlayer player = this.newPlayer();
-            assertThrows(IllegalArgumentException.class, () -> player.lod(null));
-        }
+    // UTILITY
+
+    // BUILDS A STATIC-IMAGE PLAYER, APPLIES THE SCALING CONFIG, STARTS IT AND WAITS UNTIL THE FIRST FRAME IS LIVE SO
+    // width()/height() REFLECT THE UPLOAD SIZE
+    private static TxMediaPlayer startStatic(final HeadlessGFXEngine gfx, final Consumer<TxMediaPlayer> config) {
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
+        config.accept(player);
+        assertTrue(player.start());
+        assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
+        return player;
     }
 }

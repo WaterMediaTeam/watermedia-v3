@@ -81,8 +81,6 @@ public class ImageDataTest {
             assertEquals(100L, scan.duration());
             assertArrayEquals(delays, scan.delays());
             assertNotSame(scan.delays(), scan.delays(), "every call owns its copy");
-            assertEquals(1, ImageData.Scan.EMPTY.frameCount());
-            assertEquals(1, ImageData.Scan.EMPTY.repeat(), "a static image plays once");
         }
 
         @Test

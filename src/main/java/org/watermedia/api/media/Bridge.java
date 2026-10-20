@@ -21,7 +21,8 @@ import java.nio.ByteBuffer;
  * the handler that received it.
  * <p>
  * Implementations must be thread-safe and must not block: sends happen on WaterMedia's sync
- * thread and on whichever thread issued a control call.
+ * thread, on the thread that creates or releases a bridged player, on the authority's
+ * {@code sync()} caller and on whichever thread issued a control call.
  */
 @FunctionalInterface
 public interface Bridge {

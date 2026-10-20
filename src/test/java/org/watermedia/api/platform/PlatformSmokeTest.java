@@ -6,7 +6,7 @@ import org.watermedia.api.platform.Platform.Resolution;
 import org.watermedia.api.platform.Platform.Source;
 import org.watermedia.api.platform.web.YouTubePlatform;
 import org.watermedia.api.platform.web.YtDlpPlatform;
-import org.watermedia.api.util.HttpHeaders;
+import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.Track;
 
 import java.net.URI;
@@ -16,9 +16,9 @@ import java.util.List;
  * MANUAL verification harness (not a JUnit test): resolves URLs through the actual yt-dlp platforms,
  * exactly as {@code PlatformAPI} would — so host routing, yt-dlp extraction and the resulting
  * {@link Source} are all exercised end-to-end on this machine's own network (useful when a site
- * blocks datacenter IPs). Run with {@code gradle platformSmoke -Purl=<url>}; with no URL it resolves one
- * public sample per platform. Facebook/Instagram public items rot fast and often need a logged-in
- * session, so test those by passing a fresh public link.
+ * blocks datacenter IPs). Run its {@code main} from the IDE with the URLs as arguments; with none it
+ * resolves one public sample per platform. Facebook/Instagram public items rot fast and often need a
+ * logged-in session, so test those by passing a fresh public link.
  */
 public final class PlatformSmokeTest {
     private static final String[] DEFAULTS = {
@@ -30,7 +30,7 @@ public final class PlatformSmokeTest {
     public static void main(final String[] args) throws Exception {
         WaterMedia.start("TEST", null, null, true);
 
-        // SAME HANDLERS PlatformAPI REGISTERS, IN ITS PROBE ORDER (FIRST NON-NULL WINS)
+        // THE yt-dlp HANDLERS PlatformAPI REGISTERS; THEIR HOSTS DO NOT OVERLAP, SO THE ORDER HERE DOES NOT MATTER
         final List<Platform> platforms = List.of(
                 new YtDlpPlatform(),
                 new YouTubePlatform());
@@ -40,7 +40,7 @@ public final class PlatformSmokeTest {
             resolve(platforms, url);
         }
         if (args.length == 0) {
-            System.out.println("\nTip: test Facebook/Instagram with a public link: gradle platformSmoke -Purl=<url>");
+            System.out.println("\nTip: test Facebook/Instagram by passing a fresh public link as an argument");
         }
         System.exit(0);
     }
@@ -67,22 +67,18 @@ public final class PlatformSmokeTest {
     }
 
     private static void print(final Source src) {
-        final HttpHeaders h = src.headers();
+        final Metadata meta = src.metadata(); // OPTIONAL ON A SOURCE
         System.out.println("  type=" + src.type() + " qualities=" + src.qualities().size()
-                + " | title=" + src.metadata().title() + " | author=" + src.metadata().author());
-        System.out.println("  UA=" + (h == null ? "(none)" : h.value("User-Agent")));
+                + " | title=" + (meta == null ? "(none)" : meta.title()) + " | author=" + (meta == null ? "(none)" : meta.author()));
+        System.out.println("  UA=" + src.headers().value("User-Agent"));
         for (final Quality q: src.qualities()) {
             final String u = q.uri().toString();
             System.out.println("  " + q.width() + "x" + q.height() + " -> " + u.substring(0, Math.min(90, u.length())));
         }
-        if (src.audioTracks() != null) {
-            for (final Track a: src.audioTracks()) {
-                final String u = a.uri().toString();
-                System.out.println("  audio -> " + u.substring(0, Math.min(90, u.length())));
-            }
+        for (final Track a: src.audioTracks()) {
+            final String u = a.uri().toString();
+            System.out.println("  audio -> " + u.substring(0, Math.min(90, u.length())));
         }
-        if (src.subtitleTracks() != null) {
-            System.out.println("  subtitles=" + src.subtitleTracks().size());
-        }
+        System.out.println("  subtitles=" + src.subtitleTracks().size());
     }
 }
