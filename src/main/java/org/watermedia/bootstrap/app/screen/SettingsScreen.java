@@ -1,10 +1,8 @@
 package org.watermedia.bootstrap.app.screen;
 
-import me.srrapero720.waterconfig.ConfigGroup;
 import me.srrapero720.waterconfig.ConfigSpec;
 import me.srrapero720.waterconfig.WaterConfig;
 import me.srrapero720.waterconfig.api.Control;
-import me.srrapero720.waterconfig.api.IConfigField;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppConfig;
@@ -28,6 +26,14 @@ import org.watermedia.bootstrap.app.element.Switch;
 import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.bootstrap.app.element.TextField;
 import org.watermedia.bootstrap.app.element.Theme;
+import org.watermedia.bootstrap.app.screen.SettingsModel.ReadOnlySetting;
+import org.watermedia.bootstrap.app.screen.SettingsModel.ReverseSpec;
+import org.watermedia.bootstrap.app.screen.SettingsModel.SaveMachine;
+import org.watermedia.bootstrap.app.screen.SettingsModel.SaveState;
+import org.watermedia.bootstrap.app.screen.SettingsModel.Setting;
+import org.watermedia.bootstrap.app.screen.SettingsModel.SettingSection;
+import org.watermedia.bootstrap.app.screen.SettingsModel.SettingSpec;
+import org.watermedia.bootstrap.app.screen.SettingsModel.Stops;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Gravity;
 import org.watermedia.bootstrap.app.ui.Spacing;
@@ -41,7 +47,6 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -49,8 +54,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
-import java.util.function.DoubleFunction;
-import java.util.function.Supplier;
 
 import static org.lwjgl.glfw.GLFW.*;
 
@@ -413,7 +416,7 @@ public final class SettingsScreen extends Screen {
         for (final ConfigSpec cs: registered) {
             final String name = cs.name();
             if (AppConfig.ID.equals(name) || WaterMedia.ID.equals(name)) continue;
-            this.specs.add(this.buildGenericSpec(titleCase(name), cs, "settings", name, null, Map.of()));
+            this.specs.add(this.buildGenericSpec(SettingsModel.titleCase(name), cs, "settings", name, null, Map.of()));
         }
 
         // ABSENT OR UNPARSABLE MOD CONFIG FILES ARE SKIPPED (WaterConfig.reverseSpec RETURNS null)
@@ -665,7 +668,7 @@ public final class SettingsScreen extends Screen {
     }
 
     // ==========================================================================
-    // SPEC MODELS — ONE REFLECTIVE TREE BUILDER FOR EVERY WATERCONFIG SPEC
+    // SPEC TABS — EVERY WATERCONFIG SPEC GOES THROUGH THE SAME REFLECTIVE TREE BUILDER (SettingsModel)
     // ==========================================================================
 
     // WATERMEDIA'S OWN SPECS (APP AND INSTANCE) KEEP THE APP ICON; A SPEC WATERCONFIG DID NOT EXPOSE SHOWS A
@@ -688,10 +691,10 @@ public final class SettingsScreen extends Screen {
     private SettingSpec buildGenericSpec(final String title, final ConfigSpec configSpec, final String icon,
                                          final String saveKey, final Runnable applier, final Map<String, Stops> stops) {
         final SettingSpec spec = new SettingSpec(title, fileName(configSpec), configSpec, applier, this.saveFor(saveKey), icon, stops);
-        this.collectSections(configSpec, spec);
+        SettingsModel.collectSections(configSpec, spec);
         if (spec.sections.isEmpty()) {
             final SettingSection empty = new SettingSection("Empty", "No fields were discovered", "empty", 0);
-            empty.settings.add(new ReadOnlySetting(titleCase(configSpec.name()), configSpec.name(), "STATE",
+            empty.settings.add(new ReadOnlySetting(SettingsModel.titleCase(configSpec.name()), configSpec.name(), "STATE",
                     "No configurable fields were discovered in this spec.", () -> "EMPTY"));
             spec.sections.add(empty);
         }
@@ -719,50 +722,10 @@ public final class SettingsScreen extends Screen {
             this.reverseCache.put(file, new ReverseSpec(mtime, configSpec));
         }
         if (configSpec == null) return null;
-        final SettingSpec spec = new SettingSpec(titleCase(configSpec.name()), file, configSpec, null,
+        final SettingSpec spec = new SettingSpec(SettingsModel.titleCase(configSpec.name()), file, configSpec, null,
                 this.saveFor(file), "folder", Map.of());
-        this.collectSections(configSpec, spec);
+        SettingsModel.collectSections(configSpec, spec);
         return spec.sections.isEmpty() ? null : spec;
-    }
-
-    // A ROOT NODE NAMED AFTER THE SPEC (HIDDEN WITHOUT DIRECT FIELDS), THEN EVERY GROUP IN DFS ORDER WITH ONE
-    // INDENT PER LEVEL; EACH NODE LISTS ONLY ITS DIRECT FIELDS
-    private void collectSections(final ConfigSpec configSpec, final SettingSpec spec) {
-        final String specName = titleCase(configSpec.name());
-        final SettingSection home = new SettingSection(specName, groupDetail(configSpec, "root settings"), specName, 0);
-        final Collection<IConfigField<?, ?>> fields = configSpec.getFields();
-        for (final IConfigField<?, ?> field: fields) {
-            if (!(field instanceof ConfigGroup)) home.settings.add(new ConfigSetting(field, field.name(), spec.stops.get(field.name())));
-        }
-        if (!home.settings.isEmpty()) spec.sections.add(home);
-        for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof final ConfigGroup child) this.collectGroup(child, 0, "", "", spec);
-        }
-    }
-
-    private void collectGroup(final ConfigGroup group, final int depth, final String parentKey,
-                              final String parentPath, final SettingSpec spec) {
-        final String key = parentKey.isEmpty() ? group.name() : parentKey + "." + group.name();
-        final String path = parentPath.isEmpty() ? group.name() : parentPath + " / " + group.name();
-        final SettingSection section = new SettingSection(titleCase(group.name()), groupDetail(group, key), path, depth);
-        final Collection<IConfigField<?, ?>> fields = group.getFields();
-        for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof ConfigGroup) continue;
-            final String fieldKey = key + "." + field.name();
-            section.settings.add(new ConfigSetting(field, fieldKey, spec.stops.get(fieldKey)));
-        }
-        // THE NODE STAYS EVEN WITH NO DIRECT FIELDS — IT IS THE TREE PATH TO ITS CHILD GROUPS
-        spec.sections.add(section);
-        for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof final ConfigGroup child) this.collectGroup(child, depth + 1, key, path, spec);
-        }
-    }
-
-    private static String groupDetail(final ConfigGroup group, final String fallback) {
-        for (final String comment: group.comments()) {
-            if (comment != null && !comment.isBlank()) return comment.trim();
-        }
-        return fallback;
     }
 
     // ==========================================================================
@@ -848,34 +811,6 @@ public final class SettingsScreen extends Screen {
         if (normalized.contains("ERROR") || normalized.contains("UNLOADED")) return AppTheme.RED;
         if (normalized.contains("ONLY") || normalized.contains("OFFLINE")) return AppTheme.AMBER;
         return AppTheme.TEXT_FAINT;
-    }
-
-    // TURNS AN IDENTIFIER INTO A DISPLAY NAME: _ AND - BECOME SPACES, camelCase SPLITS INTO CAPITALIZED
-    // WORDS ("pngUseBKGDChunk" -> "Png Use BKGD Chunk")
-    private static String titleCase(final String value) {
-        if (value == null || value.isBlank()) return "Settings";
-        final String spaced = value.replace('_', ' ').replace('-', ' ');
-        final StringBuilder out = new StringBuilder(spaced.length() + 4);
-        boolean upper = true;
-        for (int i = 0; i < spaced.length(); i++) {
-            final char c = spaced.charAt(i);
-            if (Character.isWhitespace(c)) {
-                upper = true;
-                out.append(c);
-                continue;
-            }
-            if (i > 0 && Character.isUpperCase(c)) {
-                final char prev = spaced.charAt(i - 1);
-                final boolean nextLower = i + 1 < spaced.length() && Character.isLowerCase(spaced.charAt(i + 1));
-                // BREAK ON lower->UPPER AND ON THE LAST CAPITAL OF AN ACRONYM RUN ("BKGDChunk" -> "BKGD Chunk")
-                if (Character.isLowerCase(prev) || Character.isDigit(prev) || (Character.isUpperCase(prev) && nextLower)) {
-                    out.append(' ');
-                }
-            }
-            out.append(upper ? Character.toUpperCase(c) : c);
-            upper = false;
-        }
-        return out.toString();
     }
 
     // ==========================================================================
@@ -1324,622 +1259,6 @@ public final class SettingsScreen extends Screen {
                 this.seekValue.color(this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT);
             }
             super.onDraw(canvas);
-        }
-    }
-
-    // ==========================================================================
-    // SETTINGS MODEL
-    // ==========================================================================
-
-    private enum SaveState {
-        READY, SAVING, SAVED, FAILED_ONCE, RESAVING, FAILED_TWICE
-    }
-
-    // saving GATES CONCURRENT WRITERS AND resavePending COALESCES MID-SAVE CHANGES; RENDER-THREAD CONFINED
-    // (THE WORKER PUBLISHES ITS OUTCOME THROUGH ctx.execute), SO NO volatile IS NEEDED
-    private static final class SaveMachine {
-        private SaveState state = SaveState.READY;
-        private int failures;
-        private boolean saving;
-        private boolean resavePending;
-    }
-
-    // A CACHED REVERSE-SPEC PARSE TIED TO ITS SOURCE FILE'S mtime (-1 = ABSENT); spec IS null WHEN THE FILE
-    // WAS ABSENT/UNPARSEABLE AT THAT mtime, CACHING THE "SKIP THIS TAB" DECISION TOO
-    private record ReverseSpec(long mtime, ConfigSpec spec) {
-    }
-
-    private static final class SettingSpec {
-        private final String title;
-        private final String subtitle;
-        // null WHEN WATERCONFIG DID NOT EXPOSE THE SPEC: THE TAB SHOWS A PLACEHOLDER AND NEVER SAVES
-        private final ConfigSpec configSpec;
-        // RUNS AFTER EVERY MUTATION OF THIS SPEC — THE APP SPEC PUSHES ITS VALUES INTO THE LIVE APP
-        // STATE HERE (AppConfig.apply) SO EDITS TAKE EFFECT IMMEDIATELY; null WHEN NOTHING TO APPLY
-        private final Runnable applier;
-        // THE SCREEN-OWNED SAVE MACHINE OF THIS SPEC SLOT — SHARED ACROSS REBUILDS (SEE saves)
-        private final SaveMachine save;
-        // PIXEL-ICON NAME FOR THE TAB, OR null FOR THE APP TEXTURE ICON OF WATERMEDIA'S OWN SPECS
-        private final String iconName;
-        // FLAT DFS-ORDERED SECTION TREE — depth EXPRESSES NESTING, PGUP/PGDN WALKS THIS LIST IN ORDER
-        private final List<SettingSection> sections = new ArrayList<>();
-        // DISCRETE VALUES OF NUMBER FIELDS, BY DOTTED FIELD KEY; WATERCONFIG ONLY KNOWS THEIR BOUNDS
-        private final Map<String, Stops> stops;
-
-        private SettingSpec(final String title, final String subtitle, final ConfigSpec configSpec,
-                            final Runnable applier, final SaveMachine save, final String iconName, final Map<String, Stops> stops) {
-            this.title = title;
-            this.subtitle = subtitle;
-            this.configSpec = configSpec;
-            this.applier = applier;
-            this.save = save;
-            this.iconName = iconName;
-            this.stops = stops;
-        }
-    }
-
-    // THE ONLY VALUES A NUMBER FIELD MAY TAKE, IN ORDER, AND HOW EACH ONE READS; ITS SEEK BAR SPACES THEM EVENLY
-    private record Stops(double[] values, DoubleFunction<String> label) {
-    }
-
-    private static final class SettingSection {
-        private final String name;
-        private final String detail;
-        // HEADER SUBTITLE PATH ("audio" OR "group1 / group2"); THE HOME NODE CARRIES THE SPEC NAME
-        private final String path;
-        // TREE NESTING LEVEL (0 = TOP) — THE SECTION COLUMN INDENTS BY THIS
-        private final int depth;
-        private final List<Setting> settings = new ArrayList<>();
-
-        private SettingSection(final String name, final String detail, final String path, final int depth) {
-            this.name = name;
-            this.detail = detail;
-            this.path = path;
-            this.depth = depth;
-        }
-    }
-
-    private abstract static class Setting {
-        protected final String label;
-        protected final String key;
-        protected final String type;
-        protected final String note;
-        protected final boolean mutable;
-
-        protected Setting(final String label, final String key, final String type, final String note, final boolean mutable) {
-            this.label = label;
-            this.key = key;
-            this.type = type;
-            // BLANK STAYS BLANK — A SETTING WITHOUT A DESCRIPTION SIMPLY SHOWS NO TOOLTIP
-            this.note = note == null || note.isBlank() ? "" : note.trim();
-            this.mutable = mutable;
-        }
-
-        abstract String valueLabel();
-
-        String editValue() {
-            return this.valueLabel();
-        }
-
-        boolean editableText() {
-            return false;
-        }
-
-        boolean isEnumControl() {
-            return false;
-        }
-
-        boolean isSeekbarControl() {
-            return false;
-        }
-
-        boolean isSpinnerControl() {
-            return false;
-        }
-
-        boolean booleanValue() {
-            return false;
-        }
-
-        Class<?> valueType() {
-            return Object.class;
-        }
-
-        String widestValueLabel() {
-            return this.valueLabel();
-        }
-
-        List<String> optionLabels() {
-            return List.of();
-        }
-
-        int selectedOptionIndex() {
-            return -1;
-        }
-
-        boolean selectOption(final int index) {
-            return false;
-        }
-
-        Control control() {
-            return Control.LABEL;
-        }
-
-        String suffix() {
-            return "";
-        }
-
-        float rangePercent() {
-            return 0f;
-        }
-
-        // SETS A RANGED NUMBER FROM A 0..1 FRACTION (SEEK BAR SKIN ADAPTER)
-        boolean percent(final double pct) {
-            return false;
-        }
-
-        // CURRENT NUMERIC VALUE FOR THE SPINNER SKIN; 0 WHEN THE SETTING IS NOT A NUMBER
-        double number() {
-            return 0d;
-        }
-
-        // SETS A NUMBER DIRECTLY FROM THE SPINNER (STEPPED OR TYPED), CLAMPED THROUGH THE SAME PATH AS
-        // commit/adjust; RETURNS WHETHER THE STORED VALUE ACTUALLY CHANGED
-        boolean number(final double value) {
-            return false;
-        }
-
-        boolean adjust(final int direction, final int step) {
-            return false;
-        }
-
-        void commit(final String value) {
-        }
-
-        void reset() {
-        }
-
-        Color accent() {
-            return this.mutable ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
-        }
-    }
-
-    private static final class ReadOnlySetting extends Setting {
-        private final Supplier<String> value;
-
-        private ReadOnlySetting(final String label, final String key, final String type,
-                                final String note, final Supplier<String> value) {
-            super(label, key, type, note, false);
-            this.value = value;
-        }
-
-        @Override
-        String valueLabel() {
-            final String current = this.value.get();
-            return current == null || current.isBlank() ? "EMPTY" : current;
-        }
-    }
-
-    private static final class ConfigSetting extends Setting {
-        private final IConfigField<?, ?> field;
-        private final Class<?> valueType;
-        private final Control control;
-        private final String suffix;
-        private final Double minValue;
-        private final Double maxValue;
-        private final Stops stops; // null FOR A CONTINUOUS NUMBER
-
-        private ConfigSetting(final IConfigField<?, ?> field, final String key, final Stops stops) {
-            super(titleCase(field.name()), key, typeName(field), joinedComments(field), fieldMutable(field));
-            this.field = field;
-            this.valueType = field.type();
-            this.control = safeControl(field);
-            final String rawSuffix = field.suffix();
-            this.suffix = rawSuffix == null || rawSuffix.isBlank() ? "" : rawSuffix.trim();
-            this.minValue = numberLimit(field, "minValueString");
-            this.maxValue = numberLimit(field, "maxValueString");
-            this.stops = stops;
-        }
-
-        @Override
-        String valueLabel() {
-            final Object value = this.field.get();
-            if (value == null) return "EMPTY";
-            if (this.stops != null) return this.stops.label().apply(this.number());
-            if (value instanceof final Boolean bool) return bool ? "ON" : "OFF";
-            if (value instanceof final Path path) {
-                final String raw = path.toString();
-                return raw.isBlank() ? "." : raw;
-            }
-            if (this.control == Control.PASSWORD) {
-                final int len = Math.max(8, String.valueOf(value).length());
-                return "*".repeat(Math.min(32, len));
-            }
-            return String.valueOf(value);
-        }
-
-        @Override
-        String editValue() {
-            final Object value = this.field.get();
-            return value == null ? "" : String.valueOf(value);
-        }
-
-        @Override
-        boolean editableText() {
-            return this.mutable && switch (this.control) {
-                case INPUT, TEXT_AREA, INPUT_PASTE, PASSWORD, INPUT_FILE, INPUT_FOLDER, COLOR_PICKER, KEYBIND -> true;
-                default -> false;
-            };
-        }
-
-        @Override
-        boolean isEnumControl() {
-            return this.valueType.isEnum()
-                    && (this.control == Control.DROPDOWN || this.control == Control.RADIO_BUTTON
-                    || this.control == Control.LIST_SPINNER || this.control == Control.SEGMENTED);
-        }
-
-        @Override
-        boolean isSeekbarControl() {
-            return this.isNumber() && this.hasUsableRange()
-                    && (this.control == Control.SEEKBAR || this.control == Control.RANGE_SLIDER || this.control == Control.KNOB);
-        }
-
-        @Override
-        boolean isSpinnerControl() {
-            return this.isNumber() && (this.control == Control.NUMBER_SPINNER || !this.hasUsableRange());
-        }
-
-        @Override
-        boolean booleanValue() {
-            return Boolean.TRUE.equals(this.field.get());
-        }
-
-        @Override
-        Class<?> valueType() {
-            return this.valueType;
-        }
-
-        @Override
-        String widestValueLabel() {
-            String widest = this.valueLabel();
-            if (this.stops != null) {
-                for (final double value: this.stops.values()) widest = wider(widest, this.stops.label().apply(value));
-                return widest;
-            }
-            if (this.valueType.isEnum()) {
-                final Object[] constants = this.valueType.getEnumConstants();
-                if (constants != null) {
-                    for (final Object constant: constants) {
-                        widest = wider(widest, String.valueOf(constant));
-                    }
-                }
-                return widest;
-            }
-            if (this.isNumber()) {
-                if (this.minValue != null) widest = wider(widest, String.valueOf(this.numberOf(this.minValue)));
-                if (this.maxValue != null) widest = wider(widest, String.valueOf(this.numberOf(this.maxValue)));
-            }
-            return widest;
-        }
-
-        @Override
-        List<String> optionLabels() {
-            final Object[] constants = this.valueType.isEnum() ? this.valueType.getEnumConstants() : null;
-            if (constants == null || constants.length == 0) return List.of();
-            final List<String> labels = new ArrayList<>(constants.length);
-            for (final Object constant: constants) {
-                labels.add(String.valueOf(constant));
-            }
-            return labels;
-        }
-
-        @Override
-        int selectedOptionIndex() {
-            if (!this.valueType.isEnum()) return -1;
-            final Object[] constants = this.valueType.getEnumConstants();
-            if (constants == null || constants.length == 0) return -1;
-            final Object current = this.field.get();
-            for (int i = 0; i < constants.length; i++) {
-                if (constants[i] == current) return i;
-            }
-            return 0;
-        }
-
-        @Override
-        boolean selectOption(final int index) {
-            if (!this.valueType.isEnum()) return false;
-            final Object[] constants = this.valueType.getEnumConstants();
-            if (constants == null || index < 0 || index >= constants.length) return false;
-            this.setValue(constants[index]);
-            return true;
-        }
-
-        @Override
-        Control control() {
-            return this.control;
-        }
-
-        @Override
-        String suffix() {
-            return this.suffix;
-        }
-
-        @Override
-        float rangePercent() {
-            if (this.stops != null) return (float) this.stop() / Math.max(1, this.stops.values().length - 1);
-            if (!this.hasUsableRange()) return 0f;
-            final double value = ((Number) this.field.get()).doubleValue();
-            final double min = this.minValue;
-            final double max = this.maxValue;
-            // hasUsableRange() ALREADY GUARANTEES MAX > MIN, SO THE SPAN IS SAFE TO DIVIDE BY DIRECTLY
-            return (float) MathUtil.clamp((value - min) / (max - min), 0d, 1d);
-        }
-
-        @Override
-        boolean percent(final double pct) {
-            if (!this.isSeekbarControl()) return false;
-            if (this.stops != null) {
-                final double[] values = this.stops.values();
-                return this.number(values[(int) Math.round(MathUtil.clamp(pct, 0d, 1d) * (values.length - 1))]);
-            }
-            // ONLY REPORT A CHANGE (AND ARM THE DRAG-SAVE / CHIME) WHEN THE STORED VALUE ACTUALLY MOVES,
-            // MIRRORING number() — A SEEK TICK LANDING ON THE SAME VALUE MUST NOT TRIGGER A POINTLESS SAVE
-            final Object next = this.valueForPercent(pct);
-            if (((Number) next).doubleValue() == ((Number) this.field.get()).doubleValue()) return false;
-            this.setValue(next);
-            return true;
-        }
-
-        @Override
-        double number() {
-            return this.isNumber() ? ((Number) this.field.get()).doubleValue() : 0d;
-        }
-
-        @Override
-        boolean number(final double value) {
-            if (!this.isNumber()) return false;
-            // WRITE ONLY WHEN THE CLAMPED VALUE ACTUALLY MOVES, SO A NO-OP EDIT NEITHER SAVES NOR CHIMES
-            final Object next = this.clampNumber(value);
-            if (((Number) next).doubleValue() == ((Number) this.field.get()).doubleValue()) return false;
-            this.setValue(next);
-            return true;
-        }
-
-        @Override
-        boolean adjust(final int direction, final int step) {
-            if (this.isBoolean()) {
-                this.setValue(!Boolean.TRUE.equals(this.field.get()));
-                return true;
-            }
-            if (this.valueType.isEnum()) {
-                final Object[] constants = this.valueType.getEnumConstants();
-                if (constants == null || constants.length == 0) return false;
-                final Object current = this.field.get();
-                int currentIndex = 0;
-                for (int i = 0; i < constants.length; i++) {
-                    if (constants[i] == current) {
-                        currentIndex = i;
-                        break;
-                    }
-                }
-                final int next = Math.floorMod(currentIndex + direction, constants.length);
-                this.setValue(constants[next]);
-                return true;
-            }
-            if (this.stops != null) {
-                final double[] values = this.stops.values();
-                return this.number(values[MathUtil.clamp(this.stop() + direction * step, 0, values.length - 1)]);
-            }
-            if (this.isInteger()) {
-                final Number current = (Number) this.field.get();
-                final Object next = parseNumber(String.valueOf(current.longValue() + (long) direction * Math.max(1, step)), this.valueType);
-                this.setValue(this.clampNumber(next));
-                return true;
-            }
-            if (this.isNumber()) {
-                final Number current = (Number) this.field.get();
-                // FRACTIONAL FIELD: DERIVE THE PER-PRESS DELTA FROM THE SPAN WITHOUT FLOORING IT TO 1.0
-                // SO INTERMEDIATE FLOAT VALUES STAY REACHABLE BY KEYBOARD
-                final double delta = this.hasUsableRange()
-                        ? (this.maxValue - this.minValue) / 100d * direction * step
-                        : direction * step;
-                this.setValue(this.clampNumber(current.doubleValue() + delta));
-                return true;
-            }
-            return false;
-        }
-
-        @Override
-        void commit(final String value) {
-            this.setValue(this.parse(value));
-        }
-
-        @Override
-        void reset() {
-            this.field.reset();
-        }
-
-        @Override
-        Color accent() {
-            final Object value = this.field.get();
-            if (value instanceof final Boolean bool) return bool ? AppTheme.GREEN : AppTheme.TEXT_FAINT;
-            if (this.valueType.isEnum()) return AppTheme.CYAN;
-            if (this.isNumber()) return AppTheme.AMBER;
-            return AppTheme.NEON_LIGHT;
-        }
-
-        private Object parse(final String raw) {
-            final String value = raw == null ? "" : raw.trim();
-            if (this.isBoolean()) {
-                if ("on".equalsIgnoreCase(value) || "true".equalsIgnoreCase(value)) return Boolean.TRUE;
-                if ("off".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) return Boolean.FALSE;
-                throw new IllegalArgumentException("Expected on/off or true/false");
-            }
-            if (this.valueType.isEnum()) {
-                final Object[] constants = this.valueType.getEnumConstants();
-                if (constants != null) {
-                    for (final Object constant: constants) {
-                        if (((Enum<?>) constant).name().equalsIgnoreCase(value)) return constant;
-                    }
-                }
-                throw new IllegalArgumentException("Unknown enum value: " + value);
-            }
-            if (this.isNumber()) return this.clampNumber(parseNumber(value, this.valueType));
-            if (Path.class.isAssignableFrom(this.valueType)) return Path.of(value);
-            if (this.valueType == Character.class || this.valueType == char.class) {
-                if (value.length() != 1) throw new IllegalArgumentException("Expected one character");
-                return value.charAt(0);
-            }
-            return raw == null ? "" : raw;
-        }
-
-        // THE STOP THAT READS LIKE THE STORED VALUE, SO A HAND-EDITED FILE SITS WHERE ITS LABEL SAYS; ELSE THE NEAREST
-        private int stop() {
-            final double[] values = this.stops.values();
-            final double current = this.number();
-            final String label = this.stops.label().apply(current);
-            int nearest = 0;
-            for (int i = 0; i < values.length; i++) {
-                if (this.stops.label().apply(values[i]).equals(label)) return i;
-                if (Math.abs(values[i] - current) < Math.abs(values[nearest] - current)) nearest = i;
-            }
-            return nearest;
-        }
-
-        private boolean hasUsableRange() {
-            if (this.minValue == null || this.maxValue == null) return false;
-            if (!Double.isFinite(this.minValue) || !Double.isFinite(this.maxValue)) return false;
-            if (this.maxValue <= this.minValue) return false;
-            final double span = this.maxValue - this.minValue;
-            if (this.valueType == Integer.class || this.valueType == int.class) return span <= 1_000_000d;
-            if (this.valueType == Long.class || this.valueType == long.class) return span <= 1_000_000d;
-            if (this.valueType == Short.class || this.valueType == short.class) return true;
-            if (this.valueType == Byte.class || this.valueType == byte.class) return true;
-            return span <= 10_000d;
-        }
-
-        private Object valueForPercent(final double pct) {
-            final double raw = this.minValue + (this.maxValue - this.minValue) * MathUtil.clamp(pct, 0d, 1d);
-            if (this.isInteger()) {
-                return this.numberOf(Math.round(raw));
-            }
-            return this.numberOf(raw);
-        }
-
-        private Object clampNumber(final Object value) {
-            if (!(value instanceof final Number number)) return value;
-            double next = number.doubleValue();
-            if (this.minValue != null) next = Math.max(next, this.minValue);
-            if (this.maxValue != null) next = Math.min(next, this.maxValue);
-            return this.numberOf(next);
-        }
-
-        private Object numberOf(final double value) {
-            if (this.valueType == Integer.class || this.valueType == int.class) return (int) Math.round(value);
-            if (this.valueType == Long.class || this.valueType == long.class) return Math.round(value);
-            if (this.valueType == Short.class || this.valueType == short.class) return (short) Math.round(value);
-            if (this.valueType == Byte.class || this.valueType == byte.class) return (byte) Math.round(value);
-            if (this.valueType == Float.class || this.valueType == float.class) return (float) value;
-            if (this.valueType == Double.class || this.valueType == double.class) return value;
-            throw new IllegalArgumentException("Unsupported number type: " + this.valueType.getSimpleName());
-        }
-
-        private void setValue(final Object next) {
-            final Object previous = this.field.get();
-            try {
-                this.field.set0(next);
-            } catch (final RuntimeException e) {
-                try {
-                    this.field.set0(previous);
-                } catch (final RuntimeException ignored) {
-                }
-                throw e;
-            }
-        }
-
-        private boolean isBoolean() {
-            return this.valueType == Boolean.class || this.valueType == boolean.class;
-        }
-
-        private boolean isInteger() {
-            return this.valueType == Integer.class || this.valueType == int.class
-                    || this.valueType == Long.class || this.valueType == long.class
-                    || this.valueType == Short.class || this.valueType == short.class
-                    || this.valueType == Byte.class || this.valueType == byte.class;
-        }
-
-        private boolean isNumber() {
-            return this.isInteger()
-                    || this.valueType == Float.class || this.valueType == float.class
-                    || this.valueType == Double.class || this.valueType == double.class;
-        }
-
-        private static boolean fieldMutable(final IConfigField<?, ?> field) {
-            final Control control = safeControl(field);
-            return control != Control.LABEL
-                    && control != Control.LIST_EDITOR
-                    && control != Control.TAG_INPUT
-                    && control != Control.CHECKBOX_LIST;
-        }
-
-        private static Control safeControl(final IConfigField<?, ?> field) {
-            final Control control = field.control();
-            return control == null || control == Control.DEFAULT ? Control.INPUT : control;
-        }
-
-        private static String wider(final String current, final String candidate) {
-            return candidate != null && candidate.length() > current.length() ? candidate : current;
-        }
-
-        private static Object parseNumber(final String raw, final Class<?> type) {
-            if (type == Integer.class || type == int.class) return Integer.parseInt(raw);
-            if (type == Long.class || type == long.class) return Long.parseLong(raw);
-            if (type == Short.class || type == short.class) return Short.parseShort(raw);
-            if (type == Byte.class || type == byte.class) return Byte.parseByte(raw);
-            if (type == Float.class || type == float.class) return Float.parseFloat(raw);
-            if (type == Double.class || type == double.class) return Double.parseDouble(raw);
-            throw new IllegalArgumentException("Unsupported number type: " + type.getSimpleName());
-        }
-
-        private static Double numberLimit(final IConfigField<?, ?> field, final String methodName) {
-            try {
-                final Method method = field.getClass().getMethod(methodName);
-                final Object value = method.invoke(field);
-                if (value == null) return null;
-                return Double.parseDouble(String.valueOf(value));
-            } catch (final ReflectiveOperationException | NumberFormatException e) {
-                return null;
-            }
-        }
-
-        private static String typeName(final IConfigField<?, ?> field) {
-            final Class<?> type = field.type();
-            if (type == Boolean.class || type == boolean.class) return "BOOL";
-            if (type == Integer.class || type == int.class) return "INT";
-            if (type == Long.class || type == long.class) return "LONG";
-            if (type == Short.class || type == short.class) return "SHORT";
-            if (type == Byte.class || type == byte.class) return "BYTE";
-            if (type == Float.class || type == float.class) return "FLOAT";
-            if (type == Double.class || type == double.class) return "DOUBLE";
-            if (type.isEnum()) return "ENUM";
-            if (Path.class.isAssignableFrom(type)) return "PATH";
-            if (type == String.class) return "TEXT";
-            return type.getSimpleName().toUpperCase(Locale.ROOT);
-        }
-
-        // JOINED FIELD COMMENTS FOR THE ROW TOOLTIP; EMPTY WHEN THE FIELD HAS NONE (NO TOOLTIP THEN)
-        private static String joinedComments(final IConfigField<?, ?> field) {
-            final String[] comments = field.comments();
-            if (comments == null || comments.length == 0) return "";
-            final StringBuilder out = new StringBuilder();
-            for (final String comment: comments) {
-                if (comment == null || comment.isBlank()) continue;
-                if (!out.isEmpty()) out.append(" ");
-                out.append(comment.trim());
-                if (out.length() > 180) break;
-            }
-            return out.toString();
         }
     }
 }
