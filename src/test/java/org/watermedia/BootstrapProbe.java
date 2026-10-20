@@ -1,7 +1,6 @@
 package org.watermedia;
 
 import me.srrapero720.waterconfig.WaterConfig;
-import org.watermedia.WaterMedia.Status;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.ServerMediaPlayer;
@@ -47,13 +46,11 @@ public final class BootstrapProbe {
             WaterMedia.start("PROBE", root.resolve("temp"), root, true);
             throw new AssertionError("Startup accepted a failed installed binaries module");
         } catch (final IllegalStateException expected) {
-            final Status status = WaterMedia.status();
-            if (WaterMedia.loaded() || status.state() != Status.State.FAILED || status.loading() != WaterMediaBinaries.class)
-                throw new AssertionError(status);
-            if (status.failures().size() != 1 || status.failures().get(0).module() != WaterMediaBinaries.class
-                    || status.failures().get(0).cause() != expected.getCause())
-                throw new AssertionError("The essential failure was not listed with its cause: " + status);
-            if (status.done() != 1 || status.total() != 4) throw new AssertionError("Progress did not stop at the failed module: " + status);
+            if (WaterMedia.loaded() || WaterMedia.loading() != null || expected.getCause() == null
+                    || !expected.getMessage().contains(WaterMediaBinaries.class.getSimpleName()))
+                throw new AssertionError("The failure did not name the binaries module with its cause", expected);
+            if (WaterMedia.step() != 1 || WaterMedia.steps() != 4)
+                throw new AssertionError("Progress did not stop at the failed module: " + WaterMedia.step() + "/" + WaterMedia.steps());
         }
         if (WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID) != null) throw new AssertionError("Failed installation published a native path");
         try {
@@ -63,7 +60,7 @@ public final class BootstrapProbe {
         requireFinal(root);
     }
 
-    // A MODULE THE LIBRARY CAN LIVE WITHOUT LISTS ITS FAILURE AND THE LOAD STILL COMPLETES
+    // A PART A MODULE CAN LIVE WITHOUT FAILS, THE MODULE LOGS IT AND THE LOAD STILL COMPLETES
     private static void optionalFailure(final Path root) throws Exception {
         // THE FILE SERVER BINDS THE LOOPBACK ADDRESS; A WILDCARD SOCKET WOULD NOT CONFLICT WITH IT ON EVERY OS
         try (final ServerSocket occupied = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) {
@@ -71,10 +68,8 @@ public final class BootstrapProbe {
             WaterMediaConfig.network.serverPort = occupied.getLocalPort();
             WaterMedia.start("PROBE", root.resolve("temp"), root, true);
         }
-        final Status status = WaterMedia.status();
-        if (!WaterMedia.loaded() || status.failures().size() != 1 || status.failures().get(0).module() != NetworkAPI.Module.class)
-            throw new AssertionError("An occupied port did not surface as an optional failure: " + status);
-        if (status.done() != status.total() || status.loading() != null) throw new AssertionError(status);
+        if (!WaterMedia.loaded() || WaterMedia.loading() != null || WaterMedia.step() != WaterMedia.steps())
+            throw new AssertionError("An occupied port did not leave the load complete: " + WaterMedia.step() + "/" + WaterMedia.steps());
         // THE REST OF THE MODULE WORKS: AN UPLOAD IS ACCEPTED WITHOUT AN ILLEGAL STATE AND FAILS ON ITS OWN
         // (ServiceLifecycleProbe CHECKS THE MESSAGE A MISCONFIGURED REMOTE FAILS IT WITH)
         WaterMediaConfig.network.remoteUrl = "remote.invalid/upload";
@@ -83,11 +78,11 @@ public final class BootstrapProbe {
         requireFinal(root);
     }
 
-    // A DEDICATED SERVER LOADS ONLY THE SHARED MODULES AND NEVER TOUCHES THE CLIENT NATIVES
+    // A DEDICATED SERVER WALKS EVERY MODULE, BUT THE CLIENT ONES DECIDE BY THEMSELVES TO DO NOTHING THERE
     private static void server(final Path root) {
         WaterMedia.start("PROBE", root.resolve("temp"), root, false);
-        final Status status = WaterMedia.status();
-        if (!WaterMedia.loaded() || status.total() != 2 || status.done() != 2 || !status.failures().isEmpty()) throw new AssertionError(status);
+        if (!WaterMedia.loaded() || WaterMedia.steps() != 4 || WaterMedia.step() != 4)
+            throw new AssertionError("The server did not walk every module: " + WaterMedia.step() + "/" + WaterMedia.steps());
         if (WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID) != null || WaterMediaBinaries.pathOf(WaterMediaBinaries.YTDLP_ID) != null)
             throw new AssertionError("Server initialized native paths");
         if (Files.exists(root.resolve("temp/ffmpeg"))) throw new AssertionError("Server extracted client natives");
@@ -102,8 +97,7 @@ public final class BootstrapProbe {
 
     private static void nativeLoad(final Path root) {
         WaterMedia.start("PROBE", root.resolve("temp"), root, true);
-        if (!WaterMedia.loaded() || !WaterMedia.status().failures().isEmpty()) throw new AssertionError(WaterMedia.status());
-        if (!MediaAPI.ffmpegLoaded()) throw new AssertionError("Required FFmpeg did not load");
+        if (!WaterMedia.loaded() || !MediaAPI.ffmpegLoaded() || MediaAPI.ffmpegError()) throw new AssertionError("Required FFmpeg did not load");
         final Path installed = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID);
         if (installed == null || !Files.isRegularFile(installed.resolve("version.cfg")))
             throw new AssertionError("Native module did not publish its verified installation");
@@ -115,8 +109,8 @@ public final class BootstrapProbe {
     // DISABLED FFMPEG PUBLISHES NO NATIVE STATE, AND A CANCELLED WAIT NEVER CANCELS THE LOAD BEHIND IT
     private static void client(final Path root) throws Exception {
         WaterMedia.start("PROBE", root.resolve("temp"), root, true);
-        if (!WaterMedia.loaded() || WaterMedia.status().total() != 4 || !WaterMedia.status().failures().isEmpty())
-            throw new AssertionError(WaterMedia.status());
+        if (!WaterMedia.loaded() || WaterMedia.steps() != 4 || WaterMedia.step() != 4)
+            throw new AssertionError("The client did not walk every module: " + WaterMedia.step() + "/" + WaterMedia.steps());
         if (MediaAPI.ffmpegLoaded() || MediaAPI.ffmpegError() || MediaAPI.vulkanDecode()) throw new AssertionError("Disabled FFmpeg published native state");
         if (Files.exists(root.resolve("temp/ffmpeg"))) throw new AssertionError("Disabled FFmpeg was extracted");
         if (!root.resolve("temp/yt-dlp").equals(WaterMediaBinaries.pathOf(WaterMediaBinaries.YTDLP_ID)))

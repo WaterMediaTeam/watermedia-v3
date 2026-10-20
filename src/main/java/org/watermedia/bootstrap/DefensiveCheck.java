@@ -63,7 +63,7 @@ public final class DefensiveCheck {
      * class path, its JVM options, a thread running its code or a parent process of it. Leftovers of a past installation
      * only log a warning. A null game directory means the working directory.
      */
-    public static void tlcheck(final Path gameDir) {
+    public static void run(final Path gameDir) {
         final List<String> evidence = new ArrayList<>();
         final ClassLoader own = DefensiveCheck.class.getClassLoader();
         // EVERY PROBE IS BEST EFFORT: A HOST THAT HIDES AN API MUST NEVER TURN THE CHECK ITSELF INTO A CRASH

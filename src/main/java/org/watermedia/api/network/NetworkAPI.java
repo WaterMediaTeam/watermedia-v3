@@ -237,15 +237,16 @@ public final class NetworkAPI {
 
     /** Internal module: the upload workers and, when configured, the local file server. */
     public static final class Module extends WaterMediaModule {
+        public Module(final WaterMedia watermedia) { super(watermedia); }
+
         @Override
-        protected void start() {
-            if (uploads != null) throw new IllegalStateException("The network module has already started");
+        public void start() {
             uploads = Executors.newFixedThreadPool(UPLOAD_THREADS, ThreadTool.workerFactory("NetworkAPI-Upload", Thread.NORM_PRIORITY));
-            if (!serverEnabled(WaterMedia.clientSide(), WaterMediaConfig.network.server)) return;
+            if (!serverEnabled(this.watermedia.clientSide, WaterMediaConfig.network.server)) return;
             try {
-                NetworkServer.start(WaterMediaConfig.network.serverPort, WaterMedia.cwd());
+                NetworkServer.start(WaterMediaConfig.network.serverPort, this.watermedia.cwd);
             } catch (final Exception failure) { // UPLOADS STILL WORK WITHOUT THE LOCAL SERVER
-                this.failure(failure);
+                LOGGER.error(IT, "The local file server did not start; uploads still work without it", failure);
             }
         }
     }

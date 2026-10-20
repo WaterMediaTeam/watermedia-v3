@@ -342,32 +342,36 @@ public final class MediaAPI {
         return vulkanHwDecode;
     }
 
-    /** Internal module: media resolution, the network cache and native playback. */
+    /** Internal module: media resolution, the network cache and native playback; only clients run it. */
     public static final class Module extends WaterMediaModule {
+        public Module(final WaterMedia watermedia) { super(watermedia); }
+
         @Override
-        protected void start() {
+        public void start() {
+            // A DEDICATED SERVER PLAYS NOTHING: THE RESOLVER, THE CACHE AND THE NATIVES STAY OFF
+            if (!this.watermedia.clientSide) return;
             MRL.start();
             try {
-                NetworkCache.start(WaterMedia.tmp().resolve("cache"));
+                NetworkCache.start(this.watermedia.tmp.resolve("cache"));
             } catch (final Exception failure) { // PLAYBACK WORKS WITHOUT THE DISK CACHE
-                this.failure(failure);
+                LOGGER.error(IT, "The media cache did not start; playback continues without it", failure);
             }
-            // THE NATIVES COME FROM THE BINARIES MODULE; WITHOUT ITS JAR THERE IS NOTHING TO LOAD AND NO FAILURE TO REPORT
+            // THE NATIVES COME FROM THE BINARIES MODULE; WITHOUT ITS JAR THERE IS NOTHING TO LOAD
             if (MediaAPI.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") == null) {
                 LOGGER.warn(IT, "FFmpeg is unavailable: WaterMedia Binaries is not installed");
                 return;
             }
-            if (!startFFmpeg() && ffmpegFailure != null) this.failure(ffmpegFailure);
+            startFFmpeg(); // LOGS ITS OWN FAILURE AND LEAVES ffmpegError() SET
         }
     }
 
     // BOOTS THE BUNDLED FFMPEG NATIVES: POINTS JAVACPP AT THE EXTRACTED BINARIES, LOGS THE BUILD
-    // BANNER AND PROBES HARDWARE ACCELERATION. RETURNS FALSE WHEN DISABLED BY CONFIG OR ON FAILURE.
-    private static boolean startFFmpeg() {
+    // BANNER AND PROBES HARDWARE ACCELERATION. DOES NOTHING WHEN DISABLED BY CONFIG
+    private static void startFFmpeg() {
         LOGGER.info(IT, "Starting FFMPEG...");
         if (WaterMediaConfig.media.ffmpeg.disable) {
             LOGGER.warn(IT, "FFMPEG startup was cancelled, user settings disables it");
-            return false;
+            return;
         }
 
         try {
@@ -474,12 +478,11 @@ public final class MediaAPI {
             final BytePointer license = avformat.avformat_license();
             LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), FFTool.string(license, "unknown"));
             IOTool.closeQuietly(license);
-            return ffmpegLoaded = true;
+            ffmpegLoaded = true;
         } catch (final Exception | LinkageError t) {
             LOGGER.error(IT, "Failed to load FFMPEG", t);
             vulkanHwDecode = false;
             ffmpegFailure = t;
-            return false;
         }
     }
 }

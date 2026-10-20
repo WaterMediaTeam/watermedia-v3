@@ -52,17 +52,15 @@ public final class TLSLifecycleProbe {
                 if (empty) {
                     if (MediaAPI.ffmpegLoaded() || !MediaAPI.ffmpegError())
                         throw new AssertionError("An empty truststore did not refuse native HTTPS initialization");
-                    // FFMPEG IS OPTIONAL: THE LOAD COMPLETES AND THE MEDIA MODULE LISTS THE NATIVE FAILURE
-                    final var failures = WaterMedia.status().failures();
-                    if (!WaterMedia.loaded() || failures.size() != 1 || failures.get(0).module() != MediaAPI.Module.class)
-                        throw new AssertionError("The native failure was not listed: " + WaterMedia.status());
+                    // FFMPEG IS OPTIONAL: THE MEDIA MODULE LOGS THE NATIVE FAILURE AND THE LOAD COMPLETES
+                    if (!WaterMedia.loaded()) throw new AssertionError("The native failure ended the load");
                     try {
                         FFMediaPlayer.configureTLS(options);
                         throw new AssertionError("A failed TLS initialization still configured a native connection");
                     } catch (final IllegalStateException expected) {}
                     return;
                 }
-                if (!MediaAPI.ffmpegLoaded()) throw new AssertionError("Patched FFmpeg did not load: " + WaterMedia.status());
+                if (!MediaAPI.ffmpegLoaded()) throw new AssertionError("Patched FFmpeg did not load");
                 try {
                     FFMediaPlayer.configureTLS(null);
                     throw new AssertionError("A null TLS dictionary reached the native boundary");

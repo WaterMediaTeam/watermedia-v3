@@ -24,12 +24,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Supplier;
 
-import org.watermedia.WaterMedia.Status.Failure;
-import org.watermedia.WaterMedia.Status.State;
-
-/** Loads WaterMedia's modules once for the life of the process and exposes the loading state. */
+/** Loads WaterMedia's modules once for the life of the process and holds the environment they run in. */
 public final class WaterMedia {
     private static final Marker IT = MarkerManager.getMarker(WaterMedia.class.getSimpleName());
     public static final String ID = "watermedia";
@@ -37,94 +33,106 @@ public final class WaterMedia {
     public static final String VERSION = IOTool.jarVersion();
     public static final String USER_AGENT = "WaterMedia/" + VERSION;
     public static final Logger LOGGER = logger(ID);
-    private static final Path DEFAULT_TEMP = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().resolve(ID);
+
+    // ==== DEFAULT PATHS ====
+    private static final Path DEFAULT_TMP = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().resolve(ID);
     private static final Path DEFAULT_CWD = Path.of("").toAbsolutePath();
 
-    // THE ENVIRONMENT OF THE PROCESS; PUBLISHED BEFORE ANY MODULE STARTS AND KEPT FOR THE LIFE OF THE JVM
-    private record Context(Path tmp, Path cwd, boolean clientSide) {}
+    // THE INSTANCE OF THIS PROCESS: CREATED BY start(), NEVER REPLACED AND NEVER RELEASED
+    private static volatile WaterMedia instance;
 
-    // A MODULE IN LOAD ORDER: WHETHER ONLY CLIENTS LOAD IT, WHETHER ITS FAILURE ENDS THE LOAD, AND ITS FACTORY,
-    // RESOLVED ONLY AFTER THE SIDE CHECK PASSES (BINARIES STAYS BEHIND ITS LAZY HOLDER)
-    private record Definition(boolean client, boolean essential, Supplier<WaterMediaModule> factory) {}
+    // ==== ENVIRONMENT ====
+    public final String name;
+    public final Path tmp;
+    public final Path cwd;
+    public final boolean clientSide;
 
-    private static final List<Definition> MODULES = List.of(
-            new Definition(false, true, WaterMediaConfig.Module::new),
-            new Definition(true, true, WaterMedia::binaries),
-            new Definition(false, false, NetworkAPI.Module::new),
-            new Definition(true, false, MediaAPI.Module::new));
-    private static final Object LIFECYCLE = new Object();
-    private static volatile Context instance;
-    private static volatile Status status = new Status(State.IDLE, null, 0, 0, List.of());
+    // ==== LOAD STATE ====
+    // THE APP SPLASH POLLS THESE FROM ITS RENDER THREAD WHILE THE HOST THREAD WALKS THE MODULES
+    private final List<WaterMediaModule> modules;
+    private volatile WaterMediaModule loading;
+    private volatile int done;
+    private volatile boolean loaded;
 
-    private WaterMedia() {}
+    private WaterMedia(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
+        this.name = name;
+        this.tmp = (tmp == null ? DEFAULT_TMP : tmp).toAbsolutePath().normalize();
+        this.cwd = (cwd == null ? DEFAULT_CWD : cwd).toAbsolutePath().normalize();
+        this.clientSide = clientSide;
 
-    /**
-     * Loads every module, once for the life of the process; nothing is ever unloaded. Client-only modules
-     * never load on a server and a module that is not installed is skipped. A module the library can live
-     * without (the file server, FFmpeg) leaves the state LOADED with its failure listed in {@link #status()};
-     * an essential one (the configuration, an installed Binaries module) leaves FAILED and throws.
-     *
-     * @throws IllegalStateException when WaterMedia already started, when called from an owned worker thread,
-     *         or when an essential module fails, with that failure as the cause
-     */
-    public static void start(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
-        if (ThreadTool.workerThread()) throw new IllegalStateException("Start WaterMedia from a host thread, not a managed worker");
-        if (name == null || name.isBlank()) throw new IllegalArgumentException("Environment name cannot be empty");
-        final List<Definition> modules = new ArrayList<>(MODULES.size());
-        for (final Definition definition: MODULES) if (clientSide || !definition.client()) modules.add(definition);
-        synchronized (LIFECYCLE) {
-            if (status.state() != State.IDLE) throw new IllegalStateException("WaterMedia has already started");
-            instance = new Context((tmp == null ? DEFAULT_TEMP : tmp).toAbsolutePath().normalize(),
-                    (cwd == null ? DEFAULT_CWD : cwd).toAbsolutePath().normalize(), clientSide);
-            status = new Status(State.LOADING, null, 0, modules.size(), List.of());
-        }
-        LOGGER.info(IT, "Starting {} {} for {} ({})", NAME, VERSION, name, clientSide ? "client" : "server");
-        final List<Failure> failures = new ArrayList<>();
-        int done = 0;
-        Class<?> type = null;
-        try {
-            for (final Definition definition: modules) {
-                type = null;
-                WaterMediaModule module = null;
-                try {
-                    module = definition.factory().get();
-                    if (module != null) {
-                        type = module.getClass();
-                        status = new Status(State.LOADING, type, done, modules.size(), List.copyOf(failures));
-                        module.load();
-                        for (final Throwable partial: module.failures()) failures.add(new Failure(type, partial));
-                    }
-                } catch (final Exception | LinkageError failure) {
-                    // THE PARTIAL FAILURES A MODULE REGISTERED BEFORE THROWING STAY LISTED NEXT TO THE ONE THAT ENDED IT
-                    if (module != null) for (final Throwable partial: module.failures()) failures.add(new Failure(type, partial));
-                    final Failure failed = new Failure(type, failure);
-                    failures.add(failed);
-                    final boolean interrupted = failure instanceof InterruptedException;
-                    if (interrupted) Thread.currentThread().interrupt();
-                    if (definition.essential() || interrupted) {
-                        status = new Status(State.FAILED, type, done, modules.size(), List.copyOf(failures));
-                        LOGGER.error(IT, "{} did not load: module {} {}", NAME, failed.name(), interrupted ? "was interrupted" : "failed", failure);
-                        throw new IllegalStateException((interrupted ? "WaterMedia load interrupted at module " : "Essential WaterMedia module failed: ") + failed.name(), failure);
-                    }
-                }
-                done++;
-            }
-        } catch (final Error fatal) { // A VM ERROR LEAVES THE LOAD WHERE IT WAS; NOTHING CAN BE RETRIED
-            failures.add(new Failure(type, fatal));
-            status = new Status(State.FAILED, type, done, modules.size(), List.copyOf(failures));
-            throw fatal;
-        }
-        status = new Status(State.LOADED, null, done, modules.size(), List.copyOf(failures));
-        for (final Failure failure: failures)
-            LOGGER.error(IT, "Module {} failed; the features it provides are unavailable", failure.name(), failure.cause());
-        LOGGER.info(IT, "{} loaded {} module(s) with {} failure(s)", NAME, done, failures.size());
+        // THE MODULES IN LOAD ORDER: CONFIGURATION, NATIVES, THEN THE APIS THAT USE THEM; EACH ONE DECIDES BY ITSELF WHETHER THIS SIDE RUNS IT.
+        final List<WaterMediaModule> modules = new ArrayList<>(4);
+        modules.add(new WaterMediaConfig.Module(this));
+        // BINARIES IS OPTIONAL: ITS INSTALL IS CHECKED WITH THE CLASS LOADER'S getResource(), WHICH SEES OTHER JARS WITHOUT LINKING THE CLASS
+        if (WaterMedia.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") != null) modules.add(new WaterMediaBinaries(this));
+        modules.add(new NetworkAPI.Module(this));
+        modules.add(new MediaAPI.Module(this));
+        this.modules = List.copyOf(modules);
     }
 
-    /** True once every module loaded; the failures of optional modules do not change it. */
-    public static boolean loaded() { return status.state() == State.LOADED; }
+    /**
+     * Loads every module, once for the life of the process; nothing is ever unloaded. Each module decides by
+     * itself whether this side needs it and handles the parts it can live without (the file server, FFmpeg);
+     * a failure that escapes a module ends the load.
+     *
+     * @throws IllegalStateException when WaterMedia already started, when called from an owned worker thread,
+     *         or when a module fails, with that failure as the cause
+     */
+    public static synchronized void start(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
+        if (ThreadTool.workerThread()) throw new IllegalStateException("Start WaterMedia from a host thread, not a managed worker");
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("Environment name cannot be empty");
+        if (instance != null) throw new IllegalStateException("WaterMedia has already started");
 
-    /** Returns the current load state. */
-    public static Status status() { return status; }
+        // PUBLISHED BEFORE THE FIRST MODULE STARTS, SO THE STATIC ACCESSORS ALREADY WORK FOR THE MODULES
+        final WaterMedia watermedia = new WaterMedia(name, tmp, cwd, clientSide);
+        instance = watermedia;
+        LOGGER.info(IT, "Starting {} {} for {} ({})", NAME, VERSION, name, clientSide ? "client" : "server");
+        LOGGER.info(IT, "Working directory: {}", watermedia.cwd);
+        LOGGER.info(IT, "Temporary directory: {}", watermedia.tmp);
+
+        try {
+            for (final WaterMediaModule module: watermedia.modules) {
+                watermedia.loading = module;
+                LOGGER.info(IT, "Loading {} ({}/{})", module.name(), watermedia.done + 1, watermedia.modules.size());
+                module.start();
+                watermedia.done++;
+            }
+            watermedia.loaded = true;
+        } catch (final Exception | LinkageError failure) {
+            final String module = watermedia.loading.name();
+            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+            LOGGER.error(IT, "{} did not load: module {} failed", NAME, module, failure);
+            throw new IllegalStateException("WaterMedia module " + module + " failed", failure);
+        } finally {
+            watermedia.loading = null;
+        }
+        LOGGER.info(IT, "{} loaded {} module(s)", NAME, watermedia.done);
+    }
+
+    /** True once every module loaded; a part a module lives without (FFmpeg, the file server) does not change it. */
+    public static boolean loaded() {
+        final WaterMedia watermedia = instance;
+        return watermedia != null && watermedia.loaded;
+    }
+
+    /** Returns the name of the module being loaded, or null outside a load; loading screens pair it with {@link #step()} and {@link #steps()}. */
+    public static String loading() {
+        final WaterMedia watermedia = instance;
+        final WaterMediaModule module = watermedia == null ? null : watermedia.loading;
+        return module == null ? null : module.name();
+    }
+
+    /** Returns how many modules finished loading so far. */
+    public static int step() {
+        final WaterMedia watermedia = instance;
+        return watermedia == null ? 0 : watermedia.done;
+    }
+
+    /** Returns how many modules this process loads; zero before {@link #start}. */
+    public static int steps() {
+        final WaterMedia watermedia = instance;
+        return watermedia == null ? 0 : watermedia.modules.size();
+    }
 
     /** Prefixes a resource path with this library's identifier, as {@code watermedia:path}. */
     public static String toId(final String path) { return ID + ":" + path; }
@@ -135,9 +143,12 @@ public final class WaterMedia {
         return new ExtendedLoggerWrapper(logger, name, logger.getMessageFactory()) {
             @Override
             public void logMessage(final String caller, final Level level, final Marker marker, final Message message, final Throwable failure) {
+                // 1. THE FORMATTED TEXT, REDACTED AS A WHOLE
                 final String originalText = message == null ? "null" : message.getFormattedMessage();
                 String text = DataTool.redact(originalText);
                 boolean changed = message == null || !Objects.equals(text, originalText);
+
+                // 2. THE PARAMETERS: AN APPENDER MAY FORMAT THEM AGAIN, SO A SECRET IN ONE OF THEM ALSO REPLACES THE MESSAGE
                 final Object[] parameters = message == null ? null : message.getParameters();
                 if (parameters != null) {
                     for (final Object parameter: parameters) {
@@ -145,6 +156,8 @@ public final class WaterMedia {
                         changed |= !Objects.equals(value, DataTool.redact(value));
                     }
                 }
+
+                // 3. THE THROWABLES: THE EXPLICIT ONE AND THE ONE EMBEDDED IN THE MESSAGE, EACH PRINTED AND CHECKED ONCE
                 final Throwable embedded = message == null ? null : message.getThrowable();
                 Throwable cause = failure != null ? failure : embedded;
                 for (final Throwable thrown: new Throwable[] { cause, embedded == cause ? null : embedded }) {
@@ -164,13 +177,13 @@ public final class WaterMedia {
     }
 
     /** Returns the process's absolute working directory; throws before {@link #start}. */
-    public static Path cwd() { return context().cwd; }
+    public static Path cwd() { return instance().cwd; }
 
     /** Returns the process's absolute temporary directory; throws before {@link #start}. */
-    public static Path tmp() { return context().tmp; }
+    public static Path tmp() { return instance().tmp; }
 
     /** Whether WaterMedia runs on a client; throws before {@link #start}. */
-    public static boolean clientSide() { return context().clientSide; }
+    public static boolean clientSide() { return instance().clientSide; }
 
     /**
      * Rejects a client-only operation requested by {@code type} before {@link #start} or on a server.
@@ -178,45 +191,13 @@ public final class WaterMedia {
      * cannot reach rendering, audio or decoding code even where the host does not hide those classes.
      */
     public static void checkIsClientSideOrThrow(final Class<?> type) {
-        if (!context().clientSide) throw new IllegalStateException("Called " + type.getSimpleName() + " in a server environment");
+        if (!instance().clientSide) throw new IllegalStateException("Called " + type.getSimpleName() + " in a server environment");
     }
 
-    private static Context context() {
-        final Context context = instance;
-        if (context == null) throw new IllegalStateException(NAME + " has not started");
-        return context;
-    }
-
-    // THE JVM VERIFIES MODULE SUBTYPES WHILE LINKING; KEEP THE CLIENT JAR BEHIND A LAZY HOLDER.
-    // THE CLASS LOADER SEES OTHER MODULES; Class.getResource ONLY SEARCHES THIS ONE ON FORGE 1.21.1+
-    private static WaterMediaModule binaries() {
-        return WaterMedia.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") == null
-                ? null : Client.BINARIES.get();
-    }
-
-    private static final class Client {
-        private static final Supplier<WaterMediaModule> BINARIES = WaterMediaBinaries::new;
-    }
-
-    /** The load state: the module whose load started last (null before the first one and once the load ended), modules done out of total, and every failure so far, the essential one that ended the load included. */
-    public record Status(State state, Class<?> loading, int done, int total, List<Failure> failures) {
-        public Status {
-            failures = List.copyOf(failures);
-        }
-
-        public enum State { IDLE, LOADING, LOADED, FAILED }
-
-        /** Returns the display name of a module class: the API that owns a nested Module, or "unknown" for null. */
-        public static String name(final Class<?> module) {
-            if (module == null) return "unknown";
-            final Class<?> owner = module.getEnclosingClass();
-            return (owner != null ? owner : module).getSimpleName();
-        }
-
-        /** A module that failed to load with its cause; {@code module} is null when it could not even be constructed. */
-        public record Failure(Class<?> module, Throwable cause) {
-            /** Returns the module's display name, or "unknown" when it never got constructed. */
-            public String name() { return Status.name(this.module); }
-        }
+    // THE INSTANCE, OR THE ONE FAILURE EVERY ACCESSOR GIVES BEFORE start()
+    private static WaterMedia instance() {
+        final WaterMedia watermedia = instance;
+        if (watermedia == null) throw new IllegalStateException(NAME + " has not started");
+        return watermedia;
     }
 }

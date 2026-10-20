@@ -82,7 +82,7 @@ public class DefensiveCheckTest {
         @Test
         @DisplayName("passes a clean JVM and game directory")
         void passesCleanEnvironment(@TempDir final Path gameDir) {
-            assertDoesNotThrow(() -> DefensiveCheck.tlcheck(gameDir));
+            assertDoesNotThrow(() -> DefensiveCheck.run(gameDir));
         }
 
         @Test
@@ -97,7 +97,7 @@ public class DefensiveCheckTest {
             thread.start();
             try {
                 assertTrue(running.await(5, TimeUnit.SECONDS));
-                final IllegalStateException failure = assertThrows(IllegalStateException.class, () -> DefensiveCheck.tlcheck(gameDir));
+                final IllegalStateException failure = assertThrows(IllegalStateException.class, () -> DefensiveCheck.run(gameDir));
                 assertTrue(failure.getMessage().contains("thread TLSkinCape-probe"), failure.getMessage());
             } finally {
                 release.countDown();
@@ -110,7 +110,7 @@ public class DefensiveCheckTest {
         void warnsLeftovers(@TempDir final Path gameDir) throws Exception {
             Files.writeString(gameDir.resolve("TlauncherProfiles.json"), "{}");
             try (final LogCapture logs = new LogCapture(WaterMedia.ID)) {
-                assertDoesNotThrow(() -> DefensiveCheck.tlcheck(gameDir));
+                assertDoesNotThrow(() -> DefensiveCheck.run(gameDir));
                 assertTrue(logs.events().stream().anyMatch(event -> event.getLevel() == Level.WARN
                         && event.getMessage().getFormattedMessage().contains("TlauncherProfiles.json")));
             }

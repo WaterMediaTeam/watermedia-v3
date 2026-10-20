@@ -10,7 +10,7 @@ public class NeoBootstrap {
     private static final String NAME = "NeoForge";
 
     public NeoBootstrap() {
-        DefensiveCheck.tlcheck(null);
+        DefensiveCheck.run(null);
         try {
             WaterMedia.start(NAME, null, null, clientSide());
         } catch (final Exception e) {

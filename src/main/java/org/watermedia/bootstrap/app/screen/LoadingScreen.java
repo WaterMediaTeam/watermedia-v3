@@ -1,7 +1,6 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
-import org.watermedia.WaterMedia.Status;
 import org.watermedia.api.util.MathEases;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
@@ -19,15 +18,10 @@ import org.watermedia.bootstrap.app.ui.TextRenderer;
 /**
  * Boot splash as a fully retained tree: a centered column with the glowing banner, the animated duck
  * (or the glowing pack icon as fallback), the spaced title and one captioned progress bar naming the
- * module WaterMedia is loading. Live boot state is pulled from {@link WaterMedia#status()} in the
- * elements' {@code onUpdate} hooks every frame.
+ * module WaterMedia is loading. Live boot state is pulled from {@link WaterMedia#loading()}, {@link WaterMedia#step()}
+ * and {@link WaterMedia#steps()} in the elements' {@code onUpdate} hooks every frame.
  */
 public final class LoadingScreen extends Screen {
-    private Status boot = WaterMedia.status();
-
-    @Override
-    protected void onUpdate() { this.boot = WaterMedia.status(); }
-
     private static final int BANNER_MAX_W = 1000;
     private static final int BANNER_MAX_H = 170;
     private static final int BANNER_UP_SHIFT = 18;
@@ -198,7 +192,6 @@ public final class LoadingScreen extends Screen {
     private final class ModuleBar extends Element<ModuleBar> {
 
         private String caption = "";
-        private String alert = ""; // RED SUFFIX (FAILED MODULES) — EMPTY WHEN CLEAN
         private float shown;
         private float from;
         private float target;
@@ -206,21 +199,20 @@ public final class LoadingScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            final Status status = LoadingScreen.this.boot;
             final float goal;
+            final int steps = WaterMedia.steps();
             if (!this.ctx.backendsLoading) {
                 goal = 1f;
                 this.caption = "Starting: WaterMediaApp";
-            } else if (status.total() > 0) {
-                goal = MathUtil.clamp((float) status.done() / status.total(), 0f, 1f);
-                final Class<?> loading = status.loading();
-                this.caption = "Loading: " + (loading == null ? WaterMedia.NAME : Status.name(loading)) + " (" + status.done() + "/" + status.total() + ")";
+            } else if (steps > 0) {
+                final int step = WaterMedia.step();
+                final String loading = WaterMedia.loading();
+                goal = MathUtil.clamp((float) step / steps, 0f, 1f);
+                this.caption = "Loading: " + (loading == null ? WaterMedia.NAME : loading) + " (" + step + "/" + steps + ")";
             } else {
                 goal = 0f;
                 this.caption = "Starting: WaterMediaApp";
             }
-            final int failed = status.failures().size();
-            this.alert = failed > 0 ? " [" + failed + " module(s) failed]" : "";
 
             final long now = System.currentTimeMillis();
             if (Math.abs(goal - this.target) > 0.001f) {
@@ -251,13 +243,11 @@ public final class LoadingScreen extends Screen {
                 canvas.gradientH(x + 1, y + 1, fillW, BAR_H - 2, AppTheme.NEON_DARK, AppTheme.NEON_LIGHT);
                 canvas.glow(x + 1, y + 1, fillW, BAR_H - 2, 0f, AppTheme.NEON, 0.36f);
             }
-            // CAPTION CENTERED UNDER THE TRACK, THE ALERT SUFFIX PAINTED IN RED RIGHT AFTER IT
+            // CAPTION CENTERED UNDER THE TRACK
             final int captionW = canvas.textWidth(this.caption, CAPTION_SCALE, false);
-            final int alertW = this.alert.isEmpty() ? 0 : canvas.textWidth(this.alert, CAPTION_SCALE, false);
-            final float tx = x + (w - captionW - alertW) * 0.5f;
+            final float tx = x + (w - captionW) * 0.5f;
             final int ty = y + BAR_H + CAPTION_GAP;
             canvas.text(this.caption, tx, ty, AppTheme.TEXT, CAPTION_SCALE, false);
-            if (alertW > 0) canvas.text(this.alert, tx + captionW, ty, AppTheme.RED, CAPTION_SCALE, false);
         }
     }
 }

@@ -1,6 +1,5 @@
 package org.watermedia;
 
-import org.watermedia.WaterMedia.Status;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.DownscaleFilter;
 import org.watermedia.api.codecs.ImageReader;
@@ -25,9 +24,9 @@ import java.util.function.Supplier;
 public final class ApiGuideExample {
     private ApiGuideExample() {}
 
-    public static Status start(final Path temporaryDirectory, final Path workingDirectory) {
+    public static boolean start(final Path temporaryDirectory, final Path workingDirectory) {
         WaterMedia.start("My application", temporaryDirectory, workingDirectory, true);
-        return WaterMedia.status();
+        return WaterMedia.loaded();
     }
 
     public static MRL refresh(final MRL mrl) {

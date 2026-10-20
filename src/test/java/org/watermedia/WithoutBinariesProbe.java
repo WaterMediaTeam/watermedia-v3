@@ -49,15 +49,11 @@ public final class WithoutBinariesProbe {
             final Path root = Path.of("").toAbsolutePath();
             waterMedia.getMethod("start", String.class, Path.class, Path.class, boolean.class)
                     .invoke(null, "WITHOUT_BINARIES", root.resolve("temp"), root, client);
-            final Object status = waterMedia.getMethod("status").invoke(null);
-            if (!(boolean) waterMedia.getMethod("loaded").invoke(null) || !"LOADED".equals(status.getClass().getMethod("state").invoke(status).toString()))
-                throw new AssertionError("Startup failed: " + status);
-            if (!((List<?>) status.getClass().getMethod("failures").invoke(status)).isEmpty())
-                throw new AssertionError("Absent binaries were reported as a failure: " + status);
-            // THE MISSING MODULE IS SKIPPED AND COUNTED AS DONE: A SERVER WALKS TWO MODULES, A CLIENT FOUR
-            final int total = (int) status.getClass().getMethod("total").invoke(status);
-            if (total != (client ? 4 : 2) || (int) status.getClass().getMethod("done").invoke(status) != total)
-                throw new AssertionError("Module count did not match the installed set: " + status);
+            if (!(boolean) waterMedia.getMethod("loaded").invoke(null)) throw new AssertionError("Startup failed without binaries");
+            // THE MISSING MODULE IS NEVER CREATED: BOTH SIDES WALK THE OTHER THREE
+            final int steps = (int) waterMedia.getMethod("steps").invoke(null);
+            if (steps != 3 || (int) waterMedia.getMethod("step").invoke(null) != steps)
+                throw new AssertionError("Module count did not match the installed set: " + steps);
             // THE PLATFORM REGISTRY MUST ENLIST WITHOUT LINKING THE yt-dlp HANDLERS
             final Class<?> platforms = Class.forName(PlatformAPI.class.getName(), true, isolated);
             if (((List<?>) platforms.getMethod("platforms").invoke(null)).isEmpty())

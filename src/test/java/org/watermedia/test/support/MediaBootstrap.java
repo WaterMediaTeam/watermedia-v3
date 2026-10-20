@@ -40,7 +40,7 @@ public final class MediaBootstrap {
         // EVERY LATER CALLER FAILS WITH THE BOOTSTRAP CAUSE INSTEAD OF A MISLEADING ERROR OF ITS OWN
         if (failure != null) throw new AssertionError("The client bootstrap failed", failure);
         if (!ffmpeg && Boolean.getBoolean("watermedia.test.requireNatives"))
-            throw new AssertionError("Required FFmpeg natives did not load: " + WaterMedia.status().failures());
+            throw new AssertionError("Required FFmpeg natives did not load");
         return ffmpeg;
     }
 

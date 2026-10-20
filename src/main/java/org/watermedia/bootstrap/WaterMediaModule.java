@@ -1,30 +1,24 @@
 package org.watermedia.bootstrap;
 
-import java.util.ArrayList;
-import java.util.List;
+import org.watermedia.WaterMedia;
 
-/** Internal module contract: a start hook that runs once, plus the optional failures it reports; only WaterMedia loads modules. */
+/**
+ * One unit of WaterMedia's load. It receives the environment it runs in, decides by itself whether this side
+ * needs it, and handles the parts it can live without: a failure that escapes {@link #start()} ends the load.
+ */
 public abstract class WaterMediaModule {
-    private final List<Throwable> failures = new ArrayList<>();
-    private boolean loaded;
+    protected final WaterMedia watermedia;
 
-    protected abstract void start() throws Exception;
-
-    /** Runs the start hook, once for the life of the process; WaterMedia is its only caller. */
-    public final void load() throws Exception {
-        if (this.loaded) throw new IllegalStateException("The module has already loaded");
-        this.loaded = true;
-        this.start();
+    protected WaterMediaModule(final WaterMedia watermedia) {
+        this.watermedia = watermedia;
     }
 
-    // A PART THE MODULE CAN LIVE WITHOUT FAILED; THE MODULE KEEPS LOADING AND WaterMedia LISTS THE CAUSE
-    protected final synchronized void failure(final Throwable cause) {
-        if (cause == null) throw new IllegalArgumentException("A failure needs its cause");
-        this.failures.add(cause);
-    }
+    /** Starts the module, once, on the thread that called {@link WaterMedia#start}. */
+    public abstract void start() throws Exception;
 
-    /** Returns the optional failures the module reported while starting. */
-    public final synchronized List<Throwable> failures() {
-        return List.copyOf(this.failures);
+    /** Returns the display name: the API that owns a nested Module, or the class itself. */
+    public final String name() {
+        final Class<?> owner = this.getClass().getEnclosingClass();
+        return (owner != null ? owner : this.getClass()).getSimpleName();
     }
 }
