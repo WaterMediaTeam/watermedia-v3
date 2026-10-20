@@ -139,7 +139,7 @@ public final class ServiceLifecycleProbe {
             final List<PlatformResult> old = PlatformAPI.search("old");
             if (!entered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Old probe did not enter");
             final List<PlatformResult> fresh = PlatformAPI.search("fresh");
-            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3000)) throw new AssertionError("New search was blocked behind a cancelled probe");
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("fresh"), 3000)) throw new AssertionError("New search was blocked behind a cancelled probe");
             if (!callbackGuard.get() || fresh.size() != 1 || !fresh.get(0).title().equals("fresh"))
                 throw new AssertionError("Fresh search has incorrect results");
             if (!PlatformAPI.searchHistory().equals(List.of("fresh", "old")))
@@ -148,7 +148,7 @@ public final class ServiceLifecycleProbe {
             final MRL held = MediaAPI.mrl(URI.create("fixture:held"));
             if (!resolveEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Resolver did not enter");
             final List<PlatformResult> during = PlatformAPI.search("during-resolve");
-            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3000) || during.size() != 1)
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("during-resolve"), 3000) || during.size() != 1)
                 throw new AssertionError("A held resolution blocked the search service");
             resolveResume.countDown();
             if (!held.await(3000) || held.status() != MRL.Status.LOADED) throw new AssertionError("Held resolution did not finish");
@@ -168,7 +168,7 @@ public final class ServiceLifecycleProbe {
                 }
             });
             final List<PlatformResult> again = PlatformAPI.search("fresh");
-            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3000) || again.size() != 1
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("fresh"), 3000) || again.size() != 1
                     || !again.get(0).title().equals("replacement") || !PlatformAPI.searchHistory().equals(List.of("fresh", "during-resolve", "old")))
                 throw new AssertionError("Search cache survived the registry change or the history lost a query");
         } finally {
@@ -214,14 +214,14 @@ public final class ServiceLifecycleProbe {
             final List<PlatformResult> search = PlatformAPI.search("failure contract");
             if (!slowEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Second probe did not start");
             // THE FAILING PROBE ANSWERED AT ONCE, BUT THE SEARCH STAYS OPEN UNTIL THE SLOW ONE RETURNS
-            if (PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 250))
+            if (PlayerWait.awaitCondition(() -> !PlatformAPI.searching("failure contract"), 250))
                 throw new AssertionError("Search completed while another probe was still running");
             releaseSlow.countDown();
-            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3000) || search.size() != 1
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("failure contract"), 3000) || search.size() != 1
                     || !search.get(0).title().equals("late success"))
                 throw new AssertionError("Successful late probe was lost");
             final List<PlatformResult> cached = PlatformAPI.search("failure contract");
-            if (PlatformAPI.searching() || cached.size() != 1 || !cached.get(0).title().equals("late success")
+            if (PlatformAPI.searching("failure contract") || cached.size() != 1 || !cached.get(0).title().equals("late success")
                     || successfulProbes.get() != 1)
                 throw new AssertionError("Completed search did not cache its full result set");
         } finally {

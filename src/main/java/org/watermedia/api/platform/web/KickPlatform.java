@@ -143,7 +143,9 @@ public final class KickPlatform implements Platform {
     public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
         // KICK SEARCH IS CHANNEL-CENTRIC: channels[] IS THE ONLY SECTION CARRYING A SLUG + AVATAR. NOTE THE
         // NESTED user OBJECT IS camelCase (profilePic/username), UNLIKE THE snake_case /api/v2/channels PAYLOAD.
-        final SearchResponse res = WebRequests.fetchJson(NAME, SEARCH_API + URLEncoder.encode(query, StandardCharsets.UTF_8), SearchResponse.class);
+        final NetRequest request = new NetRequest(SEARCH_API + URLEncoder.encode(query, StandardCharsets.UTF_8))
+                .accept(NetRequest.ACCEPT_JSON).connectTimeout(PlatformAPI.SEARCH_TIMEOUT_MS).readTimeout(PlatformAPI.SEARCH_TIMEOUT_MS);
+        final SearchResponse res = WebRequests.fetchJson(NAME, request, SearchResponse.class);
         if (res.channels == null) return List.of();
 
         final List<PlatformResult> out = new ArrayList<>(Math.min(res.channels.length, limit));

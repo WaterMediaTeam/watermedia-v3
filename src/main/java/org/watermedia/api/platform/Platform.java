@@ -57,7 +57,9 @@ public interface Platform {
      * only the handful that do (YouTube, Twitch, Kick, Imgur) override it. {@link PlatformAPI} probes
      * every platform concurrently on a shared daemon pool, so an implementation must be internally
      * thread-safe and may block on network I/O, but it should bail out promptly once its thread is
-     * {@link Thread#isInterrupted() interrupted} — a newer search has superseded this one.
+     * {@link Thread#isInterrupted() interrupted} — a newer search has superseded this one. Its requests
+     * cap their connect and read timeouts at {@link PlatformAPI#SEARCH_TIMEOUT_MS}, as the built-in
+     * handlers do, so one slow platform never holds a worker for long.
      *
      * @param query the user's search text (never {@code null} or blank)
      * @param limit the maximum number of results to return

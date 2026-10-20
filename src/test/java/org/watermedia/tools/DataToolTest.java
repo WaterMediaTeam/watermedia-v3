@@ -138,6 +138,20 @@ public class DataToolTest {
             assertTrue(DataTool.equalsAnyIgnoreCase("ABC", "abc"));
             assertFalse(DataTool.equalsAnyIgnoreCase("ABC", "abd", "x"));
         }
+
+        @Test
+        @DisplayName("similarity scores one keystroke apart near 1 and unrelated words near 0, ignoring case")
+        void similarity() {
+            assertEquals(1f, DataTool.similarity("Cats", "cats"));
+            assertEquals(1f, DataTool.similarity("", ""));
+            assertEquals(0f, DataTool.similarity("cats", ""));
+            assertEquals(0f, DataTool.similarity("abc", "xyz"));
+            assertTrue(DataTool.similarity("cats", "cars") > 0.85f, "a fixed letter is the same word");
+            assertTrue(DataTool.similarity("cat", "cats") > 0.9f, "one letter more is the same word");
+            assertTrue(DataTool.similarity("cast", "cats") > 0.9f, "two letters swapped are the same word");
+            assertTrue(DataTool.similarity("cats", "dogs") <= 0.5f, "unrelated words stay low");
+            assertThrows(IllegalArgumentException.class, () -> DataTool.similarity(null, "cats"));
+        }
     }
 
     @Nested

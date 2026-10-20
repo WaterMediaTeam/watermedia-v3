@@ -146,6 +146,41 @@ public final class DataTool {
         return false;
     }
 
+    /** Jaro-Winkler similarity of two texts from 0 (nothing in common) to 1 (equal ignoring case); one keystroke apart scores above 0.8. */
+    public static float similarity(final String a, final String b) {
+        if (a == null || b == null) throw new IllegalArgumentException("Both texts are required");
+        final int la = a.length(), lb = b.length();
+        if (la == 0 || lb == 0) return la == lb ? 1f : 0f;
+        // LETTERS MATCH WHEN THEY SIT WITHIN HALF THE LONGER LENGTH OF EACH OTHER, EACH LETTER AT MOST ONCE
+        final int window = Math.max(0, Math.max(la, lb) / 2 - 1);
+        final boolean[] matchedA = new boolean[la];
+        final boolean[] matchedB = new boolean[lb];
+        int matches = 0;
+        for (int i = 0; i < la; i++) {
+            final char c = Character.toLowerCase(a.charAt(i));
+            for (int j = Math.max(0, i - window), end = Math.min(lb, i + window + 1); j < end; j++) {
+                if (matchedB[j] || Character.toLowerCase(b.charAt(j)) != c) continue;
+                matchedA[i] = matchedB[j] = true;
+                matches++;
+                break;
+            }
+        }
+        if (matches == 0) return 0f;
+        // MATCHED LETTERS OUT OF ORDER ARE TRANSPOSITIONS, EACH PAIR COSTING ONE MATCH
+        int transposed = 0;
+        for (int i = 0, j = 0; i < la; i++) {
+            if (!matchedA[i]) continue;
+            while (!matchedB[j]) j++;
+            if (Character.toLowerCase(a.charAt(i)) != Character.toLowerCase(b.charAt(j))) transposed++;
+            j++;
+        }
+        final float jaro = (matches / (float) la + matches / (float) lb + (matches - transposed / 2) / (float) matches) / 3f;
+        // UP TO FOUR LEADING LETTERS IN COMMON PULL THE SCORE TOWARDS ONE, SO A TYPO LATE IN A WORD STAYS CLOSE
+        int prefix = 0;
+        while (prefix < 4 && prefix < la && prefix < lb && Character.toLowerCase(a.charAt(prefix)) == Character.toLowerCase(b.charAt(prefix))) prefix++;
+        return jaro + prefix * 0.1f * (1f - jaro);
+    }
+
     // CONVERTS BT.601 LIMITED-RANGE YUV 4:2:0 PLANES (VP8) TO PACKED OPAQUE ARGB INTS, WHICH LAND AS [B,G,R,A]
     // BYTES ONCE WRITTEN LITTLE-ENDIAN. STRIDES MAY EXCEED THE WIDTH (MACROBLOCK PADDING)
     public static int[] yuvToBgra(final byte[] yP, final byte[] uP, final byte[] vP, final int w, final int h, final int yS, final int uvS) {

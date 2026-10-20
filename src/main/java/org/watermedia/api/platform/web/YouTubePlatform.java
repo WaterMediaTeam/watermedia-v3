@@ -7,6 +7,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.MatureContentException;
+import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.util.NetRequest;
@@ -128,7 +129,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
         // (NO PER-VIDEO STREAM EXTRACTION), SO IT IS FAST AND NEEDS NO PO_TOKEN/BOTGUARD RETRY.
         final JsonObject info;
         try {
-            info = this.info("ytsearch" + limit + ":" + query, List.of("--flat-playlist"));
+            info = this.info("ytsearch" + limit + ":" + query, List.of("--flat-playlist"), PlatformAPI.SEARCH_TIMEOUT_MS);
         } catch (final IOException e) {
             throw new PlatformException(NAME, "yt-dlp could not search '" + query + "': " + e.getMessage(), e);
         }

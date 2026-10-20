@@ -151,7 +151,7 @@ public final class TwitchPlatform implements Platform {
 
         final JsonObject data;
         try {
-            data = obj(gql(body, JsonObject.class), "data");
+            data = obj(gql(body, JsonObject.class, PlatformAPI.SEARCH_TIMEOUT_MS), "data");
         } catch (final IOException | RuntimeException e) {
             throw new PlatformException(NAME, "Search for '" + query + "' failed", e);
         }
@@ -439,11 +439,17 @@ public final class TwitchPlatform implements Platform {
 
     // POSTS ONE GQL OPERATION (AN OBJECT ANSWER) OR A BATCH (AN ARRAY ANSWER)
     private static <T> T gql(final Object body, final Class<T> type) throws PlatformException {
+        return gql(body, type, WaterMediaConfig.network.timeout);
+    }
+
+    // A SEARCH CAPS ITS WAIT AT PlatformAPI.SEARCH_TIMEOUT_MS; EVERY OTHER QUERY TAKES THE CONFIGURED NETWORK TIMEOUT
+    private static <T> T gql(final Object body, final Class<T> type, final int timeoutMs) throws PlatformException {
         return WebRequests.fetchJson(NAME, new NetRequest(GQL)
                 .method("POST")
                 .accept(NetRequest.ACCEPT_JSON)
                 .contentType("application/json; charset=utf-8")
                 .header("Client-ID", CLIENT_ID)
+                .connectTimeout(timeoutMs).readTimeout(timeoutMs)
                 .body(JSONTool.write(body)), type);
     }
 

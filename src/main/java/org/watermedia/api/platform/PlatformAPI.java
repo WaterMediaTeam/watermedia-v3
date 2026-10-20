@@ -7,6 +7,7 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.platform.internal.WaterPlatform;
 import org.watermedia.api.platform.web.*;
 import org.watermedia.api.util.MathUtil;
+import org.watermedia.tools.DataTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.net.URI;
@@ -38,11 +39,13 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class PlatformAPI {
     private static final Marker IT = MarkerManager.getMarker(PlatformAPI.class.getSimpleName());
+    /** Connect and read timeout in milliseconds of every built-in search request; a slow platform holds a worker this long, not the configured network timeout. */
+    public static final int SEARCH_TIMEOUT_MS = 5_000;
     private static final int HISTORY_LIMIT = 10;
-    private static final int SEARCH_LIMIT = 2; // RESULTS PER PLATFORM
     private static final int SEARCH_CACHE_LIMIT = 32;
-    private static final int SEARCH_WORKERS = 2;
+    private static final int SEARCH_WORKERS = 4;
     private static final long SEARCH_TYPING_DELAY_MS = 300L;
+    private static final float SEARCH_TYPING_SIMILARITY = 0.7f; // JARO-WINKLER SCORE FROM WHICH TWO QUERIES ARE ONE INTENTION STILL BEING TYPED
     private static final Object SEARCH_LOCK = new Object();
     // COPY-ON-WRITE: REGISTRATION IS RARE WHILE THE MRL LOADER THREADS ITERATE HOT AND MUST NEVER SEE A CME.
     // APPLICATION HANDLERS ARE PROBED FIRST; THE BUILT-IN ONES ARE ENLISTED ONCE AT CLASS LOAD
@@ -50,21 +53,21 @@ public final class PlatformAPI {
     static final CopyOnWriteArrayList<Platform> BUILTIN = new CopyOnWriteArrayList<>();
     // RECENT QUERIES, MOST RECENT FIRST, CAPPED AT HISTORY_LIMIT — GUARDED BY SEARCH_LOCK
     private static final ArrayDeque<String> HISTORY = new ArrayDeque<>();
-    // QUERY -> THE LIST ITS SEARCH FILLS, SERVED AS THE SAME INSTANCE WHILE IT FILLS AND AFTER. ACCESS-ORDER LRU, FLUSHED
+    // QUERY -> ITS SEARCH, SERVED AS THE SAME READ-ONLY LIST WHILE IT FILLS AND AFTER. ACCESS-ORDER LRU, FLUSHED
     // EVERY platforms.searchCleanupInterval MINUTES AND WHENEVER THE REGISTRY CHANGES — GUARDED BY SEARCH_LOCK
-    private static final Map<String, List<PlatformResult>> SEARCH_CACHE = new LinkedHashMap<>(16, 0.75f, true) {
+    private static final Map<String, Search> SEARCH_CACHE = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(final Map.Entry<String, List<PlatformResult>> eldest) {
+        protected boolean removeEldestEntry(final Map.Entry<String, Search> eldest) {
             return this.size() > SEARCH_CACHE_LIMIT;
         }
     };
     private static long nextCacheClean;
 
     // ==== SEARCH IN FLIGHT — GUARDED BY SEARCH_LOCK ====
-    // THE TWO WORKERS LIVE FOR THE WHOLE PROCESS ONCE THE FIRST SEARCH CREATES THEM; EVERY PLATFORM PROBE IS ONE TASK ON THEM
+    // THE WORKERS LIVE FOR THE WHOLE PROCESS ONCE THE FIRST SEARCH CREATES THEM; EVERY PLATFORM PROBE IS ONE TASK ON THEM
     private static ScheduledExecutorService searchers;
     private static final List<Future<?>> searchProbes = new ArrayList<>();
-    private static String searchQuery; // THE LAST QUERY SEARCHED; TYPING IS DETECTED AGAINST IT
+    private static String searchQuery; // THE LAST QUERY PROBED; TYPING IS DETECTED AGAINST IT
     private static int searchRemaining; // PROBES STILL TO ANSWER; ZERO WHEN NO SEARCH IS IN FLIGHT
     private static long searchGeneration; // BUMPED PER SEARCH, SO A PROBE OF A DISCARDED SEARCH NEVER WRITES
     private static long registryVersion; // BUMPED ON EVERY REGISTRY CHANGE, SO A SEARCH OVERLAPPED BY ONE IS NOT KEPT
@@ -96,28 +99,38 @@ public final class PlatformAPI {
 
     private PlatformAPI() {}
 
-    /** Searches every registered platform for {@code query}; shorthand for {@link #search(String, boolean)} without a re-search. */
+    /** Searches every registered platform for {@code query} with the configured limit; shorthand for {@link #search(String, int, boolean)}. */
     public static List<PlatformResult> search(final String query) {
-        return search(query, false);
+        return search(query, WaterMediaConfig.platforms.searchLimit, false);
+    }
+
+    /** Searches with the configured limit, asking the platforms again when {@code reSearch} is set; shorthand for {@link #search(String, int, boolean)}. */
+    public static List<PlatformResult> search(final String query, final boolean reSearch) {
+        return search(query, WaterMediaConfig.platforms.searchLimit, reSearch);
     }
 
     /**
-     * Starts a search across every registered {@link Platform} and returns at once the list its results land in,
-     * up to {@value #SEARCH_LIMIT} per platform in answer order; {@link #searching()} tells when every platform
-     * answered. One search runs at a time: a new query discards the one in flight, its probes interrupted and its
-     * partial list dropped, so only the latest list keeps filling. A query that extends the previous one, or that
-     * the previous one extends, is typing and waits {@value #SEARCH_TYPING_DELAY_MS} ms for the next keystroke before
-     * touching the network; any other query probes at once. A query already searched is served the same list from
-     * the cache, finished or still filling, unless {@code reSearch} is set; a blank query returns an empty list and
-     * leaves a running search alone.
+     * Starts a search across every registered {@link Platform} and returns at once the read-only list its results
+     * land in, up to {@code limit} per platform in answer order; {@link #searching(String)} tells when every platform
+     * answered. Searches serve one intention at a time: a new query discards the one in flight, its probes interrupted
+     * and its partial list dropped, so only the latest list keeps filling. A query one keystroke away from the last
+     * one probed (a letter more, less or fixed) is that intention still being typed and waits
+     * {@value #SEARCH_TYPING_DELAY_MS} ms for the next keystroke before touching the network; any other query probes
+     * at once. A query already searched with the same limit is served the same list from the cache, finished or
+     * still filling, unless {@code reSearch} is set; a blank query returns an empty list and leaves a running
+     * search alone.
      *
      * @param query the user's search text
+     * @param limit the most results to take from each platform, capped by {@code platforms.searchLimit}
      * @param reSearch whether to drop the cached results of this query and probe the platforms again
-     * @return an unmodifiable view of the list the search fills; empty and final for a blank query
+     * @return an unmodifiable view of the list the search fills, the same instance for the same query; empty and final for a blank query
+     * @throws IllegalArgumentException when {@code limit} is below one
      */
-    public static List<PlatformResult> search(final String query, final boolean reSearch) {
+    public static List<PlatformResult> search(final String query, final int limit, final boolean reSearch) {
+        if (limit < 1) throw new IllegalArgumentException("Limit must be at least 1");
         if (query == null || query.isBlank()) return List.of();
         final String text = query.strip();
+        final int perPlatform = Math.min(limit, WaterMediaConfig.platforms.searchLimit);
         synchronized (SEARCH_LOCK) {
             // RECENT QUERIES, NEWEST FIRST, WITHOUT DUPLICATES
             HISTORY.remove(text);
@@ -131,12 +144,13 @@ public final class PlatformAPI {
                 nextCacheClean = now + MathUtil.minutesToMs(WaterMediaConfig.platforms.searchCleanupInterval);
             }
 
-            final List<PlatformResult> cached = reSearch ? null : SEARCH_CACHE.get(text);
-            if (cached != null) {
+            // THE SAME TEXT ASKED WITH ANOTHER LIMIT IS ANOTHER SEARCH
+            final Search cached = reSearch ? null : SEARCH_CACHE.get(text);
+            if (cached != null && cached.limit() == perPlatform) {
                 // AN ANSWERED QUERY STILL WINS OVER A DIFFERENT SEARCH IN FLIGHT, WHICH NOBODY WAITS FOR ANY MORE
                 if (!text.equals(searchQuery)) discardSearch();
-                LOGGER.debug(IT, "Search '{}' served from cache ({} result(s))", text, cached.size());
-                return Collections.unmodifiableList(cached);
+                LOGGER.debug(IT, "Search '{}' served from cache ({} result(s))", text, cached.hits().size());
+                return cached.hits();
             }
 
             // THE NEWEST QUERY WINS: WHATEVER IS IN FLIGHT IS DISCARDED BEFORE THIS SEARCH STARTS
@@ -147,28 +161,32 @@ public final class PlatformAPI {
                 searchers = pool;
             }
 
-            // SHARED FIRST LETTERS MEAN THE USER IS STILL TYPING: THE PROBES WAIT FOR THE NEXT KEYSTROKE
-            final boolean typing = searchQuery != null && (text.startsWith(searchQuery) || searchQuery.startsWith(text));
+            // A QUERY ONE KEYSTROKE AWAY FROM THE LAST ONE PROBED IS THE USER STILL TYPING, SO THE PROBES WAIT FOR THE NEXT
+            // KEY; THE SAME TEXT AGAIN (ENTER, A DROPPED CACHE) IS NOT TYPING
+            final boolean typing = searchQuery != null && !text.equals(searchQuery) && DataTool.similarity(text, searchQuery) >= SEARCH_TYPING_SIMILARITY;
             final long delay = typing ? SEARCH_TYPING_DELAY_MS : 0L;
-            final List<PlatformResult> results = new CopyOnWriteArrayList<>(); // TWO WORKERS APPEND WHILE THE CALLER READS EVERY FRAME
+            final List<PlatformResult> results = new CopyOnWriteArrayList<>(); // THE WORKERS APPEND WHILE THE CALLER READS EVERY FRAME
+            final Search search = new Search(perPlatform, Collections.unmodifiableList(results));
             final Platform[] platforms = probeOrder();
             final long generation = ++searchGeneration;
             final long registry = registryVersion;
             searchQuery = text;
             searchRemaining = platforms.length;
             // WITH NOTHING TO ASK THERE IS NOTHING WORTH KEEPING
-            if (platforms.length > 0) SEARCH_CACHE.put(text, results);
+            if (platforms.length > 0) SEARCH_CACHE.put(text, search);
             for (final Platform platform: platforms)
-                searchProbes.add(searchers.schedule(() -> probe(platform, text, results, generation, registry), delay, TimeUnit.MILLISECONDS));
+                searchProbes.add(searchers.schedule(() -> probe(platform, text, perPlatform, results, generation, registry), delay, TimeUnit.MILLISECONDS));
             LOGGER.debug(IT, "Search '{}' started on {} platform(s){}", text, platforms.length, typing ? " after the typing delay" : "");
-            return Collections.unmodifiableList(results);
+            return search.hits();
         }
     }
 
-    /** Whether the latest search still waits on platforms; the list {@link #search} returned keeps filling until then. */
-    public static boolean searching() {
+    /** Whether the search for {@code query} still waits on platforms, so its list keeps filling; a query served from the cache or never searched is not in flight. */
+    public static boolean searching(final String query) {
+        if (query == null || query.isBlank()) return false;
+        final String text = query.strip();
         synchronized (SEARCH_LOCK) {
-            return searchRemaining > 0;
+            return searchRemaining > 0 && text.equals(searchQuery);
         }
     }
 
@@ -271,12 +289,12 @@ public final class PlatformAPI {
 
     // ONE PLATFORM OF ONE SEARCH: ITS HITS JOIN THE LIST UNLESS THE SEARCH WAS DISCARDED MEANWHILE, AND THE LAST PROBE TO
     // ANSWER CLOSES THE SEARCH. A FAILING PLATFORM COSTS ONLY ITS OWN HITS, EVEN WHEN ITS NAME FAILS TOO
-    private static void probe(final Platform platform, final String query, final List<PlatformResult> results, final long generation, final long registry) {
+    private static void probe(final Platform platform, final String query, final int limit, final List<PlatformResult> results, final long generation, final long registry) {
         List<PlatformResult> hits = List.of();
         try {
-            final List<PlatformResult> found = platform.search(query, SEARCH_LIMIT);
-            // THE CONTRACT IS AT MOST SEARCH_LIMIT HITS; A MISBEHAVING HANDLER IS CAPPED
-            if (found != null) hits = found.size() > SEARCH_LIMIT ? List.copyOf(found.subList(0, SEARCH_LIMIT)) : found;
+            final List<PlatformResult> found = platform.search(query, limit);
+            // THE CONTRACT IS AT MOST limit HITS; A MISBEHAVING HANDLER IS CAPPED
+            if (found != null) hits = found.size() > limit ? List.copyOf(found.subList(0, limit)) : found;
             if (!hits.isEmpty()) LOGGER.debug(IT, "Search matched {} result(s) on {}", hits.size(), platform.name());
         } catch (final PlatformException | RuntimeException | LinkageError e) {
             // A DISCARDED SEARCH INTERRUPTS ITS PROBES, WHICH REPORT THE CANCELLED WAIT AS THEIR OWN FAILURE
@@ -304,6 +322,9 @@ public final class PlatformAPI {
         for (int i = 0; i < builtin.length; i++) order[custom.length + i] = builtin[builtin.length - 1 - i];
         return order;
     }
+
+    // A CACHED SEARCH: THE PER-PLATFORM LIMIT IT WAS ASKED WITH AND THE READ-ONLY VIEW OF THE LIST ITS PROBES FILL
+    private record Search(int limit, List<PlatformResult> hits) {}
 
     // THESE CONSTRUCTORS LINK EXECUTABLE WRAPPERS FROM THE BINARIES JAR, SO THE HOLDER IS ONLY TOUCHED WHEN IT EXISTS
     private static final class NativePlatforms {

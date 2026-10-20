@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 import org.watermedia.tools.ThreadTool;
@@ -21,13 +22,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link PlatformAPI#search(String, boolean)} offline: the live result list and {@link PlatformAPI#searching()},
- * history dedup and cap, the cache and its invalidation, the per-platform cap, the typing delay, the re-search flag and
- * the discard of the search in flight. All pure-JVM logic driven by stub {@link Platform}s.
+ * Verifies {@link PlatformAPI#search(String, int, boolean)} offline: the live result list and {@link PlatformAPI#searching(String)},
+ * history dedup and cap, the cache and its invalidation, the per-platform limit under its configured ceiling, the typing
+ * delay, the re-search flag and the discard of the search in flight. All pure-JVM logic driven by stub {@link Platform}s.
  * <p>
  * The registry is a package-private static and the search state is private, so the latter is reached through
  * reflection: each case snapshots and clears the registry, history and cache before running and restores the registry after.
@@ -68,7 +70,7 @@ public class PlatformSearchTest {
         void testBlankQueryIsNoOp() {
             final List<PlatformResult> results = PlatformAPI.search("   ");
             assertTrue(results.isEmpty());
-            assertFalse(PlatformAPI.searching());
+            assertFalse(PlatformAPI.searching("   "));
             assertTrue(PlatformAPI.searchHistory().isEmpty(), "A blank query is not worth remembering");
         }
 
@@ -97,11 +99,34 @@ public class PlatformSearchTest {
         @Test
         @DisplayName("The list fills off-thread, is read-only and a platform over the limit is capped")
         void testLiveListAndCap() {
-            PlatformAPI.register(new StubPlatform(5, null)); // RETURNS 5 HITS; THE API TAKES 2
-            final List<PlatformResult> results = PlatformAPI.search("cats");
-            assertTrue(awaitDone(), "Search must complete");
-            assertEquals(2, results.size(), "Hits beyond the per-platform limit must be dropped");
+            PlatformAPI.register(new StubPlatform(5, null)); // RETURNS 5 HITS WHATEVER IT IS ASKED; THE API KEEPS THE LIMIT
+            final List<PlatformResult> results = PlatformAPI.search("lions");
+            assertTrue(awaitDone("lions"), "Search must complete");
+            assertEquals(WaterMediaConfig.platforms.searchLimit, results.size(), "Hits beyond the per-platform limit must be dropped");
             assertThrows(UnsupportedOperationException.class, results::clear);
+        }
+
+        @Test
+        @DisplayName("The limit reaches the platform under the configured ceiling, keys the cache and rejects zero")
+        void testLimitAndCeiling() {
+            final StubPlatform stub = new StubPlatform(5, null);
+            PlatformAPI.register(stub);
+            final int ceiling = WaterMediaConfig.platforms.searchLimit;
+            assertThrows(IllegalArgumentException.class, () -> PlatformAPI.search("tigers", 0, false));
+
+            final List<PlatformResult> one = PlatformAPI.search("tigers", 1, false);
+            assertTrue(awaitDone("tigers"), "Search must complete");
+            assertEquals(1, stub.lastLimit, "The platform is asked for the limit");
+            assertEquals(1, one.size());
+
+            // THE SAME TEXT WITH ANOTHER LIMIT IS ANOTHER SEARCH, SO THE CACHED ONE IS NOT SERVED
+            final List<PlatformResult> more = PlatformAPI.search("tigers", ceiling + 10, false);
+            assertTrue(awaitDone("tigers"), "Search must complete");
+            assertEquals(2, stub.probes.get(), "A different limit must probe again");
+            assertEquals(ceiling, stub.lastLimit, "The configured ceiling caps what the platform is asked for");
+            assertEquals(ceiling, more.size());
+            assertSame(more, PlatformAPI.search("tigers", ceiling, false), "The ceiling and a limit above it are the same search");
+            assertEquals(2, stub.probes.get(), "A cache hit must not re-probe the platform");
         }
 
         @Test
@@ -113,14 +138,15 @@ public class PlatformSearchTest {
             final List<PlatformResult> first = PlatformAPI.search("dogs");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
             final List<PlatformResult> during = PlatformAPI.search("dogs");
-            assertTrue(PlatformAPI.searching(), "The query in flight stays in flight");
-            assertTrue(awaitDone(), "Search must complete");
+            assertTrue(PlatformAPI.searching("dogs"), "The query in flight stays in flight");
+            assertFalse(PlatformAPI.searching("cats"), "Only the query in flight is searching");
+            assertSame(first, during, "The query in flight is served its own list");
+            assertTrue(awaitDone("dogs"), "Search must complete");
             assertEquals(1, first.size());
-            assertEquals(first, during, "The query in flight is served its own list");
 
             final List<PlatformResult> again = PlatformAPI.search("dogs");
-            assertFalse(PlatformAPI.searching(), "A cache hit does not search");
-            assertEquals(first, again, "The cached results are the same list");
+            assertFalse(PlatformAPI.searching("dogs"), "A cache hit does not search");
+            assertSame(first, again, "The cached results are the same list");
             assertEquals(1, stub.probes.get(), "A cache hit must not re-probe the platform");
         }
 
@@ -130,12 +156,12 @@ public class PlatformSearchTest {
             final StubPlatform stub = new StubPlatform(1, null);
             PlatformAPI.register(stub);
             PlatformAPI.search("owls");
-            assertTrue(awaitDone(), "Search must complete");
+            assertTrue(awaitDone("owls"), "Search must complete");
             PlatformAPI.search("owls");
             assertEquals(1, stub.probes.get());
 
             final List<PlatformResult> fresh = PlatformAPI.search("owls", true);
-            assertTrue(awaitDone(), "The re-search must complete");
+            assertTrue(awaitDone("owls"), "The re-search must complete");
             assertEquals(2, stub.probes.get(), "A re-search asks the platform again");
             assertEquals(1, fresh.size());
         }
@@ -146,9 +172,9 @@ public class PlatformSearchTest {
             final StubPlatform stub = new StubPlatform(0, null);
             PlatformAPI.register(stub);
             PlatformAPI.search("nothing");
-            assertTrue(awaitDone(), "Search must complete");
+            assertTrue(awaitDone("nothing"), "Search must complete");
             PlatformAPI.search("nothing");
-            assertTrue(awaitDone(), "Search must complete");
+            assertTrue(awaitDone("nothing"), "Search must complete");
             assertEquals(2, stub.probes.get(), "A transient total failure must retry instead of serving stale nothing");
         }
 
@@ -160,11 +186,11 @@ public class PlatformSearchTest {
             final List<PlatformResult> first = PlatformAPI.search("race");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
             PlatformAPI.register(new StubPlatform(1, null));
-            assertTrue(awaitDone(), "Search must complete");
+            assertTrue(awaitDone("race"), "Search must complete");
             assertEquals(1, first.size(), "The running search keeps its snapshot of the registry");
 
             final List<PlatformResult> again = PlatformAPI.search("race");
-            assertTrue(awaitDone(), "Search must complete");
+            assertTrue(awaitDone("race"), "Search must complete");
             assertEquals(2, again.size(), "The query is probed again with the new handler instead of served from cache");
         }
 
@@ -174,11 +200,11 @@ public class PlatformSearchTest {
             final StubPlatform stub = new StubPlatform(1, null);
             PlatformAPI.register(stub);
             PlatformAPI.search("birds");
-            assertTrue(awaitDone(), "Search must complete");
+            assertTrue(awaitDone("birds"), "Search must complete");
 
             PlatformAPI.register(new StubPlatform(1, null));
             final List<PlatformResult> again = PlatformAPI.search("birds");
-            assertTrue(awaitDone(), "Search must complete");
+            assertTrue(awaitDone("birds"), "Search must complete");
             assertEquals(2, stub.probes.get(), "A new handler must force the query to be probed again");
             assertEquals(2, again.size(), "Both handlers answer the re-probed query");
         }
@@ -194,42 +220,58 @@ public class PlatformSearchTest {
             final StubPlatform stub = new StubPlatform(1, 2_000); // BLOCKS SO THE FIRST SEARCH STAYS IN-FLIGHT
             PlatformAPI.register(stub);
 
-            final List<PlatformResult> first = PlatformAPI.search("slow-a");
+            final List<PlatformResult> first = PlatformAPI.search("cats");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
-            assertTrue(PlatformAPI.searching());
-            final List<PlatformResult> second = PlatformAPI.search("slow-b"); // NEITHER EXTENDS THE OTHER: NO TYPING DELAY
+            assertTrue(PlatformAPI.searching("cats"));
+            final List<PlatformResult> second = PlatformAPI.search("dogs"); // NOTHING ALIKE: NO TYPING DELAY
+            assertFalse(PlatformAPI.searching("cats"), "The discarded search is no longer in flight");
             // THE CANCELLED PROBE UNWINDS ON ITS OWN THREAD; ONLY ONCE IT HAS RETURNED CAN ITS HITS BE RULED OUT
             assertTrue(PlayerWait.awaitCondition(() -> stub.finished.get() == 1, 3_000), "The cancelled probe must unwind");
             assertTrue(first.isEmpty(), "A discarded search never gains the hits of its cancelled probes");
-            assertTrue(awaitDone(), "The new search must complete");
+            assertTrue(awaitDone("dogs"), "The new search must complete");
             assertEquals(1, second.size());
             assertEquals(2, stub.probes.get(), "The new query was probed at once");
         }
 
         @Test
-        @DisplayName("Typing waits for the next keystroke before asking the platforms, and the extended query is re-asked later")
-        void testTypingDelay() {
-            final StubPlatform stub = new StubPlatform(1, null);
-            PlatformAPI.register(stub);
-            PlatformAPI.search("ca");
-            assertTrue(awaitDone(), "The first query probes at once");
-            assertEquals(1, stub.probes.get());
+        @DisplayName("A query one keystroke away waits for the next one before asking the platforms, and a discarded step is re-asked later")
+        void testTypingDelay() throws Exception {
+            // THE DELAY IS MEASURED AGAINST THE WALL CLOCK, SO A STALLED JVM GETS TWO MORE TRIES BEFORE THE CASE FAILS
+            AssertionError failure = null;
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                if (attempt > 1) {
+                    PlatformAPI.CUSTOM.clear();
+                    resetSearchState();
+                    ThreadTool.sleep(5_000);
+                }
+                try {
+                    final StubPlatform stub = new StubPlatform(1, null);
+                    PlatformAPI.register(stub);
+                    PlatformAPI.search("cats");
+                    assertTrue(awaitDone("cats"), "The first query probes at once");
+                    assertEquals(1, stub.probes.get());
 
-            final long started = System.nanoTime();
-            final List<PlatformResult> typed = PlatformAPI.search("cat");
-            assertTrue(PlatformAPI.searching(), "The delayed search counts as in flight");
-            assertFalse(PlayerWait.awaitCondition(() -> stub.probes.get() == 2, 120), "A typing continuation must wait before probing");
-            assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 2, 3_000), "The delayed probe must run");
-            assertTrue(System.nanoTime() - started >= 250_000_000L, "The probe ran before the typing delay elapsed");
-            assertTrue(awaitDone());
-            assertEquals(1, typed.size());
+                    final long started = System.nanoTime();
+                    final List<PlatformResult> typed = PlatformAPI.search("cars"); // ONE LETTER FIXED: THE SAME INTENTION
+                    assertTrue(PlatformAPI.searching("cars"), "The delayed search counts as in flight");
+                    assertFalse(PlayerWait.awaitCondition(() -> stub.probes.get() == 2, 120), "A typing continuation must wait before probing");
+                    assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 2, 3_000), "The delayed probe must run");
+                    assertTrue(System.nanoTime() - started >= 250_000_000L, "The probe ran before the typing delay elapsed");
+                    assertTrue(awaitDone("cars"));
+                    assertEquals(1, typed.size());
 
-            // A DISCARDED TYPING STEP LEAVES THE CACHE: ASKING FOR IT AGAIN PROBES AGAIN
-            PlatformAPI.search("cats");
-            final List<PlatformResult> deleted = PlatformAPI.search("cat");
-            assertTrue(awaitDone());
-            assertEquals(1, deleted.size());
-            assertEquals(2, stub.probes.get(), "The finished 'cat' search stays cached while 'cats' was discarded before probing");
+                    // A DISCARDED TYPING STEP LEAVES THE CACHE: ASKING FOR IT AGAIN PROBES AGAIN
+                    PlatformAPI.search("carts");
+                    final List<PlatformResult> deleted = PlatformAPI.search("cars");
+                    assertTrue(awaitDone("cars"));
+                    assertEquals(1, deleted.size());
+                    assertEquals(2, stub.probes.get(), "The finished 'cars' search stays cached while 'carts' was discarded before probing");
+                    return;
+                } catch (final AssertionError e) {
+                    failure = e;
+                }
+            }
+            throw failure;
         }
 
         @Test
@@ -238,23 +280,25 @@ public class PlatformSearchTest {
             final StubPlatform stub = new StubPlatform(1, 300); // BLOCKS BRIEFLY SO THE FIRST SEARCH IS STILL IN-FLIGHT
             PlatformAPI.register(stub);
 
-            final List<PlatformResult> first = PlatformAPI.search("slow-c");
+            final List<PlatformResult> first = PlatformAPI.search("wolves");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
             assertTrue(PlatformAPI.search("   ").isEmpty(), "The blank query is a no-op");
-            assertTrue(PlatformAPI.searching(), "A no-op must not discard the search in flight");
-            assertTrue(awaitDone(), "The in-flight search must complete");
+            assertTrue(PlatformAPI.searching("wolves"), "A no-op must not discard the search in flight");
+            assertTrue(awaitDone("wolves"), "The in-flight search must complete");
             assertEquals(1, first.size());
         }
     }
 
     // UTILITY
 
-    // EMITS `count` MARKER HITS PER SEARCH; A NON-NULL `blockMs` SLEEPS (INTERRUPTIBLY) TO STAY IN-FLIGHT
+    // EMITS `count` MARKER HITS PER SEARCH WHATEVER LIMIT IT IS ASKED, REMEMBERING THAT LIMIT; A NON-NULL `blockMs` SLEEPS
+    // (INTERRUPTIBLY) TO STAY IN-FLIGHT
     private static final class StubPlatform implements Platform {
         private final int count;
         private final Integer blockMs;
         private final AtomicInteger probes = new AtomicInteger();
         private final AtomicInteger finished = new AtomicInteger();
+        private volatile int lastLimit;
 
         StubPlatform(final int count, final Integer blockMs) {
             this.count = count;
@@ -267,6 +311,7 @@ public class PlatformSearchTest {
         @Override
         public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
             this.probes.incrementAndGet();
+            this.lastLimit = limit;
             try {
                 if (this.blockMs != null && !ThreadTool.sleep(this.blockMs)) throw new PlatformException("STUB", "interrupted");
                 final List<PlatformResult> out = new ArrayList<>(this.count);
@@ -280,8 +325,8 @@ public class PlatformSearchTest {
         }
     }
 
-    private static boolean awaitDone() {
-        return PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3_000);
+    private static boolean awaitDone(final String query) {
+        return PlayerWait.awaitCondition(() -> !PlatformAPI.searching(query), 3_000);
     }
 
     // DISCARDS THE SEARCH IN FLIGHT AND CLEARS HISTORY, THE RESULT CACHE AND THE CACHE-SWEEP CLOCK, SO EACH CASE STARTS CLEAN

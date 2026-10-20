@@ -327,7 +327,7 @@ public class OpenMultimediaScreen extends Screen {
 
         // STATUS CHIP: SEARCH PROGRESS IN SEARCH MODE, OTHERWISE THE PREVIEW MRL STATE
         if (search) {
-            final boolean done = this.search != null && !PlatformAPI.searching();
+            final boolean done = this.search != null && !PlatformAPI.searching(this.searchQuery);
             this.chip.set(done ? this.search.size() + " RESULTS" : "SEARCHING",
                     done ? AppTheme.CYAN : AppTheme.NEON);
         } else {
@@ -335,7 +335,7 @@ public class OpenMultimediaScreen extends Screen {
         }
 
         this.syncDropdown(search);
-        this.searchRenderedDone = this.search == null || !PlatformAPI.searching();
+        this.searchRenderedDone = this.search == null || !PlatformAPI.searching(this.searchQuery);
     }
 
     // FOLLOWS THE loading FLAG, WHICH ALSO FLIPS OUTSIDE INPUT EVENTS
@@ -597,7 +597,7 @@ public class OpenMultimediaScreen extends Screen {
             return;
         }
 
-        final boolean searching = this.search != null && PlatformAPI.searching();
+        final boolean searching = this.search != null && PlatformAPI.searching(this.searchQuery);
         final List<PlatformResult> results = this.search != null ? this.search : List.of();
         final List<String> history = PlatformAPI.searchHistory();
         if (this.rowsBuilt && this.search == this.rowsSearch && results.size() == this.rowsResults

@@ -121,15 +121,21 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
     // yt-dlp ENGINE — SHARED WITH YouTubePlatform
     // ====================================================================================================
 
+    /** Runs yt-dlp with the configured network timeout; shorthand for {@link #info(String, List, int)}. */
+    protected JsonObject info(final String url, final List<String> extraArgs) throws IOException {
+        return this.info(url, extraArgs, WaterMediaConfig.network.timeout);
+    }
+
     /**
      * Runs the yt-dlp binary and returns its parsed {@code --dump-single-json} output.
      *
      * @param url       the media URL (or a {@code ytsearchN:query} pseudo-URL)
      * @param extraArgs additional yt-dlp args (e.g. {@code --no-playlist}, {@code --extractor-args ...})
+     * @param timeoutMs the socket timeout of every request yt-dlp makes, rounded down to whole seconds
      * @throws IOException if the binary cannot be provisioned, times out, exits non-zero, or emits
      *                     unparseable JSON — the message carries yt-dlp's last stderr line
      */
-    protected JsonObject info(final String url, final List<String> extraArgs) throws IOException {
+    protected JsonObject info(final String url, final List<String> extraArgs, final int timeoutMs) throws IOException {
         final Path exe;
         try {
             exe = this.binary.executable();
@@ -144,9 +150,9 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         command.add("--ignore-config");          // HERMETIC: IGNORE THE USER'S yt-dlp.conf
         command.add("--cache-dir");
         command.add(WaterMedia.tmp().resolve(WaterMediaBinaries.YTDLP_ID).resolve("cache").toString());
-        // THE SAME network.timeout EVERY OTHER REQUEST USES, IN THE WHOLE SECONDS yt-dlp TAKES
+        // yt-dlp TAKES WHOLE SECONDS, SO THE TIMEOUT ROUNDS DOWN TO AT LEAST ONE
         command.add("--socket-timeout");
-        command.add(String.valueOf(Math.max(1, WaterMediaConfig.network.timeout / 1_000)));
+        command.add(String.valueOf(Math.max(1, timeoutMs / 1_000)));
         command.add("--retries");
         command.add(String.valueOf(RETRIES));
         if (extraArgs != null) command.addAll(extraArgs);

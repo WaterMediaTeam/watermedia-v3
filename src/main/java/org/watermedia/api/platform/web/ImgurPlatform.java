@@ -9,6 +9,7 @@ import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
+import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.JSONTool;
 
@@ -127,7 +128,9 @@ public final class ImgurPlatform implements Platform {
 
     @Override
     public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
-        final SearchResponse res = WebRequests.fetchJson(NAME, String.format(SEARCH_URL, URLEncoder.encode(query, StandardCharsets.UTF_8)), SearchResponse.class);
+        final NetRequest request = new NetRequest(String.format(SEARCH_URL, URLEncoder.encode(query, StandardCharsets.UTF_8)))
+                .accept(NetRequest.ACCEPT_JSON).connectTimeout(PlatformAPI.SEARCH_TIMEOUT_MS).readTimeout(PlatformAPI.SEARCH_TIMEOUT_MS);
+        final SearchResponse res = WebRequests.fetchJson(NAME, request, SearchResponse.class);
         if (!res.success() || res.data() == null) return List.of();
 
         final List<PlatformResult> out = new ArrayList<>(Math.min(res.data().length, limit));

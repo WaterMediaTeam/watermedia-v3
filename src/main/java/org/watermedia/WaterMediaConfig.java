@@ -197,6 +197,11 @@ public final class WaterMediaConfig {
         @NumberConditions(minFloat = 0f)
         public float searchCleanupInterval = 15.0f;
 
+        @Spec.Field
+        @Comment("Results each platform may contribute to a search; a search asking for more is capped here")
+        @NumberConditions(minInt = 1, maxInt = 50)
+        public int searchLimit = 2;
+
         @Spec.Field(control = Control.PASSWORD)
         @Comment("BiliBili session cookie for authenticated access")
         @Comment("Without it only 360p/480p are available, with a free account up to 1080p, VIP up to 8K")
