@@ -226,7 +226,7 @@ public final class WaterMediaConfig {
         public String serverBindAddress = "127.0.0.1";
 
         @Spec.Field
-        @Comment("Maximum simultaneous file-server requests; excess connections are closed")
+        @Comment("Maximum simultaneous file-server requests; further requests are refused as busy (HTTP 503)")
         @NumberConditions(minInt = 1, maxInt = 256)
         public int maxServerRequests = 8;
 

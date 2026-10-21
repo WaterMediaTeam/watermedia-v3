@@ -424,30 +424,64 @@ public class NetworkServerTest {
         void reservationsBoundConcurrentUploadsAndDisconnectReleasesThem() throws Exception {
             try (final Socket stalled = request("POST /upload HTTP/1.1\r\nHost: localhost\r\n"
                     + "X-WaterMedia-Token: " + TOKEN + "\r\nX-WaterMedia-Filename: partial.bin\r\nContent-Length: 700000\r\n\r\nx")) {
-                assertTrue(PlayerWait.awaitCondition(this::hasTemporary, 500));
+                assertTrue(PlayerWait.awaitCondition(() -> this.temporaries() > 0, 500));
                 try (final Socket rejected = request("POST /upload HTTP/1.1\r\nHost: localhost\r\n"
                         + "X-WaterMedia-Token: " + TOKEN + "\r\nX-WaterMedia-Filename: other.bin\r\nContent-Length: 700000\r\n\r\n")) {
                     assertTrue(new BufferedReader(new InputStreamReader(rejected.getInputStream(), StandardCharsets.US_ASCII)).readLine().contains("507"));
                 }
             }
-            assertTrue(PlayerWait.awaitCondition(() -> !this.hasTemporary(), 3_000));
+            assertTrue(PlayerWait.awaitCondition(() -> this.temporaries() == 0, 3_000));
             assertEquals(200, upload(TOKEN, "data.bin", new byte[700_000]).getResponseCode());
         }
 
         @Test
-        @DisplayName("The deadline closes slow headers and admission has no queue")
-        void deadlineClosesSlowHeadersAndAdmissionHasNoQueue() throws Exception {
+        @DisplayName("Requests past the slots are refused with 503 until a request finishes")
+        void requestsPastTheSlotsAreRefusedUntilOneFinishes() throws Exception {
+            // TWO UPLOADS THAT NEVER SEND THEIR BODY HOLD BOTH SLOTS INSIDE THE HANDLER
+            final String stalled = "POST /upload HTTP/1.1\r\nHost: localhost\r\nX-WaterMedia-Token: " + TOKEN
+                    + "\r\nX-WaterMedia-Filename: slot.bin\r\nContent-Length: 10\r\n\r\n";
+            try (final Socket first = request(stalled); final Socket second = request(stalled)) {
+                assertTrue(PlayerWait.awaitCondition(() -> this.temporaries() == 2, 500));
+                assertEquals(503, open("/", "GET").getResponseCode());
+            }
+            // THE CLOSED UPLOADS END THEIR HANDLERS, WHICH GIVES BOTH SLOTS BACK
+            assertTrue(PlayerWait.awaitCondition(() -> {
+                try { return open("/", "GET").getResponseCode() == 200; }
+                catch (final IOException refused) { return false; }
+            }, 3_000));
+        }
+
+        @Test
+        @DisplayName("Slow headers hold a worker but no slot, and the deadline closes them")
+        void slowHeadersHoldNoSlotAndTheDeadlineClosesThem() throws Exception {
             try (final Socket first = request("GET / HTTP/1.1\r\nHost: localhost");
                  final Socket second = request("GET / HTTP/1.1\r\nHost: localhost")) {
                 final ThreadPoolExecutor executor = this.executor();
                 assertTrue(PlayerWait.awaitCondition(() -> executor.getActiveCount() == 2, 500));
+                // A REQUEST STILL WAITING FOR ITS HEADERS NEVER REACHED ADMISSION: A COMPLETE ONE IS SERVED ON A SPARE WORKER
+                assertEquals(200, open("/", "GET").getResponseCode());
+                assertEquals(0, executor.getQueue().size());
+                this.assertDropped(first);
+                this.assertDropped(second);
+            }
+        }
+
+        @Test
+        @DisplayName("Workers are capped at three per slot: a connection past them is dropped and admission has no queue")
+        void workersAreCappedAtThreePerSlot() throws Exception {
+            final Socket[] stalled = new Socket[6];
+            try {
+                for (int i = 0; i < stalled.length; i++) stalled[i] = request("GET / HTTP/1.1\r\nHost: localhost");
+                final ThreadPoolExecutor executor = this.executor();
+                assertEquals(6, executor.getMaximumPoolSize());
+                assertTrue(PlayerWait.awaitCondition(() -> executor.getActiveCount() == 6, 500));
                 try (final Socket rejected = request("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")) {
                     this.assertDropped(rejected);
                 }
                 assertEquals(0, executor.getQueue().size());
-                assertTrue(executor.getLargestPoolSize() <= 2);
-                this.assertDropped(first);
-                this.assertDropped(second);
+                for (final Socket socket: stalled) this.assertDropped(socket);
+            } finally {
+                for (final Socket socket: stalled) if (socket != null) socket.close();
             }
             assertTrue(PlayerWait.awaitCondition(() -> {
                 try { return open("/", "GET").getResponseCode() == 200; }
@@ -478,14 +512,14 @@ public class NetworkServerTest {
             final String upload = "POST /upload HTTP/1.1\r\nHost: localhost\r\nX-WaterMedia-Token: " + TOKEN
                     + "\r\nX-WaterMedia-Filename: partial.bin\r\nContent-Length: 1000\r\n\r\nx";
             try (final Socket stalled = request(upload)) {
-                assertTrue(PlayerWait.awaitCondition(this::hasTemporary, 500));
-                assertTrue(PlayerWait.awaitCondition(() -> !this.hasTemporary(), 3_000));
+                assertTrue(PlayerWait.awaitCondition(() -> this.temporaries() > 0, 500));
+                assertTrue(PlayerWait.awaitCondition(() -> this.temporaries() == 0, 3_000));
             }
             final int port = port();
             try (final Socket stalled = request(upload)) {
-                assertTrue(PlayerWait.awaitCondition(this::hasTemporary, 500));
+                assertTrue(PlayerWait.awaitCondition(() -> this.temporaries() > 0, 500));
                 NetworkServer.stop();
-                assertFalse(this.hasTemporary());
+                assertEquals(0, this.temporaries());
                 assertNull(NetworkServer.address());
             }
             NetworkServer.stop();
@@ -531,9 +565,9 @@ public class NetworkServerTest {
             assertEquals(200, open("/", "GET").getResponseCode());
         }
 
-        private boolean hasTemporary() {
+        private long temporaries() {
             try (final var paths = Files.list(NetworkServerTest.this.directory.resolve("watermedia/files"))) {
-                return paths.anyMatch(path -> path.getFileName().toString().startsWith(".upload-"));
+                return paths.filter(path -> path.getFileName().toString().startsWith(".upload-")).count();
             } catch (final IOException e) { throw new IllegalStateException(e); }
         }
 

@@ -150,7 +150,7 @@ public final class NetworkAPI {
                 if (!id.matches("[A-Za-z0-9]{8}")) throw new IOException("Server returned an invalid upload identifier");
                 status.complete(id);
             } else {
-                status.fail("Server returned HTTP " + code);
+                status.fail(code == HttpURLConnection.HTTP_UNAVAILABLE ? "The server is busy, try again in a moment" : "Server returned HTTP " + code);
             }
         } catch (final ConnectException | UnknownHostException | SocketTimeoutException unreachable) {
             if (status.cancelled) return;

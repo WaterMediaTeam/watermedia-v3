@@ -120,22 +120,42 @@ public final class NetworkServer {
             ThreadPoolExecutor executor = null;
             ScheduledThreadPoolExecutor deadlines = null;
             try {
-                executor = new ThreadPoolExecutor(config.maxServerRequests, config.maxServerRequests,
-                        0, TimeUnit.MILLISECONDS, new SynchronousQueue<>(), ThreadTool.factory("NetworkServer", Thread.NORM_PRIORITY));
+                // A WORKER STAYS BUSY A MOMENT PAST ITS RESPONSE AND THE EOF OF A DROPPED KEEP-ALIVE CONNECTION IS AN EXCHANGE OF ITS OWN:
+                // THREE WORKERS PER SLOT KEEP THAT BOOKKEEPING FROM REFUSING THE NEXT REQUEST, THE FILTER BELOW COUNTS THE SLOTS THEMSELVES
+                executor = new ThreadPoolExecutor(config.maxServerRequests, 3 * config.maxServerRequests,
+                        10, TimeUnit.SECONDS, new SynchronousQueue<>(), ThreadTool.factory("NetworkServer", Thread.NORM_PRIORITY));
                 deadlines = new ScheduledThreadPoolExecutor(1,
                         ThreadTool.factory("NetworkServer-Deadline", Thread.NORM_PRIORITY));
                 deadlines.setRemoveOnCancelPolicy(true);
                 final Running state = new Running(server, executor, deadlines, storage, storageChannel, token.getBytes(StandardCharsets.UTF_8),
-                        config.maxUploadSize * 1024L * 1024L, config.maxStorageSize * 1024L * 1024L, used, config.serverTimeout);
-                // RFC 9112: THE SERVER CLOSES AFTER A REQUEST CARRYING Connection: close AND SHOULD SAY SO, OR A CLIENT THAT
-                // KEEPS SOCKETS (FFMPEG'S HTTP) REUSES THE DEAD ONE AND READS NOTHING
-                final Filter announceClose = Filter.beforeHandler("Announces Connection: close", exchange -> {
-                    // THE SAME TEST THE JDK SERVER USES TO DECIDE THE CLOSE
-                    if ("close".equalsIgnoreCase(exchange.getRequestHeaders().getFirst("Connection")))
-                        exchange.getResponseHeaders().set("Connection", "close");
-                });
-                server.createContext("/upload", exchange -> handleUpload(exchange, state)).getFilters().add(announceClose);
-                server.createContext("/", exchange -> handleRoot(exchange, state)).getFilters().add(announceClose);
+                        config.maxUploadSize * 1024L * 1024L, config.maxStorageSize * 1024L * 1024L, used, config.serverTimeout, config.maxServerRequests);
+                final Filter admission = new Filter() {
+                    @Override
+                    public void doFilter(final HttpExchange exchange, final Chain chain) throws IOException {
+                        // RFC 9112: THE SERVER CLOSES AFTER A REQUEST CARRYING Connection: close AND SHOULD SAY SO, OR A CLIENT THAT
+                        // KEEPS SOCKETS (FFMPEG'S HTTP) REUSES THE DEAD ONE AND READS NOTHING; THE SAME TEST THE JDK SERVER USES
+                        if ("close".equalsIgnoreCase(exchange.getRequestHeaders().getFirst("Connection")))
+                            exchange.getResponseHeaders().set("Connection", "close");
+                        final boolean admitted;
+                        synchronized (state) {
+                            admitted = state.active < state.slots;
+                            if (admitted) state.active++;
+                        }
+                        if (!admitted) {
+                            if (!state.busyWarned) LOGGER.warn(IT, "Refused a request from {} with all {} slots busy", exchange.getRemoteAddress(), state.slots);
+                            state.busyWarned = true;
+                            try (exchange) { exchange.sendResponseHeaders(HttpURLConnection.HTTP_UNAVAILABLE, -1); }
+                            return;
+                        }
+                        try { chain.doFilter(exchange); }
+                        finally { synchronized (state) { state.active--; } }
+                    }
+
+                    @Override
+                    public String description() { return "Bounds the simultaneous requests to the configured slots"; }
+                };
+                server.createContext("/upload", exchange -> handleUpload(exchange, state)).getFilters().add(admission);
+                server.createContext("/", exchange -> handleRoot(exchange, state)).getFilters().add(admission);
                 // REJECTED WORK CLOSES ITS CONNECTION IN HTTPSERVER'S DISPATCHER; NO REQUEST QUEUE GROWS.
                 server.setExecutor(command -> state.executor.execute(() -> {
                     final Watchdog watchdog = new Watchdog(Thread.currentThread(), state.deadlines, TimeUnit.MILLISECONDS.toNanos(state.timeout));
@@ -443,16 +463,19 @@ public final class NetworkServer {
         private final long maxUpload;
         private final long maxStorage;
         private final int timeout;
+        private final int slots;
         private long used;
         private long reserved;
+        private int active; // REQUESTS PAST ADMISSION, GUARDED BY THIS MONITOR LIKE THE STORAGE COUNTERS
         private volatile boolean stopping;
-        // ANOMALY LATCHES: AN UNAUTHORIZED UPLOAD AND A FULL STORAGE ARE LOGGED ONCE PER SERVER
+        // ANOMALY LATCHES: AN UNAUTHORIZED UPLOAD, A FULL STORAGE AND BUSY SLOTS ARE LOGGED ONCE PER SERVER
         private volatile boolean rejectWarned;
         private volatile boolean fullWarned;
+        private volatile boolean busyWarned;
 
         private Running(final HttpServer server, final ThreadPoolExecutor executor, final ScheduledThreadPoolExecutor deadlines,
                         final Path storage, final FileChannel storageChannel, final byte[] token,
-                        final long maxUpload, final long maxStorage, final long used, final int timeout) {
+                        final long maxUpload, final long maxStorage, final long used, final int timeout, final int slots) {
             this.server = server;
             this.executor = executor;
             this.deadlines = deadlines;
@@ -463,6 +486,7 @@ public final class NetworkServer {
             this.maxStorage = maxStorage;
             this.used = used;
             this.timeout = timeout;
+            this.slots = slots;
         }
     }
 
