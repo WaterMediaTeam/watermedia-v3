@@ -24,6 +24,7 @@ import java.util.jar.Manifest;
 public final class IOTool {
     public static final int BUFFER_SIZE = 1024 * 64; // 64 KB
     private static final int MAX_PREALLOCATED_BYTES = 4 * 1024 * 1024; // FIRST BUFFER readLimited SIZES FROM A DECLARED LENGTH
+    private static final String SHADERS = "assets/watermedia/shaders/"; // THE BUNDLED GLSL, INCLUDES RESOLVE AGAINST IT
     private IOTool() {}
 
     public static String platformClassifier() {
@@ -205,20 +206,33 @@ public final class IOTool {
 
     /** Reads a bundled UTF-8 resource; a missing one throws {@link FileNotFoundException}. */
     public static String jarRead(final String path) throws IOException {
-        try (final InputStream in = jarOpenFile(path, IOTool.class.getClassLoader())) {
+        try (final InputStream in = jarOpenFile(path)) {
             if (in == null) throw new FileNotFoundException("Bundled resource not found: " + path);
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
 
-    public static InputStream jarOpenFile(final String name) {
-        return jarOpenFile(name, IOTool.class.getClassLoader());
+    /** Reads a bundled shader by its path under the shaders folder, splicing each {@code #include "file"} line with that file of the same folder. */
+    public static String shader(final String name) throws IOException {
+        final StringBuilder source = new StringBuilder();
+        for (final String line: jarRead(SHADERS + name).lines().toList()) {
+            final String directive = line.strip();
+            if (!directive.startsWith("#include")) {
+                source.append(line).append('\n');
+                continue;
+            }
+            final int open = directive.indexOf('"');
+            final int close = directive.lastIndexOf('"');
+            if (open < 0 || close <= open) throw new IOException("Malformed include in shader " + name + ": " + directive);
+            source.append(shader(directive.substring(open + 1, close)));
+        }
+        return source.toString();
     }
 
-    public static InputStream jarOpenFile(final String source, final ClassLoader classLoader) {
-        var is = classLoader.getResourceAsStream(source);
-        if (is == null && source.startsWith("/")) is = classLoader.getResourceAsStream(source.substring(1));
-        return is;
+    /** Opens a bundled resource by its path inside the jar, or null when there is none. */
+    public static InputStream jarOpenFile(final String name) {
+        // A CLASS LOOKUP REACHES THE MODULE'S OWN PACKAGES ON A MODULE-AWARE LOADER (FORGE), WHERE THE CLASS LOADER'S DOES NOT
+        return IOTool.class.getResourceAsStream(name.startsWith("/") ? name : "/" + name);
     }
 
 }

@@ -21,7 +21,9 @@ import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.bootstrap.app.render.TextureHandle;
+import org.watermedia.tools.IOTool;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -33,75 +35,6 @@ import static org.lwjgl.glfw.GLFW.*;
 /** OpenGL 3.2 core render backend of the app UI. */
 public final class OpenGLRenderBackend implements RenderBackend {
     private static final Marker IT = MarkerManager.getMarker(OpenGLRenderBackend.class.getSimpleName());
-
-    private static final String VERT_SRC = """
-            #version 150 core
-            in vec2 position;
-            in vec2 texCoord;
-            in vec4 vertColor;
-            uniform mat4 projection;
-            out vec2 vTexCoord;
-            out vec4 vColor;
-            void main() {
-                vTexCoord = texCoord;
-                vColor = vertColor;
-                gl_Position = projection * vec4(position, 0.0, 1.0);
-            }
-            """;
-
-    private static final String FRAG_SRC = """
-            #version 150 core
-            in vec2 vTexCoord;
-            in vec4 vColor;
-            uniform sampler2D tex;
-            uniform float useTexture;
-            out vec4 fragColor;
-            void main() {
-                // 2 SAMPLES A CACHED LAYER, WHOSE COLOR IS PREMULTIPLIED: DIVIDING IT BACK LETS THE NORMAL BLEND APPLY ALPHA ONCE
-                if (useTexture > 1.5) {
-                    vec4 layer = texture(tex, vTexCoord);
-                    fragColor = layer.a > 0.0 ? vec4(layer.rgb / layer.a, layer.a) : vec4(0.0);
-                } else {
-                    fragColor = useTexture > 0.5 ? texture(tex, vTexCoord) * vColor : vColor;
-                }
-            }
-            """;
-
-    // SDF SOFT RECT: ONE QUAD WHOSE ALPHA IS SOLID INSIDE AND FADES OVER uSoftness OUTSIDE THE EDGE, FOR GLOWS
-    // AND SHADOWS; READS ONLY position
-    private static final String VERT_SDF = """
-            #version 150 core
-            in vec2 position;
-            uniform mat4 projection;
-            out vec2 vPos;
-            void main() {
-                vPos = position;
-                gl_Position = projection * vec4(position, 0.0, 1.0);
-            }
-            """;
-
-    private static final String FRAG_SDF = """
-            #version 150 core
-            in vec2 vPos;
-            uniform vec2 uCenter;
-            uniform vec2 uHalf;
-            uniform float uRadius;
-            uniform float uSoftness;
-            uniform vec4 uColor;
-            out vec4 fragColor;
-            float sdRoundBox(vec2 p, vec2 b, float r) {
-                vec2 q = abs(p) - b + vec2(r);
-                return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r;
-            }
-            void main() {
-                float d = sdRoundBox(vPos - uCenter, uHalf, uRadius);
-                // A HIGH POWER CONCENTRATES THE INTENSITY NEAR THE EDGE WITH A FAINT TAIL, UNLIKE THE FLAT
-                // RAMP OF A smoothstep
-                float t = clamp(d / uSoftness, 0.0, 1.0);
-                float falloff = pow(1.0 - t, 2.2);
-                fragColor = vec4(uColor.rgb, uColor.a * falloff);
-            }
-            """;
 
     private static final int FLOATS_PER_VERTEX = 8;
     // MATCHES RenderEngine.MAX_VERTICES — THE ENGINE VALIDATES DRAWS AGAINST THE SAME CAP; KEEP THEM IN SYNC.
@@ -258,8 +191,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         if (this.initialized) return;
         this.attachContext();
 
-        final int vertexShader = compileShader(GL20.GL_VERTEX_SHADER, VERT_SRC);
-        final int fragmentShader = compileShader(GL20.GL_FRAGMENT_SHADER, FRAG_SRC);
+        final int vertexShader = compileShader(GL20.GL_VERTEX_SHADER, "opengl/ui.vert");
+        final int fragmentShader = compileShader(GL20.GL_FRAGMENT_SHADER, "opengl/ui.frag");
 
         this.program = GL20.glCreateProgram();
         GL20.glAttachShader(this.program, vertexShader);
@@ -285,8 +218,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL20.glUseProgram(0);
 
         // SDF SOFT-RECT PROGRAM — GLOW / SHADOW IN ONE PASS (SHARES THE VAO; READS ONLY THE position ATTRIB)
-        final int sdfVertex = compileShader(GL20.GL_VERTEX_SHADER, VERT_SDF);
-        final int sdfFragment = compileShader(GL20.GL_FRAGMENT_SHADER, FRAG_SDF);
+        final int sdfVertex = compileShader(GL20.GL_VERTEX_SHADER, "opengl/sdf.vert");
+        final int sdfFragment = compileShader(GL20.GL_FRAGMENT_SHADER, "opengl/sdf.frag");
         this.sdfProgram = GL20.glCreateProgram();
         GL20.glAttachShader(this.sdfProgram, sdfVertex);
         GL20.glAttachShader(this.sdfProgram, sdfFragment);
@@ -640,14 +573,18 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.scissorOn = false;
     }
 
-    private static int compileShader(final int type, final String source) {
+    // COMPILES ONE STAGE FROM THE BUNDLED SHADERS; THE UI CANNOT DRAW WITHOUT THEM, SO ANY FAILURE ABORTS THE BACKEND
+    private static int compileShader(final int type, final String name) {
+        final String source;
+        try { source = IOTool.shader(name); }
+        catch (final IOException e) { throw new IllegalStateException("OpenGL renderer shader unavailable: " + name, e); }
         final int shader = GL20.glCreateShader(type);
         GL20.glShaderSource(shader, source);
         GL20.glCompileShader(shader);
         if (GL20.glGetShaderi(shader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
             final String log = GL20.glGetShaderInfoLog(shader, 2048);
             GL20.glDeleteShader(shader);
-            throw new IllegalStateException("OpenGL renderer shader failed: " + log);
+            throw new IllegalStateException("OpenGL renderer shader " + name + " failed: " + log);
         }
         return shader;
     }

@@ -6,7 +6,9 @@ import org.lwjgl.opengl.*;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.IOTool;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -68,90 +70,10 @@ public final class GLEngine extends GFXEngine {
     private static final int RING_SLOTS = 4; // PERSISTENT RING DEPTH (1 WRITING + 1 PENDING + GPU IN-FLIGHT)
     private static final int[] EMPTY_TEXTURES = new int[0];
 
-    // GLSL 150 CORE (OPENGL 3.2+, REQUIRED BY MINECRAFT 1.17+)
-    private static final String VERTEX_SHADER = """
-            #version 150 core
-            in vec2 position;
-            in vec2 uv;
-            out vec2 texCoord;
-            void main() {
-                texCoord = uv;
-                gl_Position = vec4(position, 0.0, 1.0);
-            }
-            """;
-
-    // ONE HEADER FOR EVERY FRAGMENT SHADER, SO ONE BIND PATH SERVES ALL: UNREAD UNIFORMS RESOLVE TO -1, WHICH glUniform* IGNORES.
-    // THE COLOR MATH IS Colorimetry.GLSL, SHARED WITH VKEngine; CHROMA SAMPLES AT texCoord * colorimetry[2].xy + .zw (SITING)
-    private static final String FRAGMENT_HEADER = """
-            #version 150 core
-            in vec2 texCoord;
-            out vec4 fragColor;
-            uniform sampler2D plane0;
-            uniform sampler2D plane1;
-            uniform sampler2D plane2;
-            uniform sampler2D plane3;
-            uniform float bitScale;
-            uniform float uvSwap;
-            uniform float outputWidth;
-            uniform vec4 colorimetry[4];
-            """ + Colorimetry.GLSL;
-
-    // GRAY → RGB — SINGLE LUMA PLANE TO GRAYSCALE RGBA
-    private static final String FRAGMENT_GRAY = FRAGMENT_HEADER + """
-            void main() {
-                float luma = texture(plane0, texCoord).r * bitScale * colorimetry[0].x - colorimetry[0].y;
-                fragColor = vec4(display(vec3(luma), colorimetry[3]), 1.0);
-            }
-            """;
-
-    // NV12/NV21/P010/P016 → RGB
-    // plane0: GL_R8/R16 — FULL RESOLUTION — .r = Y
-    // plane1: GL_RG8/RG16 — HALF RES — .r = first byte, .g = second byte
-    // uvSwap: 0.0 = NV12 (BYTE ORDER U,V), 1.0 = NV21 (BYTE ORDER V,U)
-    private static final String FRAGMENT_NV = FRAGMENT_HEADER + """
-            void main() {
-                vec2 raw = texture(plane1, texCoord * colorimetry[2].xy + colorimetry[2].zw).rg * bitScale;
-                vec3 rgb = ycbcr(texture(plane0, texCoord).r * bitScale, mix(raw.x, raw.y, uvSwap), mix(raw.y, raw.x, uvSwap),
-                        colorimetry[0], colorimetry[1]);
-                fragColor = vec4(display(rgb, colorimetry[3]), 1.0);
-            }
-            """;
-
-    // YUV 3-PLANAR → RGB
-    private static final String FRAGMENT_YUV3 = FRAGMENT_HEADER + """
-            void main() {
-                vec2 chroma = texCoord * colorimetry[2].xy + colorimetry[2].zw;
-                vec3 rgb = ycbcr(texture(plane0, texCoord).r * bitScale, texture(plane1, chroma).r * bitScale,
-                        texture(plane2, chroma).r * bitScale, colorimetry[0], colorimetry[1]);
-                fragColor = vec4(display(rgb, colorimetry[3]), 1.0);
-            }
-            """;
-
-    // YUVA 4-PLANAR → RGBA (WITH ALPHA, ALWAYS FULL RANGE AT FULL RESOLUTION)
-    private static final String FRAGMENT_YUVA = FRAGMENT_HEADER + """
-            void main() {
-                vec2 chroma = texCoord * colorimetry[2].xy + colorimetry[2].zw;
-                vec3 rgb = ycbcr(texture(plane0, texCoord).r * bitScale, texture(plane1, chroma).r * bitScale,
-                        texture(plane2, chroma).r * bitScale, colorimetry[0], colorimetry[1]);
-                fragColor = vec4(display(rgb, colorimetry[3]), texture(plane3, texCoord).r * bitScale);
-            }
-            """;
-
-    // YUYV/UYVY PACKED YUV422 → RGB. THE RGBA8 TEXTURE HOLDS ONE PIXEL PAIR PER TEXEL, ceil(WIDTH/2) WIDE; EACH PIXEL
-    // FETCHES ITS PAIR BY INDEX, SINCE NORMALIZED SAMPLING DRIFTS TO THE NEXT PAIR ON ODD WIDTHS
-    private static final String FRAGMENT_YUYV = FRAGMENT_HEADER + """
-            void main() {
-                int px = int(texCoord.x * outputWidth);
-                vec4 pair = texelFetch(plane0, ivec2(px >> 1, int(texCoord.y * float(textureSize(plane0, 0).y))), 0);
-                float isOdd = float(px & 1);
-                float Y0 = mix(pair.r, pair.g, uvSwap);
-                float Cb = mix(pair.g, pair.r, uvSwap);
-                float Y1 = mix(pair.b, pair.a, uvSwap);
-                float Cr = mix(pair.a, pair.b, uvSwap);
-                vec3 rgb = ycbcr(mix(Y0, Y1, isOdd), Cb, Cr, colorimetry[0], colorimetry[1]);
-                fragColor = vec4(display(rgb, colorimetry[3]), 1.0);
-            }
-            """;
+    // THE CONVERSION PASS, BUNDLED UNDER assets/watermedia/shaders: ONE FULLSCREEN VERTEX SHADER AND ONE FRAGMENT PER
+    // CONV KIND, ALL SHARING colorimetry.glsl WITH VKEngine
+    private static final String VERTEX_SHADER = "opengl/convert.vert";
+    private static final String[] FRAGMENTS = { "opengl/gray.frag", "opengl/nv.frag", "opengl/yuv3.frag", "opengl/yuva.frag", "opengl/yuyv.frag" };
 
     // CONVERSION KINDS — INDEX INTO FRAGMENTS/programs/uniforms; CONV_NONE = DIRECT UPLOAD
     private static final int CONV_NONE = -1;
@@ -160,8 +82,8 @@ public final class GLEngine extends GFXEngine {
     private static final int CONV_YUV3 = 2;
     private static final int CONV_YUVA = 3;
     private static final int CONV_YUYV = 4;
-    private static final String[] FRAGMENTS = { FRAGMENT_GRAY, FRAGMENT_NV, FRAGMENT_YUV3, FRAGMENT_YUVA, FRAGMENT_YUYV };
-    // UNIFORM SLOTS PER PROGRAM: [plane0..plane3, bitScale, uvSwap, outputWidth, colorimetry]
+    // ONE UNIFORM SCHEME FOR EVERY PROGRAM, SO ONE BIND PATH SERVES ALL: A NAME A FRAGMENT DOES NOT DECLARE RESOLVES TO
+    // -1, WHICH glUniform* IGNORES. SLOTS: [plane0..plane3, bitScale, uvSwap, outputWidth, colorimetry]
     private static final String[] UNIFORMS = { "plane0", "plane1", "plane2", "plane3", "bitScale", "uvSwap", "outputWidth", "colorimetry" };
 
     // ONE DRAIN HUB PER RENDER THREAD (ONE BATCHED TASK/FRAME IN ONE ENVELOPE); ORPHANS, KEYED
@@ -1056,9 +978,18 @@ public final class GLEngine extends GFXEngine {
         return tex;
     }
 
-    private static int compileShader(final String fragSrc) {
+    // LINKS THE CONVERSION PROGRAM OF ONE FRAGMENT; 0 WHEN A FILE OR A STAGE FAILS, SO THE KIT DECLINES THAT KIND
+    private static int compileShader(final String fragment) {
+        final String vertSrc, fragSrc;
+        try {
+            vertSrc = IOTool.shader(VERTEX_SHADER);
+            fragSrc = IOTool.shader(fragment);
+        } catch (final IOException e) {
+            LOGGER.error(IT, "Cannot read the conversion shader {}", fragment, e);
+            return 0;
+        }
         final int vert = GL20.glCreateShader(GL20.GL_VERTEX_SHADER);
-        GL20.glShaderSource(vert, VERTEX_SHADER);
+        GL20.glShaderSource(vert, vertSrc);
         GL20.glCompileShader(vert);
         if (GL20.glGetShaderi(vert, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
             LOGGER.error(IT, "Failed to compile vertex shader: {}", GL20.glGetShaderInfoLog(vert, 1024));

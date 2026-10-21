@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 
 import static org.junit.jupiter.api.Assumptions.abort;
@@ -184,6 +185,24 @@ public class IOToolTest {
             assertFalse(IOTool.web(URI.create("jar:file:///x.zip!/y")));
             assertFalse(IOTool.web(URI.create("relative")));
             assertFalse(IOTool.web(null));
+        }
+
+        @Test
+        @DisplayName("shader splices the colorimetry include into every conversion shader and reports a missing file")
+        void shaderIncludes() throws IOException {
+            for (final String name: List.of("opengl/gray.frag", "opengl/nv.frag", "opengl/yuv3.frag", "opengl/yuva.frag", "opengl/yuyv.frag", "vulkan/convert.comp")) {
+                final String source = IOTool.shader(name);
+                assertTrue(source.startsWith("#version "), name + " must open with its version directive");
+                assertTrue(source.contains("vec3 ycbcr(float y, float cb, float cr, vec4 range, vec4 m)") && source.contains("vec3 display(vec3 rgb, vec4 d)"),
+                        name + " must carry the colorimetry functions");
+                assertFalse(source.contains("#include"), name + " must leave no include behind");
+            }
+            // A SHADER WITHOUT INCLUDES COMES BACK LINE FOR LINE
+            assertEquals(IOTool.jarRead("assets/watermedia/shaders/vulkan/ycbcr.comp").lines().toList(), IOTool.shader("vulkan/ycbcr.comp").lines().toList());
+            for (final String api: List.of("opengl", "vulkan"))
+                for (final String stage: List.of("ui.vert", "ui.frag", "sdf.vert", "sdf.frag"))
+                    assertTrue(IOTool.shader(api + "/" + stage).startsWith("#version "), api + "/" + stage + " must be bundled");
+            assertThrows(FileNotFoundException.class, () -> IOTool.shader("opengl/missing.frag"));
         }
 
         @Test

@@ -34,10 +34,10 @@ public final class MediaCatalog {
 
     /** Reads the bundled groups and channels; without DEBUG logging the debug-only links are left out. */
     public void load() {
-        try { this.uriGroups = JSONTool.parse(IOTool.jarRead("uris.json"), URIGroup[].class); }
+        try { this.uriGroups = JSONTool.parse(IOTool.jarRead("assets/watermedia/catalog/uris.json"), URIGroup[].class); }
         catch (final IOException e) { throw new IllegalStateException("Cannot read the bundled uris.json", e); }
         try {
-            final IptvCatalog catalog = JSONTool.parse(IOTool.jarRead("iptv.json"), IptvCatalog.class);
+            final IptvCatalog catalog = JSONTool.parse(IOTool.jarRead("assets/watermedia/catalog/iptv.json"), IptvCatalog.class);
             this.iptvChannels = catalog == null || catalog.channels() == null ? new IptvChannel[0] : catalog.channels();
         } catch (final IOException | RuntimeException e) {
             this.iptvChannels = new IptvChannel[0];

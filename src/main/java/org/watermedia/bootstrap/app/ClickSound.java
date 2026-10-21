@@ -48,7 +48,7 @@ public final class ClickSound {
     }
 
     private void load() {
-        try (final InputStream in = IOTool.jarOpenFile("assets/duck.ogg")) {
+        try (final InputStream in = IOTool.jarOpenFile("assets/watermedia/sounds/duck.ogg")) {
             final byte[] soundBytes = in.readAllBytes();
 
             final ByteBuffer oggBuffer = MemoryUtil.memAlloc(soundBytes.length);

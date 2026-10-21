@@ -321,7 +321,7 @@ public final class AppBootstrap {
             final JLabel banner = new JLabel("WATERMeDIA", SwingConstants.CENTER);
             banner.setForeground(AppTheme.NEON);
             banner.setFont(banner.getFont().deriveFont(Font.BOLD, 28f));
-            for (final String resource: List.of("icon.png", "banner.png")) {
+            for (final String resource: List.of("icon.png", "assets/watermedia/textures/banner.png")) {
                 try (final InputStream input = IOTool.jarOpenFile(resource)) {
                     final Image image = input == null ? null : ImageIO.read(input);
                     if (image == null) continue;

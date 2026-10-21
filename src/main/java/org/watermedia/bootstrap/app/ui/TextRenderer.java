@@ -2,6 +2,7 @@ package org.watermedia.bootstrap.app.ui;
 
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.tools.IOTool;
 
 import java.awt.Color;
 import java.awt.Font;
@@ -47,8 +48,8 @@ public final class TextRenderer {
     }
 
     private static Font loadBundledFont(final int style) {
-        final String resource = style == Font.BOLD ? "assets/jetbrainsmono-bld.ttf" : "assets/jetbrainsmono-reg.ttf";
-        try (final InputStream in = TextRenderer.class.getClassLoader().getResourceAsStream(resource)) {
+        final String resource = style == Font.BOLD ? "assets/watermedia/font/jetbrainsmono-bld.ttf" : "assets/watermedia/font/jetbrainsmono-reg.ttf";
+        try (final InputStream in = IOTool.jarOpenFile(resource)) {
             if (in != null) {
                 return Font.createFont(Font.TRUETYPE_FONT, in).deriveFont(Font.PLAIN, 1f);
             }

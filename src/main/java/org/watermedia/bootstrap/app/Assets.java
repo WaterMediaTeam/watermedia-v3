@@ -106,7 +106,7 @@ public final class Assets {
         int frameHeight = 0;
 
         for (int i = 0; ; i++) {
-            final String resource = String.format("assets/duck/%02d.png", i);
+            final String resource = String.format("assets/watermedia/textures/duck/%02d.png", i);
             final InputStream stream = IOTool.jarOpenFile(resource);
             if (stream == null) break;
 
@@ -132,7 +132,7 @@ public final class Assets {
     }
 
     private void loadBanner() {
-        try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
+        try (final InputStream in = IOTool.jarOpenFile("assets/watermedia/textures/banner.png")) {
             // ImageIO.read(null) THROWS, SO A MISSING RESOURCE RETURNS FIRST
             if (in == null) return;
             final BufferedImage img = ImageIO.read(in);

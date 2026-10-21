@@ -13,10 +13,12 @@ import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.GFXEngine;
 import org.watermedia.api.media.VKContext;
 import org.watermedia.api.util.MathUtil;
+import org.watermedia.tools.IOTool;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -60,73 +62,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // + float softness (@100); vec4 BEFORE vec2 KEEPS THEM std430-ALIGNED
     private static final int PUSH_SDF_BYTES = 104;
     private static final long BLOCK = 0xFFFFFFFFFFFFFFFFL;   // UINT64_MAX: BLOCKING WAIT/ACQUIRE
-
-    private static final String VERT_GLSL = """
-            #version 450
-            layout(location = 0) in vec2 pos;
-            layout(location = 1) in vec2 uv;
-            layout(location = 2) in vec4 col;
-            layout(push_constant) uniform PC { mat4 proj; int useTexture; } pc;
-            layout(location = 0) out vec2 vUV;
-            layout(location = 1) out vec4 vCol;
-            void main() {
-                vUV = uv;
-                vCol = col;
-                gl_Position = pc.proj * vec4(pos, 0.0, 1.0);
-            }
-            """;
-
-    private static final String FRAG_GLSL = """
-            #version 450
-            layout(location = 0) in vec2 vUV;
-            layout(location = 1) in vec4 vCol;
-            layout(set = 0, binding = 0) uniform sampler2D samp;
-            layout(push_constant) uniform PC { mat4 proj; int useTexture; } pc;
-            layout(location = 0) out vec4 fragColor;
-            void main() {
-                // 2 SAMPLES A CACHED LAYER, WHOSE COLOR IS PREMULTIPLIED: DIVIDING IT BACK LETS THE NORMAL BLEND APPLY ALPHA ONCE
-                if (pc.useTexture == 2) {
-                    vec4 layer = texture(samp, vUV);
-                    fragColor = layer.a > 0.0 ? vec4(layer.rgb / layer.a, layer.a) : vec4(0.0);
-                } else {
-                    fragColor = pc.useTexture != 0 ? texture(samp, vUV) * vCol : vCol;
-                }
-            }
-            """;
-
-    // SDF SOFT-RECT SHADERS — MATCH THE OpenGL SDF PATH: SOLID INSIDE, POWER FALLOFF OVER softness OUTSIDE.
-    // PUSH CONSTANT STRUCT ORDER MATCHES PUSH_SDF_BYTES (proj, color, center, halfExt, radius, softness).
-    private static final String VERT_SDF_GLSL = """
-            #version 450
-            layout(location = 0) in vec2 pos;
-            layout(push_constant) uniform PC {
-                mat4 proj; vec4 color; vec2 center; vec2 halfExt; float radius; float softness;
-            } pc;
-            layout(location = 0) out vec2 vPos;
-            void main() {
-                vPos = pos;
-                gl_Position = pc.proj * vec4(pos, 0.0, 1.0);
-            }
-            """;
-
-    private static final String FRAG_SDF_GLSL = """
-            #version 450
-            layout(location = 0) in vec2 vPos;
-            layout(push_constant) uniform PC {
-                mat4 proj; vec4 color; vec2 center; vec2 halfExt; float radius; float softness;
-            } pc;
-            layout(location = 0) out vec4 fragColor;
-            float sdRoundBox(vec2 p, vec2 b, float r) {
-                vec2 q = abs(p) - b + vec2(r);
-                return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r;
-            }
-            void main() {
-                float d = sdRoundBox(vPos - pc.center, pc.halfExt, pc.radius);
-                float t = clamp(d / pc.softness, 0.0, 1.0);
-                float falloff = pow(1.0 - t, 2.2);
-                fragColor = vec4(pc.color.rgb, pc.color.a * falloff);
-            }
-            """;
 
     // CONTEXT (CREATED IN THE CONSTRUCTOR; SHARED WITH THE VKEngine)
     private final long window;
@@ -578,10 +513,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void createPipelines() {
-        final long vert = this.compileShaderModule(VERT_GLSL, shaderc_glsl_vertex_shader, "ui.vert");
-        final long frag = this.compileShaderModule(FRAG_GLSL, shaderc_glsl_fragment_shader, "ui.frag");
-        final long sdfVert = this.compileShaderModule(VERT_SDF_GLSL, shaderc_glsl_vertex_shader, "sdf.vert");
-        final long sdfFrag = this.compileShaderModule(FRAG_SDF_GLSL, shaderc_glsl_fragment_shader, "sdf.frag");
+        final long vert = this.compileShaderModule("vulkan/ui.vert", shaderc_glsl_vertex_shader);
+        final long frag = this.compileShaderModule("vulkan/ui.frag", shaderc_glsl_fragment_shader);
+        final long sdfVert = this.compileShaderModule("vulkan/sdf.vert", shaderc_glsl_vertex_shader);
+        final long sdfFrag = this.compileShaderModule("vulkan/sdf.frag", shaderc_glsl_fragment_shader);
         try {
             // NO TRIANGLE_FAN PIPELINE: FAN TOPOLOGY IS NOT PORTABLE (MoltenVK/PORTABILITY-SUBSET
             // DEVICES REJECT IT), SO draw() EXPANDS FANS INTO THE TRIANGLE LIST INSTEAD.
@@ -1546,8 +1481,11 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         return -1;
     }
 
-    // COMPILES GLSL -> SPIR-V AT RUNTIME (shaderc) AND CREATES A SHADER MODULE.
-    private long compileShaderModule(final String glsl, final int kind, final String name) {
+    // COMPILES A BUNDLED SHADER TO SPIR-V AT RUNTIME (shaderc) AND CREATES ITS MODULE
+    private long compileShaderModule(final String name, final int kind) {
+        final String glsl;
+        try { glsl = IOTool.shader(name); }
+        catch (final IOException e) { throw new IllegalStateException("VulkanRenderBackend: cannot read the shader " + name, e); }
         final long compiler = shaderc_compiler_initialize();
         if (compiler == 0L) throw new IllegalStateException("VulkanRenderBackend: shaderc_compiler_initialize failed");
         long result = 0L;

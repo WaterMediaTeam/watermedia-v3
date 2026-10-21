@@ -6,7 +6,9 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.IOTool;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import java.util.ArrayList;
@@ -89,7 +91,7 @@ public final class VKEngine extends GFXEngine {
     // RECREATED DEVICE MAY REUSE THE ADDRESS OF ONE WHOSE KIT A WEDGED ENGINE STILL HOLDS
     private static final Map<VkDevice, Kit> KITS = new IdentityHashMap<>();
 
-    // COMPUTE CONVERSION MODES (MUST MATCH THE GLSL BELOW)
+    // COMPUTE CONVERSION MODES (MUST MATCH THE MODE_* CONSTANTS OF vulkan/convert.comp)
     private static final int MODE_GRAY = 0;
     private static final int MODE_NV12 = 1;
     private static final int MODE_NV21 = 2;
@@ -98,85 +100,10 @@ public final class VKEngine extends GFXEngine {
     private static final int MODE_YUYV = 5; // PACKED [Y0,U,Y1,V]
     private static final int MODE_UYVY = 6; // PACKED [U,Y0,V,Y1]
 
-    // ONE COMPUTE SHADER FOR EVERY NON-PASSTHROUGH FORMAT, MIRRORING GLEngine's FRAGMENT SHADERS THROUGH Colorimetry.GLSL.
-    // PLANES SAMPLE NORMALIZED (CHROMA AT colorimetry[2]'S SITED COORDS); PACKED YUV USES texelFetch TO KEEP PAIRS APART
-    private static final String COMPUTE_GLSL = """
-            #version 450
-            layout(local_size_x = 8, local_size_y = 8) in;
-            layout(binding = 0) uniform sampler2D plane0;
-            layout(binding = 1) uniform sampler2D plane1;
-            layout(binding = 2) uniform sampler2D plane2;
-            layout(binding = 3) uniform sampler2D plane3;
-            layout(binding = 4, rgba8) uniform writeonly image2D outImg;
-            layout(push_constant) uniform PC {
-                int mode;
-                float bitScale;
-                int width;
-                int height;
-                vec4 colorimetry[4];
-            } pc;
-
-            const int MODE_GRAY = 0;
-            const int MODE_NV12 = 1;
-            const int MODE_NV21 = 2;
-            const int MODE_YUV3 = 3;
-            const int MODE_YUVA = 4;
-            const int MODE_YUYV = 5;
-            const int MODE_UYVY = 6;
-
-            """ + Colorimetry.GLSL + """
-
-            void main() {
-                ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
-                if (gid.x >= pc.width || gid.y >= pc.height) return;
-                vec2 uv = (vec2(gid) + 0.5) / vec2(float(pc.width), float(pc.height));
-                vec2 chroma = uv * pc.colorimetry[2].xy + pc.colorimetry[2].zw;
-                float bs = pc.bitScale;
-                float alpha = 1.0;
-                vec3 rgb;
-                // NO DERIVATIVES IN COMPUTE, SO IMPLICIT-LOD texture() IS ILLEGAL; ON SINGLE-MIP PLANES textureLod(..., 0.0)
-                // GIVES THE SAME BILINEAR RESULT AS THE FRAGMENT-STAGE texture() CALLS IN GLEngine
-                if (pc.mode == MODE_GRAY) {
-                    rgb = vec3(textureLod(plane0, uv, 0.0).r * bs * pc.colorimetry[0].x - pc.colorimetry[0].y);
-                } else if (pc.mode == MODE_NV12 || pc.mode == MODE_NV21) {
-                    vec2 raw = textureLod(plane1, chroma, 0.0).rg * bs;
-                    if (pc.mode == MODE_NV21) raw = raw.yx;
-                    rgb = ycbcr(textureLod(plane0, uv, 0.0).r * bs, raw.x, raw.y, pc.colorimetry[0], pc.colorimetry[1]);
-                } else if (pc.mode == MODE_YUV3 || pc.mode == MODE_YUVA) {
-                    rgb = ycbcr(textureLod(plane0, uv, 0.0).r * bs, textureLod(plane1, chroma, 0.0).r * bs,
-                            textureLod(plane2, chroma, 0.0).r * bs, pc.colorimetry[0], pc.colorimetry[1]);
-                    if (pc.mode == MODE_YUVA) alpha = textureLod(plane3, uv, 0.0).r * bs;
-                } else {
-                    // PACKED YUV422 (8-BIT ONLY): ONE RGBA TEXEL COVERS A PIXEL PAIR, REORDERED TO [Y0, Cb, Y1, Cr]
-                    vec4 p = texelFetch(plane0, ivec2(gid.x >> 1, gid.y), 0);
-                    if (pc.mode == MODE_UYVY) p = p.grab;
-                    rgb = ycbcr((gid.x & 1) == 0 ? p.r : p.b, p.g, p.a, pc.colorimetry[0], pc.colorimetry[1]);
-                }
-                imageStore(outImg, gid, vec4(display(rgb, pc.colorimetry[3]), alpha));
-            }
-            """;
-
-    // TRIVIAL SHADER FOR THE SAMPLER-YCBCR PATH: THE IMMUTABLE YCBCR SAMPLER DOES THE ACTUAL
-    // YUV->RGB CONVERSION IN HARDWARE, SO THIS PASS JUST SAMPLES ONCE PER PIXEL AND STORES TO THE
-    // MANAGED RGBA IMAGE. textureLod (EXPLICIT LOD) IS THE ONLY LEGAL FETCH THROUGH A YCBCR
-    // SAMPLER — texelFetch (OpImageFetch) IS FORBIDDEN BY THE SPEC FOR CONVERSION-ENABLED SAMPLERS.
-    private static final String YCBCR_GLSL = """
-            #version 450
-            layout(local_size_x = 8, local_size_y = 8) in;
-            layout(binding = 0) uniform sampler2D srcYuv;
-            layout(binding = 1, rgba8) uniform writeonly image2D outImg;
-            layout(push_constant) uniform PC {
-                int width;
-                int height;
-            } pc;
-
-            void main() {
-                ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
-                if (gid.x >= pc.width || gid.y >= pc.height) return;
-                vec2 uv = (vec2(gid) + 0.5) / vec2(float(pc.width), float(pc.height));
-                imageStore(outImg, gid, textureLod(srcYuv, uv, 0.0));
-            }
-            """;
+    // THE COMPUTE SHADERS BUNDLED UNDER assets/watermedia/shaders: ONE CONVERSION FOR EVERY NON-PASSTHROUGH FORMAT, MIRRORING
+    // GLEngine'S FRAGMENTS THROUGH colorimetry.glsl, AND THE SINGLE-SAMPLE PASS BEHIND THE HARDWARE YCBCR SAMPLER
+    private static final String CONVERT_SHADER = "vulkan/convert.comp";
+    private static final String YCBCR_SHADER = "vulkan/ycbcr.comp";
 
     // CONTEXT (BORROWED — NEVER DESTROYED)
     private final VKContext ctx;
@@ -1137,13 +1064,14 @@ public final class VKEngine extends GFXEngine {
         if (this.ycbcr != null) { this.kit.release(this.ycbcr); this.ycbcr = null; }
     }
 
-    // COMPILES GLSL TO SPIR-V VIA shaderc. RUNS ONCE PER PROCESS PER SHADER — CALLERS CACHE THE
+    // COMPILES A BUNDLED SHADER TO SPIR-V VIA shaderc. RUNS ONCE PER PROCESS PER SHADER — CALLERS CACHE THE
     // (DEVICE-INDEPENDENT) BYTECODE IN convertSpirv/ycbcrSpirv UNDER THE CLASS MONITOR, SO CREATING MANY
     // ENGINES NEVER RECOMPILES; shaderc COMPILATION IS THE EXPENSIVE STEP.
-    private static byte[] compileSpirv(final String glsl, final String name) {
+    private static byte[] compileSpirv(final String name) {
         long compiler = 0L;
         long result = 0L;
         try {
+            final String glsl = IOTool.shader(name);
             compiler = shaderc_compiler_initialize();
             if (compiler == 0L) throw new IllegalStateException("VKEngine: shaderc_compiler_initialize failed");
             result = shaderc_compile_into_spv(compiler, glsl, shaderc_compute_shader, name, "main", 0L);
@@ -1156,8 +1084,11 @@ public final class VKEngine extends GFXEngine {
             final byte[] bytes = new byte[spv.remaining()];
             spv.duplicate().get(bytes);
             return bytes;
+        } catch (final IOException e) {
+            // A MISSING FILE, A MISSING shaderc OR A BROKEN SHADER NEVER RECOVERS: DECLINE CONVERSION LAYOUTS FOR THE REST OF THE PROCESS
+            convertBroken = true;
+            throw new IllegalStateException("VKEngine: cannot read the shader " + name, e);
         } catch (final RuntimeException | LinkageError e) {
-            // A MISSING shaderc OR A BROKEN SHADER NEVER RECOVERS: DECLINE CONVERSION LAYOUTS FOR THE REST OF THE PROCESS
             convertBroken = true;
             throw e;
         } finally {
@@ -1280,7 +1211,7 @@ public final class VKEngine extends GFXEngine {
             if (built != 0L) return built;
             if (convertSpirv == null) {
                 synchronized (VKEngine.class) {
-                    if (convertSpirv == null) convertSpirv = compileSpirv(COMPUTE_GLSL, "convert.comp");
+                    if (convertSpirv == null) convertSpirv = compileSpirv(CONVERT_SHADER);
                 }
             }
             final long fresh = this.compute(convertSpirv, this.pipeLayout);
@@ -1384,7 +1315,7 @@ public final class VKEngine extends GFXEngine {
 
                 if (ycbcrSpirv == null) {
                     synchronized (VKEngine.class) {
-                        if (ycbcrSpirv == null) ycbcrSpirv = compileSpirv(YCBCR_GLSL, "ycbcr.comp");
+                        if (ycbcrSpirv == null) ycbcrSpirv = compileSpirv(YCBCR_SHADER);
                     }
                 }
                 y.pipeline = this.compute(ycbcrSpirv, y.pipeLayout);
