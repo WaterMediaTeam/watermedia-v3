@@ -120,9 +120,9 @@ public final class NetworkServer {
             ThreadPoolExecutor executor = null;
             ScheduledThreadPoolExecutor deadlines = null;
             try {
-                // A WORKER STAYS BUSY A MOMENT PAST ITS RESPONSE AND THE EOF OF A DROPPED KEEP-ALIVE CONNECTION IS AN EXCHANGE OF ITS OWN:
-                // THREE WORKERS PER SLOT KEEP THAT BOOKKEEPING FROM REFUSING THE NEXT REQUEST, THE FILTER BELOW COUNTS THE SLOTS THEMSELVES
-                executor = new ThreadPoolExecutor(config.maxServerRequests, 3 * config.maxServerRequests,
+                // THREADS GROW ON DEMAND AND THE EXCHANGE CAP BELOW BOUNDS THEM: A CAPPED POOL ALSO REFUSES WORK WHILE ITS
+                // WORKERS STILL WIND DOWN THEIR LAST TASK, AND THE JDK DISPATCHER THEN DROPS THE CONNECTION WITHOUT A STATUS
+                executor = new ThreadPoolExecutor(config.maxServerRequests, Integer.MAX_VALUE,
                         10, TimeUnit.SECONDS, new SynchronousQueue<>(), ThreadTool.factory("NetworkServer", Thread.NORM_PRIORITY));
                 deadlines = new ScheduledThreadPoolExecutor(1,
                         ThreadTool.factory("NetworkServer-Deadline", Thread.NORM_PRIORITY));
@@ -156,18 +156,26 @@ public final class NetworkServer {
                 };
                 server.createContext("/upload", exchange -> handleUpload(exchange, state)).getFilters().add(admission);
                 server.createContext("/", exchange -> handleRoot(exchange, state)).getFilters().add(admission);
-                // REJECTED WORK CLOSES ITS CONNECTION IN HTTPSERVER'S DISPATCHER; NO REQUEST QUEUE GROWS.
-                server.setExecutor(command -> state.executor.execute(() -> {
-                    final Watchdog watchdog = new Watchdog(Thread.currentThread(), state.deadlines, TimeUnit.MILLISECONDS.toNanos(state.timeout));
-                    WATCHDOG.set(watchdog);
-                    try {
-                        watchdog.arm();
-                        command.run();
-                    } finally {
-                        watchdog.finish();
-                        WATCHDOG.remove();
+                // THE DISPATCHER HANDS OVER EVERY EXCHANGE, ALSO SLOW HEADERS AND THE EOF OF A DROPPED KEEP-ALIVE CONNECTION: THREE PER
+                // SLOT LEAVE ROOM FOR THEM. PAST THE CAP THE DISPATCHER CLOSES THE CONNECTION, SO NO REQUEST QUEUE GROWS
+                server.setExecutor(command -> {
+                    synchronized (state) {
+                        if (state.exchanges >= 3 * state.slots) throw new RejectedExecutionException("All file server exchanges are busy");
+                        state.exchanges++;
                     }
-                }));
+                    state.executor.execute(() -> {
+                        final Watchdog watchdog = new Watchdog(Thread.currentThread(), state.deadlines, TimeUnit.MILLISECONDS.toNanos(state.timeout));
+                        WATCHDOG.set(watchdog);
+                        try {
+                            watchdog.arm();
+                            command.run();
+                        } finally {
+                            synchronized (state) { state.exchanges--; }
+                            watchdog.finish();
+                            WATCHDOG.remove();
+                        }
+                    });
+                });
                 server.start();
                 running = state;
                 retained = true;
@@ -467,6 +475,7 @@ public final class NetworkServer {
         private long used;
         private long reserved;
         private int active; // REQUESTS PAST ADMISSION, GUARDED BY THIS MONITOR LIKE THE STORAGE COUNTERS
+        private int exchanges; // EXCHANGES RUNNING ON A WORKER, HEADER READS INCLUDED, GUARDED LIKE active
         private volatile boolean stopping;
         // ANOMALY LATCHES: AN UNAUTHORIZED UPLOAD, A FULL STORAGE AND BUSY SLOTS ARE LOGGED ONCE PER SERVER
         private volatile boolean rejectWarned;

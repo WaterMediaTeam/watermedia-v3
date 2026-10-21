@@ -467,13 +467,12 @@ public class NetworkServerTest {
         }
 
         @Test
-        @DisplayName("Workers are capped at three per slot: a connection past them is dropped and admission has no queue")
-        void workersAreCappedAtThreePerSlot() throws Exception {
+        @DisplayName("Exchanges are capped at three per slot: a connection past them is dropped and admission has no queue")
+        void exchangesAreCappedAtThreePerSlot() throws Exception {
             final Socket[] stalled = new Socket[6];
             try {
                 for (int i = 0; i < stalled.length; i++) stalled[i] = request("GET / HTTP/1.1\r\nHost: localhost");
                 final ThreadPoolExecutor executor = this.executor();
-                assertEquals(6, executor.getMaximumPoolSize());
                 assertTrue(PlayerWait.awaitCondition(() -> executor.getActiveCount() == 6, 500));
                 try (final Socket rejected = request("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")) {
                     this.assertDropped(rejected);
@@ -487,6 +486,28 @@ public class NetworkServerTest {
                 try { return open("/", "GET").getResponseCode() == 200; }
                 catch (final IOException rejected) { return false; }
             }, 3_000));
+        }
+
+        @Test
+        @DisplayName("Workers busy outside any exchange never refuse the next request")
+        void busyWorkersOutsideAnExchangeNeverRefuseTheNextRequest() throws Exception {
+            // TASKS SUBMITTED STRAIGHT TO THE POOL STAND IN FOR WORKERS STILL WINDING DOWN THEIR LAST RESPONSE
+            final ThreadPoolExecutor executor = this.executor();
+            final CountDownLatch entered = new CountDownLatch(6);
+            final CountDownLatch release = new CountDownLatch(1);
+            try {
+                for (int i = 0; i < 6; i++) {
+                    executor.execute(() -> {
+                        entered.countDown();
+                        try { release.await(); }
+                        catch (final InterruptedException ignored) {}
+                    });
+                }
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                assertEquals(200, open("/", "GET").getResponseCode());
+            } finally {
+                release.countDown();
+            }
         }
 
         @Test
