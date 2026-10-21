@@ -116,7 +116,9 @@ public final class NetworkServer {
                     if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) used = Math.addExact(used, Files.size(file));
                 }
             }
-            final HttpServer server = HttpServer.create(new InetSocketAddress(bind, port), config.maxServerRequests);
+            // 0 KEEPS THE JDK BACKLOG OF 50: IT ONLY HOLDS CONNECTIONS NOT ACCEPTED YET, AND A FULL ONE MAKES LINUX
+            // DROP THE HANDSHAKE AND RETRY IT A SECOND LATER; THE SLOTS AND THE EXCHANGE CAP BOUND THE WORK
+            final HttpServer server = HttpServer.create(new InetSocketAddress(bind, port), 0);
             ThreadPoolExecutor executor = null;
             ScheduledThreadPoolExecutor deadlines = null;
             try {
