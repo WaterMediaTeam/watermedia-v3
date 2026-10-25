@@ -135,7 +135,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // HW
     private volatile AVBufferRef hwDeviceCtx;
     private int hwPixelFormat = AV_PIX_FMT_NONE;
-    // THE DECODER WRITES AV_PIX_FMT_VULKAN FRAMES ON THE ENGINE'S OWN DEVICE: NOTHING IS TRANSFERRED, THE ENGINE SAMPLES THEM
+    // THE DECODER WRITES AV_PIX_FMT_VULKAN FRAMES ON THE ENGINE'S DEVICE OR ITS TWIN: NOTHING COMES DOWN TO RAM, THE ENGINE SAMPLES THEM
     private boolean vulkanFrames;
     // THE POOL OF THE LAST DECODED FRAME AND ITS SOFTWARE LAYOUT (CONSUME THREAD ONLY), MAPPED ONCE PER POOL
     private long cachedFramesCtx;
@@ -1027,8 +1027,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                         }
 
                         // scale/LOD MAY REQUIRE A DOWNSCALE BEFORE UPLOAD; THE TARGET IS RESOLVED PER FRAME, SO HOT LOD
-                        // CHANGES APPLY WITHOUT TOUCHING THE DECODE PIPELINE OR THE CLOCK. A FRAME DECODED ON THE ENGINE'S
-                        // VULKAN DEVICE CARRIES THE LAYOUT OF ITS POOL AND IS SAMPLED IN PLACE, SCALED BY THE ENGINE
+                        // CHANGES APPLY WITHOUT TOUCHING THE DECODE PIPELINE OR THE CLOCK. A FRAME DECODED FOR THE VULKAN
+                        // ENGINE CARRIES THE LAYOUT OF ITS POOL AND IS SAMPLED ON THE GPU, SCALED BY THE ENGINE
                         final boolean decoded = slot.format == AV_PIX_FMT_VULKAN;
                         AVFrame uploadFrame = slot.frame;
                         int layout = slot.format;
@@ -1048,9 +1048,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
                         // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
                         if (mapping != null && !this.gfx.supports(mapping.format(), mapping.bits())) mapping = null;
-                        // A POOL LAYOUT THE ENGINE CANNOT SAMPLE COMES DOWN TO RAM, COLOR TAGS INCLUDED, AND FOLLOWS THE SOFTWARE PATH
+                        // A POOL LAYOUT THE ENGINE CANNOT SAMPLE, OR A TWIN'S POOL ITS DEVICE CANNOT IMPORT, COMES DOWN TO RAM, COLOR TAGS
+                        // INCLUDED, AND FOLLOWS THE SOFTWARE PATH
                         boolean sampled = decoded;
-                        if (decoded && mapping == null) {
+                        if (decoded && (mapping == null || this.gfx instanceof final VKEngine vk && !vk.samples(slot.frame))) {
                             if (this.downloadedFrame == null) this.downloadedFrame = avutil.av_frame_alloc();
                             if (av_hwframe_transfer_data(this.downloadedFrame, slot.frame, 0) < 0) {
                                 if (!this.decodedWarned) LOGGER.error(IT, "Frames decoded on the GPU in {} can neither be sampled nor downloaded; frames are dropped",
@@ -2706,8 +2707,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private boolean initHwDecoder(final AVCodec decoder, final AVStream videoStream) {
-        // THE ENGINE'S OWN VULKAN DEVICE FIRST: FRAMES DECODED THERE ARE SAMPLED IN PLACE, EVERY OTHER ACCELERATOR DOWNLOADS THEM TO
-        // RAM. ONLY 4:2:0 STREAMS OF A CODEC THE DEVICE DECODES QUALIFY, WHOSE VULKAN POOLS (NV12, P010) THE ENGINE SAMPLES
+        // THE ENGINE'S VULKAN DEVICE (OR ITS TWIN) FIRST: ITS FRAMES ARE SAMPLED ON THE GPU, EVERY OTHER ACCELERATOR DOWNLOADS THEM TO
+        // RAM. ONLY 4:2:0 STREAMS OF A CODEC THE GPU DECODES QUALIFY, WHOSE VULKAN POOLS (NV12, P010) THE ENGINE SAMPLES
         final int streamFormat = videoStream.codecpar().format();
         if (this.gfx instanceof final VKEngine vk && (streamFormat == AV_PIX_FMT_YUV420P || streamFormat == AV_PIX_FMT_YUVJ420P || streamFormat == AV_PIX_FMT_YUV420P10LE)) {
             final AVCodecHWConfig config = hwConfig(decoder, AV_HWDEVICE_TYPE_VULKAN);

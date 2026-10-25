@@ -115,15 +115,26 @@ Optional device features the engine uses when you enable them at device creation
 - ``samplerYcbcrConversion`` (Vulkan 1.1) — YUV→RGB conversion in sampler hardware for NV12 and
   planar YUV; otherwise a compute pass does the exact same BT.709 math.
 - **Vulkan Video decoding** — override ``deviceInfo()`` with the feature chain, extension lists and
-  queue counts you created the device with, and the player decodes H.264, H.265 and AV1 on that very
-  device: the engine samples the decoded images in place, nothing passes through RAM. It needs a 1.3
-  instance and device with ``timelineSemaphore`` and ``synchronization2``, ``VK_KHR_video_queue``,
-  ``VK_KHR_video_decode_queue`` and the ``VK_KHR_video_decode_*`` codec extensions, plus queues FFmpeg
-  can own: a compute-capable and a transfer-capable queue other than ``queue()`` and a video decode
-  queue, with ``queue()`` the last queue created in its family. FFmpeg submits to those queues from its
-  own threads, so never call ``vkDeviceWaitIdle`` while players exist: wait on your own queue. Only
-  4:2:0 streams decode this way (their NV12 and P010 pools are what the engine samples).
-  Without ``deviceInfo()`` the engine keeps the host-import path above.
+  queue counts you created the device with, and the player decodes H.264, H.265 and AV1 on the GPU
+  with nothing passing through RAM. It needs a 1.3 instance and device with ``timelineSemaphore`` and
+  ``synchronization2``, ``VK_KHR_video_queue``, ``VK_KHR_video_decode_queue`` and the
+  ``VK_KHR_video_decode_*`` codec extensions. Only 4:2:0 streams decode this way (their NV12 and P010
+  pools are what the engine samples), and without ``deviceInfo()`` the engine keeps the host-import
+  path above. FFmpeg decodes in one of two places:
+  - **Your device**, when you also create queues FFmpeg can own: a compute-capable and a
+    transfer-capable queue other than ``queue()`` and a video decode queue, with ``queue()`` the last
+    queue created in its family. The engine samples the decoded images in place. FFmpeg submits to
+    those queues from its own threads, so never call ``vkDeviceWaitIdle`` while players exist: wait on
+    your own queue.
+  - **A twin**, when you create no extra queues but enable ``VK_KHR_external_memory_win32`` and
+    ``VK_KHR_external_semaphore_win32`` on Windows, or ``VK_KHR_external_memory_fd`` and
+    ``VK_KHR_external_semaphore_fd`` elsewhere. The engine creates a second device on the same GPU with
+    your feature chain and extensions, FFmpeg decodes there and the engine imports every decoded image
+    into your device; your queues stay yours. If an image cannot be imported (natives built without
+    FFmpeg's export fix, for instance), its frames come down to RAM instead and playback goes on.
+
+  Either way, release every player before you destroy the device or its instance: FFmpeg keeps using
+  them (and the twin lives on your instance) until its last decoder is gone.
 
 ```java
 public VKContext.DeviceInfo deviceInfo() {

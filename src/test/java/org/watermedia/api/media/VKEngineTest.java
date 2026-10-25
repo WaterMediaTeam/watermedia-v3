@@ -2,7 +2,9 @@ package org.watermedia.api.media;
 
 import org.bytedeco.ffmpeg.avutil.AVBufferRef;
 import org.bytedeco.ffmpeg.avutil.AVFrame;
+import org.bytedeco.ffmpeg.avutil.AVHWDeviceContext;
 import org.bytedeco.ffmpeg.avutil.AVHWFramesContext;
+import org.bytedeco.ffmpeg.avutil.AVVulkanDeviceContext;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -15,6 +17,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.Platform;
 import org.lwjgl.vulkan.*;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.Fixtures;
@@ -45,6 +48,7 @@ import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_ctx_init;
 import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_get_buffer;
 import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_transfer_data;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -59,6 +63,10 @@ import static org.lwjgl.system.MemoryUtil.memCopy;
 import static org.lwjgl.util.shaderc.Shaderc.*;
 import static org.lwjgl.vulkan.EXTDebugUtils.*;
 import static org.lwjgl.vulkan.EXTExternalMemoryHost.*;
+import static org.lwjgl.vulkan.KHRExternalMemoryFd.VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRExternalMemoryWin32.VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRExternalSemaphoreFd.VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRExternalSemaphoreWin32.VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME;
 import static org.lwjgl.vulkan.KHRPortabilityEnumeration.*;
 import static org.lwjgl.vulkan.KHRPortabilitySubset.*;
 import static org.lwjgl.vulkan.KHRVideoDecodeAV1.VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME;
@@ -78,15 +86,20 @@ import static org.watermedia.test.support.YuvFrames.assertUniform;
  * (YCbCr sampler, host import) and once forced onto the compute shader and staging copies: odd-sized planar and
  * packed frames, BT.601 and BT.709 matrices, full and limited range, chroma siting, PQ mapping and ragged strides,
  * each read back through the RGBA view {@link VKEngine#texture()} publishes, the device objects engines share
- * until the last one is released, and the frames FFmpeg decodes on the device itself when it can decode video
- * (a 1.3 device with the video extensions). Validation-layer errors fail the test when the Khronos layer is
- * installed. Skipped without a Vulkan loader or a 1.1 device.
+ * until the last one is released, and the frames FFmpeg decodes when the GPU can decode video (a 1.3 device
+ * with the video extensions): on the device itself, or on a twin of a second device that lends FFmpeg no
+ * queues. Validation-layer errors fail the test when the Khronos layer is installed. Skipped without a Vulkan
+ * loader or a 1.1 device.
  */
 @DisplayName("VKEngine")
 public class VKEngineTest {
     private static final long FRAME_TIMEOUT_NS = 5_000_000_000L;
     private static final int READBACK_PUSH_BYTES = 8;
     private static final String VALIDATION_LAYER = "VK_LAYER_KHRONOS_validation";
+    // THE PLATFORM'S OPAQUE-HANDLE MEMORY AND SEMAPHORE EXTENSIONS, WHICH A DEVICE LENDING FFMPEG NO QUEUES ENABLES TO DECODE ON A TWIN
+    private static final List<String> EXTERNAL = Platform.get() == Platform.WINDOWS
+            ? List.of(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME, VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME)
+            : List.of(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
     // STANDARD LUMA WEIGHTS, WRITTEN OUT SO A WRONG MATRIX CONSTANT CANNOT HIDE BEHIND THE SAME CONSTANT HERE
     private static final double KR_601 = 0.299, KB_601 = 0.114, KR_709 = 0.2126, KB_709 = 0.0722;
     private static final Colorimetry BT601_LIMITED = new Colorimetry(Colorimetry.Matrix.BT601, false, true, false, Colorimetry.Transfer.SDR, false);
@@ -107,10 +120,6 @@ public class VKEngineTest {
             }
             """;
 
-    // ONE QUEUE SHARED BY THE ENGINES AND THE READBACK, SERIALIZED LIKE A RENDERER'S
-    private static final Object QUEUE_LOCK = new Object();
-    // DESTRUCTION CALLBACKS THE ENGINES HAND TO retire(), RUN ONCE THE DEVICE IS IDLE
-    private static final List<Runnable> RETIRED = new ArrayList<>();
     // ERRORS THE VALIDATION LAYER REPORTED SINCE THE LAST CHECK
     private static final List<String> ERRORS = Collections.synchronizedList(new ArrayList<>());
     // ALIGNED PLANE COPIES AN ENGINE MAY HAVE IMPORTED; FREED ONLY AFTER ITS RELEASE
@@ -120,8 +129,8 @@ public class VKEngineTest {
     private static VkDebugUtilsMessengerCallbackEXT callback;
     private static long messenger;
     private static VkPhysicalDevice physical;
-    private static VkDevice device;
-    private static VkQueue queue;
+    // THE SUITE'S DEVICE, ITS RENDER QUEUE AND READBACK
+    private static Renderer renderer;
     private static int family;
     private static VkPhysicalDeviceMemoryProperties memory;
     private static boolean ycbcr, hostImport, validation;
@@ -129,17 +138,13 @@ public class VKEngineTest {
     private static boolean ycbcr420;
     private static long alignment;
     private static String name;
-    // WHAT THE DEVICE WAS CREATED WITH (SEE VKContext#deviceInfo), AND WHETHER IT CAN DECODE VIDEO FOR FFMPEG
+    // THE FEATURE CHAIN THE DEVICES ARE CREATED WITH (SEE VKContext#deviceInfo), WHETHER THE SUITE'S CAN DECODE VIDEO FOR FFMPEG AND
+    // WHETHER THE GPU OFFERS THE EXTERNAL EXTENSIONS A TWIN NEEDS
     private static VkPhysicalDeviceFeatures2 features;
     private static VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrEnabled;
     private static VkPhysicalDeviceVulkan12Features vulkan12Enabled;
     private static VkPhysicalDeviceVulkan13Features vulkan13Enabled;
-    private static VKContext.DeviceInfo info;
-    private static boolean decoding;
-
-    // READBACK OBJECTS
-    private static VkCommandBuffer cmd;
-    private static long cmdPool, fence, sampler, setLayout, descPool, descSet, pipeLayout, pipeline;
+    private static boolean decoding, shareable;
 
     @BeforeAll
     static void open() {
@@ -233,6 +238,7 @@ public class VKEngineTest {
             final VkExtensionProperties.Buffer deviceExtensions = VkExtensionProperties.create(count.get(0));
             check(vkEnumerateDeviceExtensionProperties(physical, (ByteBuffer) null, count, deviceExtensions), "enumerate device extensions");
             boolean subset = false, videoQueue = false, decodeQueue = false;
+            int external = 0;
             final List<String> codecs = new ArrayList<>();
             for (final VkExtensionProperties extension: deviceExtensions) {
                 final String name = extension.extensionNameString();
@@ -240,9 +246,11 @@ public class VKEngineTest {
                 subset |= VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME.equals(name);
                 videoQueue |= VK_KHR_VIDEO_QUEUE_EXTENSION_NAME.equals(name);
                 decodeQueue |= VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME.equals(name);
+                if (EXTERNAL.contains(name)) external++;
                 if (VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME.equals(name) || VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME.equals(name)
                         || VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME.equals(name)) codecs.add(name);
             }
+            shareable = external == EXTERNAL.size();
             if (hostImport) {
                 final VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = VkPhysicalDeviceExternalMemoryHostPropertiesEXT.calloc(stack).sType$Default();
                 vkGetPhysicalDeviceProperties2(physical, VkPhysicalDeviceProperties2.calloc(stack).sType$Default().pNext(host.address()));
@@ -276,19 +284,7 @@ public class VKEngineTest {
                     decoding = true;
                 }
             }
-            int used = 0;
-            for (final int queues: counts) if (queues > 0) used++;
-            final VkDeviceQueueCreateInfo.Buffer queues = VkDeviceQueueCreateInfo.calloc(used, stack);
-            for (int f = 0, j = 0; f < counts.length; f++) {
-                if (counts[f] <= 0) continue;
-                final FloatBuffer priorities = stack.mallocFloat(counts[f]);
-                for (int k = 0; k < counts[f]; k++) priorities.put(k, 1.0f);
-                queues.get(j++).sType$Default().queueFamilyIndex(f).pQueuePriorities(priorities);
-            }
-            final PointerBuffer deviceEnabled = stack.mallocPointer(enabled.size());
-            for (final String name: enabled) deviceEnabled.put(stack.UTF8(name));
-            deviceEnabled.flip();
-            // THE FEATURE CHAIN OUTLIVES THE DEVICE: FFMPEG READS IT THROUGH VKContext#deviceInfo
+            // THE FEATURE CHAIN OUTLIVES THE DEVICES: FFMPEG READS IT THROUGH VKContext#deviceInfo
             features = VkPhysicalDeviceFeatures2.calloc().sType$Default();
             ycbcrEnabled = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc().sType$Default().samplerYcbcrConversion(ycbcr);
             features.pNext(ycbcrEnabled.address());
@@ -300,71 +296,12 @@ public class VKEngineTest {
                 vulkan13Enabled = VkPhysicalDeviceVulkan13Features.calloc().sType$Default().synchronization2(vulkan13.synchronization2());
                 vulkan12Enabled.pNext(vulkan13Enabled.address());
             }
-            final VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(stack).sType$Default()
-                    .pNext(features.address()).pQueueCreateInfos(queues).ppEnabledExtensionNames(deviceEnabled);
-            check(vkCreateDevice(physical, dci, null, handle), "create device");
-            device = new VkDevice(handle.get(0), physical, dci);
-            vkGetDeviceQueue(device, family, counts[family] - 1, handle);
-            queue = new VkQueue(handle.get(0), device);
             final List<String> instanceNames = new ArrayList<>();
             if (debug) instanceNames.add(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
             if (portability) instanceNames.add(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-            info = new VKContext.DeviceInfo(features, instanceNames, enabled, counts);
             memory = VkPhysicalDeviceMemoryProperties.malloc();
             vkGetPhysicalDeviceMemoryProperties(physical, memory);
-
-            // READBACK: ONE COMMAND BUFFER AND FENCE, A NEAREST SAMPLER AND THE PACKING PIPELINE
-            check(vkCreateCommandPool(device, VkCommandPoolCreateInfo.calloc(stack).sType$Default()
-                    .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(family), null, p), "create command pool");
-            cmdPool = p.get(0);
-            check(vkAllocateCommandBuffers(device, VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
-                    .commandPool(cmdPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1), handle), "allocate command buffer");
-            cmd = new VkCommandBuffer(handle.get(0), device);
-            check(vkCreateFence(device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, p), "create fence");
-            fence = p.get(0);
-            check(vkCreateSampler(device, VkSamplerCreateInfo.calloc(stack).sType$Default()
-                    .magFilter(VK_FILTER_NEAREST).minFilter(VK_FILTER_NEAREST).mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
-                    .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE), null, p), "create sampler");
-            sampler = p.get(0);
-            final VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(2, stack);
-            bindings.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
-            bindings.get(1).binding(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
-            check(vkCreateDescriptorSetLayout(device, VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(bindings), null, p), "create set layout");
-            setLayout = p.get(0);
-            final VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-            sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1);
-            sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1);
-            check(vkCreateDescriptorPool(device, VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(sizes), null, p), "create descriptor pool");
-            descPool = p.get(0);
-            check(vkAllocateDescriptorSets(device, VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
-                    .descriptorPool(descPool).pSetLayouts(stack.longs(setLayout)), p), "allocate descriptor set");
-            descSet = p.get(0);
-            final VkPushConstantRange.Buffer range = VkPushConstantRange.calloc(1, stack);
-            range.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(READBACK_PUSH_BYTES);
-            check(vkCreatePipelineLayout(device, VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
-                    .pSetLayouts(stack.longs(setLayout)).pPushConstantRanges(range), null, p), "create pipeline layout");
-            pipeLayout = p.get(0);
-            // SPIR-V FROM shaderc, THE COMPILER THE ENGINE ITSELF USES
-            final long compiler = shaderc_compiler_initialize();
-            if (compiler == NULL) throw new IllegalStateException("shaderc did not initialize");
-            final long result = shaderc_compile_into_spv(compiler, READBACK_GLSL, shaderc_compute_shader, "readback.comp", "main", NULL);
-            try {
-                if (result == NULL || shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
-                    throw new IllegalStateException("the readback shader did not compile: " + (result == NULL ? "no result" : shaderc_result_get_error_message(result)));
-                check(vkCreateShaderModule(device, VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(shaderc_result_get_bytes(result)), null, p), "create shader module");
-            } finally {
-                if (result != NULL) shaderc_result_release(result);
-                shaderc_compiler_release(compiler);
-            }
-            final long module = p.get(0);
-            final VkComputePipelineCreateInfo.Buffer pipelines = VkComputePipelineCreateInfo.calloc(1, stack);
-            pipelines.get(0).sType$Default().layout(pipeLayout)
-                    .stage(s -> s.sType$Default().stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main")));
-            final int created = vkCreateComputePipelines(device, VK_NULL_HANDLE, pipelines, null, p);
-            vkDestroyShaderModule(device, module, null);
-            check(created, "create readback pipeline");
-            pipeline = p.get(0);
+            renderer = new Renderer(new VKContext.DeviceInfo(features, instanceNames, enabled, counts));
         } catch (final RuntimeException | LinkageError e) {
             close();
             assumeTrue(false, "No usable Vulkan 1.1 device — skipping: " + e);
@@ -375,24 +312,15 @@ public class VKEngineTest {
             throw new AssertionError("Vulkan is present but the LWJGL stack cannot list its extensions; raise org.lwjgl.system.stackSize", e);
         }
         System.out.println("[VKEngineTest] " + name + ": samplerYcbcrConversion=" + ycbcr + " (4:2:0 " + ycbcr420 + "), hostImport=" + hostImport
-                + " (alignment " + alignment + "), videoDecode=" + decoding + ", validation layer " + (validation ? "on" : "not installed"));
+                + " (alignment " + alignment + "), videoDecode=" + decoding + ", external handles=" + shareable
+                + ", validation layer " + (validation ? "on" : "not installed"));
     }
 
-    // UNWINDS WHATEVER open() BUILT, NEWEST FIRST; THE DEVICE DRAINS AND RUNS THE RETIRED CALLBACKS BEFORE IT DIES
+    // UNWINDS WHATEVER open() BUILT, NEWEST FIRST; THE RENDERER DRAINS AND RUNS THE RETIRED CALLBACKS BEFORE ITS DEVICE DIES
     @AfterAll
     static void close() {
-        if (device != null) {
-            idle();
-            if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, null);
-            if (pipeLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipeLayout, null);
-            if (descPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descPool, null);
-            if (setLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, setLayout, null);
-            if (sampler != VK_NULL_HANDLE) vkDestroySampler(device, sampler, null);
-            if (fence != VK_NULL_HANDLE) vkDestroyFence(device, fence, null);
-            if (cmdPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, cmdPool, null);
-            vkDestroyDevice(device, null);
-            device = null;
-        }
+        if (renderer != null) renderer.close();
+        renderer = null;
         if (vulkan13Enabled != null) vulkan13Enabled.free();
         if (vulkan12Enabled != null) vulkan12Enabled.free();
         if (ycbcrEnabled != null) ycbcrEnabled.free();
@@ -401,7 +329,6 @@ public class VKEngineTest {
         vulkan12Enabled = null;
         ycbcrEnabled = null;
         features = null;
-        info = null;
         if (memory != null) memory.free();
         memory = null;
         if (messenger != VK_NULL_HANDLE) vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
@@ -419,23 +346,215 @@ public class VKEngineTest {
         assertTrue(errors.isEmpty(), "Vulkan validation errors: " + errors);
     }
 
-    // THE TEST DEVICE AS A RENDERER LENDS IT: DEVICE OFFERS EVERY FEATURE IT HAS, FALLBACK HIDES THE YCBCR SAMPLER AND HOST
+    // THE SUITE'S DEVICE AS ITS RENDERER LENDS IT: DEVICE OFFERS EVERY FEATURE IT HAS, FALLBACK HIDES THE YCBCR SAMPLER AND HOST
     // IMPORT SO EVERY FRAME TAKES THE COMPUTE SHADER AND STAGING COPIES
     enum Features implements VKContext {
         DEVICE, FALLBACK;
 
+        @Override public VkInstance vkInstance() { return renderer.vkInstance(); }
+        @Override public VkPhysicalDevice physicalDevice() { return renderer.physicalDevice(); }
+        @Override public VkDevice vkDevice() { return renderer.vkDevice(); }
+        @Override public VkQueue queue() { return renderer.queue(); }
+        @Override public int queueFamily() { return renderer.queueFamily(); }
+        @Override public Object queueLock() { return renderer.queueLock(); }
+        @Override public VkPhysicalDeviceMemoryProperties memoryProperties() { return renderer.memoryProperties(); }
+        @Override public boolean hostImportSupported() { return this == DEVICE && renderer.hostImportSupported(); }
+        @Override public long minImportedHostPointerAlignment() { return this.hostImportSupported() ? alignment : 0L; }
+        @Override public boolean ycbcrSampler() { return this == DEVICE && renderer.ycbcrSampler(); }
+        @Override public void retire(final Runnable destroy) { renderer.retire(destroy); }
+        @Override public DeviceInfo deviceInfo() { return this == DEVICE ? renderer.deviceInfo() : null; }
+    }
+
+    // A DEVICE ON THE SUITE'S GPU AS A RENDERER HOLDS IT: ITS RENDER QUEUE AND THE LOCK AROUND IT, THE CALLBACKS ITS ENGINES RETIRE
+    // AND THE OBJECTS THAT READ BACK WHAT AN ENGINE PUBLISHES. THE SUITE OPENS ONE AND A TEST MAY OPEN ANOTHER
+    private static final class Renderer implements VKContext {
+        private final DeviceInfo info;
+        private final VkDevice device;
+        private final VkQueue queue;
+        // ONE QUEUE SHARED BY THE ENGINES AND THE READBACK, SERIALIZED LIKE A RENDERER'S
+        private final Object lock = new Object();
+        // DESTRUCTION CALLBACKS THE ENGINES HAND TO retire(), RUN ONCE THE DEVICE IS IDLE
+        private final List<Runnable> retired = new ArrayList<>();
+        // READBACK: ONE COMMAND BUFFER AND FENCE, A NEAREST SAMPLER AND THE PACKING PIPELINE
+        private VkCommandBuffer cmd;
+        private long cmdPool, fence, sampler, setLayout, descPool, descSet, pipeLayout, pipeline;
+
+        // CREATES THE DEVICE info DESCRIBES, TAKES THE LAST QUEUE OF THE RENDER FAMILY AS ITS RENDER QUEUE AND BUILDS THE READBACK;
+        // A FAILURE DESTROYS WHATEVER WAS BUILT
+        Renderer(final DeviceInfo info) {
+            this.info = info;
+            try (final MemoryStack stack = stackPush()) {
+                final int[] counts = info.queueCounts();
+                int used = 0;
+                for (final int queues: counts) if (queues > 0) used++;
+                final VkDeviceQueueCreateInfo.Buffer queues = VkDeviceQueueCreateInfo.calloc(used, stack);
+                for (int f = 0, j = 0; f < counts.length; f++) {
+                    if (counts[f] <= 0) continue;
+                    final FloatBuffer priorities = stack.mallocFloat(counts[f]);
+                    for (int k = 0; k < counts[f]; k++) priorities.put(k, 1.0f);
+                    queues.get(j++).sType$Default().queueFamilyIndex(f).pQueuePriorities(priorities);
+                }
+                final PointerBuffer extensions = stack.mallocPointer(info.deviceExtensions().size());
+                for (final String extension: info.deviceExtensions()) extensions.put(stack.UTF8(extension));
+                final VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(stack).sType$Default()
+                        .pNext(info.features().address()).pQueueCreateInfos(queues).ppEnabledExtensionNames(extensions.flip());
+                final PointerBuffer handle = stack.mallocPointer(1);
+                check(vkCreateDevice(physical, dci, null, handle), "create device");
+                this.device = new VkDevice(handle.get(0), physical, dci);
+                vkGetDeviceQueue(this.device, family, counts[family] - 1, handle);
+                this.queue = new VkQueue(handle.get(0), this.device);
+
+                final LongBuffer p = stack.mallocLong(1);
+                check(vkCreateCommandPool(this.device, VkCommandPoolCreateInfo.calloc(stack).sType$Default()
+                        .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(family), null, p), "create command pool");
+                this.cmdPool = p.get(0);
+                check(vkAllocateCommandBuffers(this.device, VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
+                        .commandPool(this.cmdPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1), handle), "allocate command buffer");
+                this.cmd = new VkCommandBuffer(handle.get(0), this.device);
+                check(vkCreateFence(this.device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, p), "create fence");
+                this.fence = p.get(0);
+                check(vkCreateSampler(this.device, VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK_FILTER_NEAREST).minFilter(VK_FILTER_NEAREST).mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                        .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE), null, p), "create sampler");
+                this.sampler = p.get(0);
+                final VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(2, stack);
+                bindings.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
+                bindings.get(1).binding(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
+                check(vkCreateDescriptorSetLayout(this.device, VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(bindings), null, p), "create set layout");
+                this.setLayout = p.get(0);
+                final VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
+                sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1);
+                sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1);
+                check(vkCreateDescriptorPool(this.device, VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(sizes), null, p), "create descriptor pool");
+                this.descPool = p.get(0);
+                check(vkAllocateDescriptorSets(this.device, VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
+                        .descriptorPool(this.descPool).pSetLayouts(stack.longs(this.setLayout)), p), "allocate descriptor set");
+                this.descSet = p.get(0);
+                final VkPushConstantRange.Buffer range = VkPushConstantRange.calloc(1, stack);
+                range.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(READBACK_PUSH_BYTES);
+                check(vkCreatePipelineLayout(this.device, VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+                        .pSetLayouts(stack.longs(this.setLayout)).pPushConstantRanges(range), null, p), "create pipeline layout");
+                this.pipeLayout = p.get(0);
+                // SPIR-V FROM shaderc, THE COMPILER THE ENGINE ITSELF USES
+                final long compiler = shaderc_compiler_initialize();
+                if (compiler == NULL) throw new IllegalStateException("shaderc did not initialize");
+                final long result = shaderc_compile_into_spv(compiler, READBACK_GLSL, shaderc_compute_shader, "readback.comp", "main", NULL);
+                try {
+                    if (result == NULL || shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
+                        throw new IllegalStateException("the readback shader did not compile: " + (result == NULL ? "no result" : shaderc_result_get_error_message(result)));
+                    check(vkCreateShaderModule(this.device, VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(shaderc_result_get_bytes(result)), null, p), "create shader module");
+                } finally {
+                    if (result != NULL) shaderc_result_release(result);
+                    shaderc_compiler_release(compiler);
+                }
+                final long module = p.get(0);
+                final VkComputePipelineCreateInfo.Buffer pipelines = VkComputePipelineCreateInfo.calloc(1, stack);
+                pipelines.get(0).sType$Default().layout(this.pipeLayout)
+                        .stage(s -> s.sType$Default().stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main")));
+                final int created = vkCreateComputePipelines(this.device, VK_NULL_HANDLE, pipelines, null, p);
+                vkDestroyShaderModule(this.device, module, null);
+                check(created, "create readback pipeline");
+                this.pipeline = p.get(0);
+            } catch (final RuntimeException | Error e) {
+                this.close();
+                throw e;
+            }
+        }
+
         @Override public VkInstance vkInstance() { return instance; }
         @Override public VkPhysicalDevice physicalDevice() { return physical; }
-        @Override public VkDevice vkDevice() { return device; }
-        @Override public VkQueue queue() { return queue; }
+        @Override public VkDevice vkDevice() { return this.device; }
+        @Override public VkQueue queue() { return this.queue; }
         @Override public int queueFamily() { return family; }
-        @Override public Object queueLock() { return QUEUE_LOCK; }
+        @Override public Object queueLock() { return this.lock; }
         @Override public VkPhysicalDeviceMemoryProperties memoryProperties() { return memory; }
-        @Override public boolean hostImportSupported() { return this == DEVICE && hostImport; }
-        @Override public long minImportedHostPointerAlignment() { return this.hostImportSupported() ? alignment : 0L; }
-        @Override public boolean ycbcrSampler() { return this == DEVICE && ycbcr; }
-        @Override public void retire(final Runnable destroy) { RETIRED.add(destroy); }
-        @Override public DeviceInfo deviceInfo() { return this == DEVICE ? info : null; }
+        @Override public boolean hostImportSupported() { return hostImport; }
+        @Override public long minImportedHostPointerAlignment() { return alignment; }
+        @Override public boolean ycbcrSampler() { return ycbcr; }
+        @Override public void retire(final Runnable destroy) { this.retired.add(destroy); }
+        @Override public DeviceInfo deviceInfo() { return this.info; }
+
+        // SAMPLES THE VIEW WITH THE READBACK PIPELINE INTO A HOST-VISIBLE BUFFER AND RETURNS ITS RGBA BYTES
+        ByteBuffer readback(final long view, final int width, final int height) {
+            final int bytes = width * height * 4;
+            try (final MemoryStack stack = stackPush()) {
+                final LongBuffer p = stack.mallocLong(1);
+                check(vkCreateBuffer(this.device, VkBufferCreateInfo.calloc(stack).sType$Default().size(bytes)
+                        .usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT).sharingMode(VK_SHARING_MODE_EXCLUSIVE), null, p), "create readback buffer");
+                final long buffer = p.get(0);
+                long mem = VK_NULL_HANDLE;
+                try {
+                    final VkMemoryRequirements req = VkMemoryRequirements.malloc(stack);
+                    vkGetBufferMemoryRequirements(this.device, buffer, req);
+                    final int wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                    int type = -1;
+                    for (int i = 0; i < memory.memoryTypeCount() && type < 0; i++)
+                        if ((req.memoryTypeBits() & 1 << i) != 0 && (memory.memoryTypes(i).propertyFlags() & wanted) == wanted) type = i;
+                    check(vkAllocateMemory(this.device, VkMemoryAllocateInfo.calloc(stack).sType$Default()
+                            .allocationSize(req.size()).memoryTypeIndex(type), null, p), "allocate readback memory");
+                    mem = p.get(0);
+                    check(vkBindBufferMemory(this.device, buffer, mem, 0), "bind readback memory");
+                    final PointerBuffer mapped = stack.mallocPointer(1);
+                    check(vkMapMemory(this.device, mem, 0, bytes, 0, mapped), "map readback memory");
+
+                    // BINDING 0 = THE PUBLISHED VIEW IN THE LAYOUT THE ENGINE HANDS OVER, BINDING 1 = THE HOST-VISIBLE BUFFER
+                    final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
+                    writes.get(0).sType$Default().dstSet(this.descSet).dstBinding(0).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                            .pImageInfo(VkDescriptorImageInfo.calloc(1, stack).sampler(this.sampler).imageView(view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+                    writes.get(1).sType$Default().dstSet(this.descSet).dstBinding(1).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                            .pBufferInfo(VkDescriptorBufferInfo.calloc(1, stack).buffer(buffer).offset(0).range(VK_WHOLE_SIZE));
+                    vkUpdateDescriptorSets(this.device, writes, null);
+
+                    check(vkResetCommandBuffer(this.cmd, 0), "reset readback commands");
+                    check(vkBeginCommandBuffer(this.cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)), "begin readback");
+                    // THE ENGINE HANDED ITS WRITES TO FRAGMENT SAMPLING; THIS MAKES THEM VISIBLE TO THE READBACK COMPUTE STAGE TOO
+                    vkCmdPipelineBarrier(this.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                            VkMemoryBarrier.calloc(1, stack).sType$Default().srcAccessMask(VK_ACCESS_MEMORY_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT), null, null);
+                    vkCmdBindPipeline(this.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.pipeline);
+                    vkCmdBindDescriptorSets(this.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.pipeLayout, 0, stack.longs(this.descSet), null);
+                    vkCmdPushConstants(this.cmd, this.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, stack.ints(width, height));
+                    vkCmdDispatch(this.cmd, (width + 7) / 8, (height + 7) / 8, 1);
+                    vkCmdPipelineBarrier(this.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
+                            VkMemoryBarrier.calloc(1, stack).sType$Default().srcAccessMask(VK_ACCESS_SHADER_WRITE_BIT).dstAccessMask(VK_ACCESS_HOST_READ_BIT), null, null);
+                    check(vkEndCommandBuffer(this.cmd), "end readback");
+                    synchronized (this.lock) {
+                        check(vkQueueSubmit(this.queue, VkSubmitInfo.calloc(stack).sType$Default().pCommandBuffers(stack.pointers(this.cmd)), this.fence), "submit readback");
+                    }
+                    check(vkWaitForFences(this.device, this.fence, true, FRAME_TIMEOUT_NS), "wait for the readback");
+                    check(vkResetFences(this.device, this.fence), "reset readback fence");
+                    final ByteBuffer rgba = BufferUtils.createByteBuffer(bytes);
+                    memCopy(mapped.get(0), memAddress(rgba), bytes);
+                    return rgba;
+                } finally {
+                    vkDestroyBuffer(this.device, buffer, null);
+                    if (mem != VK_NULL_HANDLE) vkFreeMemory(this.device, mem, null); // FREEING ALSO UNMAPS
+                }
+            }
+        }
+
+        // WAITS FOR EVERY SUBMISSION ON THE DEVICE, THEN RUNS THE DESTRUCTION CALLBACKS ITS ENGINES RETIRED
+        void idle() {
+            synchronized (this.lock) {
+                check(vkDeviceWaitIdle(this.device), "wait for the device");
+            }
+            for (final Runnable destroy: this.retired) destroy.run();
+            this.retired.clear();
+        }
+
+        // DRAINS THE DEVICE AND RUNS THE RETIRED CALLBACKS, THEN DESTROYS THE READBACK, NEWEST FIRST, AND THE DEVICE ITSELF
+        void close() {
+            if (this.device == null) return;
+            this.idle();
+            if (this.pipeline != VK_NULL_HANDLE) vkDestroyPipeline(this.device, this.pipeline, null);
+            if (this.pipeLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(this.device, this.pipeLayout, null);
+            if (this.descPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(this.device, this.descPool, null);
+            if (this.setLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(this.device, this.setLayout, null);
+            if (this.sampler != VK_NULL_HANDLE) vkDestroySampler(this.device, this.sampler, null);
+            if (this.fence != VK_NULL_HANDLE) vkDestroyFence(this.device, this.fence, null);
+            if (this.cmdPool != VK_NULL_HANDLE) vkDestroyCommandPool(this.device, this.cmdPool, null);
+            vkDestroyDevice(this.device, null);
+        }
     }
 
     @Nested
@@ -621,9 +740,9 @@ public class VKEngineTest {
                 final ByteBuffer shown = frame(engine, new ByteBuffer[] { YuvFrames.plane(0, 8, 2, (row, col) -> col % 2 == 1 ? 128 : 60) }, new int[] { 0 });
                 final long view = engine.texture();
                 engine.upload(new ByteBuffer[] { YuvFrames.plane(10, 8, 2, (row, col) -> col % 2 == 1 ? 128 : 200) }, new int[] { 10 });
-                idle();
+                renderer.idle();
                 assertEquals(view, engine.texture(), "no new frame was published");
-                assertEquals(shown, readback(view, 4, 2), "the last frame stays on screen");
+                assertEquals(shown, renderer.readback(view, 4, 2), "the last frame stays on screen");
             } finally {
                 release(engine);
             }
@@ -665,7 +784,7 @@ public class VKEngineTest {
 
                 // THE SECOND ENGINE STILL IMPORTS THE ALIGNED PLANES, SO THEY STAY ALLOCATED UNTIL IT IS RELEASED TOO
                 first.release();
-                idle();
+                renderer.idle();
                 assertUniform(frame(second, planes, new int[3]), rgba, 3, "the remaining engine still converts");
             } finally {
                 first.release();
@@ -692,58 +811,41 @@ public class VKEngineTest {
         void poolFrameSamplesInPlace() {
             assumeTrue(MediaBootstrap.ffmpegAvailable() && MediaAPI.vulkanDecode(), "FFmpeg with the Vulkan bindings");
             final VKEngine engine = MediaAPI.vkEngine(Features.DEVICE);
-            AVBufferRef deviceRef = null, framesRef = null;
-            AVFrame hw = null, sw = null;
+            final AVBufferRef deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
             try {
-                deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
                 assumeTrue(deviceRef != null, "the test device cannot decode H.264 (" + name + ")");
-                // A 64x32 POOL WHOSE FRAMES HOLD A 60x30 PICTURE, FILLED THE WAY FFMPEG UPLOADS SOFTWARE FRAMES INTO IT: Y 120, Cb 90, Cr 200
-                // INSIDE THE PICTURE AND BLACK PADDING BEYOND IT, SO A CROP THAT SAMPLED THE PADDING WOULD SHOW
-                final int w = 64, h = 32, visibleW = 60, visibleH = 30;
-                framesRef = av_hwframe_ctx_alloc(deviceRef);
-                final AVHWFramesContext fc = new AVHWFramesContext(framesRef.data());
-                fc.format(AV_PIX_FMT_VULKAN).sw_format(AV_PIX_FMT_NV12).width(w).height(h).initial_pool_size(2);
-                assertTrue(av_hwframe_ctx_init(framesRef) >= 0, "the device allocates NV12 pools");
-                hw = av_frame_alloc();
-                assertTrue(av_hwframe_get_buffer(framesRef, hw, 0) >= 0, "a pool frame");
-                sw = av_frame_alloc();
-                sw.format(AV_PIX_FMT_NV12).width(w).height(h);
-                assertTrue(av_frame_get_buffer(sw, 0) >= 0, "a software frame");
-                for (int row = 0; row < h; row++)
-                    for (int col = 0; col < w; col++) {
-                        final boolean inside = row < visibleH && col < visibleW;
-                        sw.data(0).put((long) row * sw.linesize(0) + col, (byte) (inside ? 120 : 16));
-                    }
-                for (int row = 0; row < h / 2; row++)
-                    for (int col = 0; col < w / 2; col++) {
-                        final boolean inside = row < visibleH / 2 && col < visibleW / 2;
-                        sw.data(1).put((long) row * sw.linesize(1) + col * 2L, (byte) (inside ? 90 : 128));
-                        sw.data(1).put((long) row * sw.linesize(1) + col * 2L + 1, (byte) (inside ? 200 : 128));
-                    }
-                assertTrue(av_hwframe_transfer_data(hw, sw, 0) >= 0, "the upload into the pool frame");
-                hw.width(visibleW).height(visibleH);
-
-                // THE LAST COLUMN AND ROW BLEND THEIR CHROMA WITH THE PADDING, AS AN ENCODER'S EDGE EXTENSION WOULD HIDE; EVERY
-                // OTHER PIXEL IS THE PICTURE, WHICH WITHOUT THE CROP WOULD ALREADY SAMPLE THE PADDING FROM COLUMN 56 ON
-                final int[] bt601 = YuvFrames.rgb(KR_601, KB_601, false, 8, 120, 90, 200);
-                for (final int divisor: new int[] { 1, 2 }) {
-                    final int outW = visibleW / divisor, outH = visibleH / divisor;
-                    assertTrue(engine.format(PixelFormat.NV12, outW, outH, 8, BT601_LIMITED));
-                    final ByteBuffer rgba = decoded(engine, hw);
-                    for (int y = 0; y < outH - 1; y++)
-                        for (int x = 0; x < outW - 1; x++)
-                            for (int c = 0; c < 3; c++) {
-                                final int shown = rgba.get((y * outW + x) * 4 + c) & 0xFF;
-                                assertTrue(Math.abs(shown - bt601[c]) <= 3, "1/" + divisor + " size: pixel " + x + "," + y + " channel " + c + " shows " + shown + " instead of " + bt601[c]);
-                            }
-                }
-                assertEquals(2L, (long) field(engine, "decodedFrames"));
+                poolFrame(renderer, engine, deviceRef);
             } finally {
                 release(engine);
-                if (hw != null) av_frame_free(hw);
-                if (sw != null) av_frame_free(sw);
-                if (framesRef != null) av_buffer_unref(framesRef);
                 if (deviceRef != null) av_buffer_unref(deviceRef);
+            }
+        }
+
+        @Test
+        @DisplayName("A frame of an FFmpeg pool on a twin is imported and shows exact colors, cropped and scaled")
+        void poolFrameImportsFromTheTwin() {
+            assumeTrue(MediaBootstrap.ffmpegAvailable() && MediaAPI.vulkanDecode(), "FFmpeg with the Vulkan bindings");
+            // NO VIDEO SESSION OPENS HERE, SO THE VALIDATION LAYER RUNS AND CHECKS THE IMPORT, THE EXTERNAL TRANSFERS AND THE TIMELINES
+            assumeTrue(decoding && renderer.deviceInfo().deviceExtensions().contains(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME),
+                    "the test device cannot decode H.264 (" + name + ")");
+            assumeTrue(shareable, "the test device cannot share memory and semaphores with another device (" + name + ")");
+            final Renderer bare = bare();
+            // TORN DOWN INSIDE OUT: THE POOL, THE ENGINE ON THIS DEVICE'S RENDERER, THE LAST REFERENCE TO THE TWIN AND THE DEVICE LAST
+            try {
+                final VKEngine engine = MediaAPI.vkEngine(bare);
+                final AVBufferRef deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
+                try {
+                    assertNotNull(deviceRef, "the GPU decodes H.264, so FFmpeg gets a device to decode on");
+                    final long decoder = new AVVulkanDeviceContext(new AVHWDeviceContext(deviceRef.data()).hwctx()).act_dev();
+                    assertNotEquals(bare.vkDevice().address(), decoder, "FFmpeg decodes on a twin, not on the device that lends it no queue");
+                    poolFrame(bare, engine, deviceRef);
+                    assertEquals(2L, (long) field(engine, "importedFrames"), "both frames came from the twin");
+                } finally {
+                    release(engine);
+                    if (deviceRef != null) av_buffer_unref(deviceRef);
+                }
+            } finally {
+                bare.close();
             }
         }
 
@@ -768,7 +870,7 @@ public class VKEngineTest {
                 assertTrue(PlayerWait.awaitCondition(() -> (long) field(engine, "decodedFrames") >= 3L, 10_000L), "frames decoded on the device reach the engine");
                 assertTrue(player.hwAccel(), "the player decodes in hardware");
                 assertEquals(PixelFormat.NV12, engine.format(), "the pool's layout is what the engine samples");
-                final ByteBuffer rgba = readback(engine.texture(), engine.width(), engine.height());
+                final ByteBuffer rgba = renderer.readback(engine.texture(), engine.width(), engine.height());
                 int lit = 0;
                 for (int i = 0; i < rgba.capacity(); i += 4) if ((rgba.get(i) & 0xFF) > 32 || (rgba.get(i + 1) & 0xFF) > 32 || (rgba.get(i + 2) & 0xFF) > 32) lit++;
                 assertTrue(lit > 0, "the published frame carries the picture, not a blank image");
@@ -777,18 +879,119 @@ public class VKEngineTest {
                 release(engine);
             }
         }
+
+        @Test
+        @DisplayName("A host device without decoding queues decodes on a twin and the engine shows the imported frames")
+        void twinDecodesForADeviceWithoutQueues() {
+            assumeTrue(MediaBootstrap.ffmpegAvailable() && MediaAPI.vulkanDecode(), "FFmpeg with the Vulkan bindings");
+            // THE SAME VALIDATION-LAYER CRASH AS playerDecodesOnTheDevice: FFMPEG RUNS ITS VIDEO SESSION ON THE TWIN
+            assumeTrue(!validation, "the Khronos validation layer crashes on Vulkan Video decoding; run with VK_LOADER_LAYERS_DISABLE=~all~");
+            assumeTrue(decoding && renderer.deviceInfo().deviceExtensions().contains(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME),
+                    "the test device cannot decode H.264 (" + name + ")");
+            assumeTrue(shareable, "the test device cannot share memory and semaphores with another device (" + name + ")");
+            final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
+            assertTrue(mrl.await(10_000L));
+            final Renderer bare = bare();
+            // TORN DOWN INSIDE OUT: THE PLAYER, THEN THE ENGINE, WHOSE RETIRED OBJECTS AND LAST REFERENCE TO THE TWIN DIE ON THIS DEVICE'S
+            // RENDERER, AND THE DEVICE LAST
+            try {
+                final VKEngine engine = MediaAPI.vkEngine(bare);
+                try {
+                    final AVBufferRef deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
+                    assertNotNull(deviceRef, "the GPU decodes H.264, so FFmpeg gets a device to decode on");
+                    final long decoder = new AVVulkanDeviceContext(new AVHWDeviceContext(deviceRef.data()).hwctx()).act_dev();
+                    av_buffer_unref(deviceRef);
+                    assertNotEquals(bare.vkDevice().address(), decoder, "FFmpeg decodes on a twin, not on the device that lends it no queue");
+                    final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, engine, null);
+                    try {
+                        assertTrue(player.start());
+                        assertTrue(PlayerWait.awaitStatus(player, 15_000L, MediaPlayer.Status.PLAYING, MediaPlayer.Status.BUFFERING, MediaPlayer.Status.PAUSED));
+                        assertTrue(PlayerWait.awaitCondition(() -> (long) field(engine, "importedFrames") >= 3L, 10_000L), "frames decoded on the twin are imported into the device");
+                        assertTrue(player.hwAccel(), "the player decodes in hardware");
+                        assertEquals(PixelFormat.NV12, engine.format(), "the pool's layout is what the engine samples");
+                        final ByteBuffer rgba = bare.readback(engine.texture(), engine.width(), engine.height());
+                        int lit = 0;
+                        for (int i = 0; i < rgba.capacity(); i += 4) if ((rgba.get(i) & 0xFF) > 32 || (rgba.get(i + 1) & 0xFF) > 32 || (rgba.get(i + 2) & 0xFF) > 32) lit++;
+                        assertTrue(lit > 0, "the published frame carries the picture, not a blank image");
+                    } finally {
+                        player.release();
+                    }
+                } finally {
+                    release(engine);
+                }
+            } finally {
+                bare.close();
+            }
+        }
     }
 
     // UTILITY
 
-    // HANDS A POOL FRAME TO THE ENGINE AS THE PLAYER DOES, WAITS FOR texture() TO PUBLISH IT AND READS THE VIEW BACK AS RGBA BYTES
-    private static ByteBuffer decoded(final VKEngine engine, final AVFrame frame) {
-        final long before = engine.texture();
-        engine.upload(frame);
-        assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
-                "the decoded frame was published within the timeout");
-        System.out.println("[VKEngineTest] decoded frame " + engine.width() + "x" + engine.height() + " -> " + ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute"));
-        return readback(engine.texture(), engine.width(), engine.height());
+    // A DEVICE ON THE SUITE'S GPU THAT LENDS FFMPEG NO QUEUE: THE SUITE'S FEATURE CHAIN AND EXTENSIONS PLUS THE EXTERNAL ONES, BUT ONLY THE
+    // RENDER QUEUE, SO AN ENGINE ON IT DECODES ON A TWIN AND IMPORTS EVERY DECODED IMAGE
+    private static Renderer bare() {
+        final List<String> extensions = new ArrayList<>(renderer.deviceInfo().deviceExtensions());
+        extensions.addAll(EXTERNAL);
+        final int[] counts = new int[renderer.deviceInfo().queueCounts().length];
+        counts[family] = 1;
+        return new Renderer(new VKContext.DeviceInfo(features, renderer.deviceInfo().instanceExtensions(), extensions, counts));
+    }
+
+    // A 64x32 NV12 POOL ON deviceRef WHOSE FRAMES HOLD A 60x30 PICTURE, FILLED THE WAY FFMPEG UPLOADS SOFTWARE FRAMES INTO IT: Y 120, Cb 90,
+    // Cr 200 INSIDE THE PICTURE AND BLACK PADDING BEYOND IT. THE ENGINE SAMPLES ONE FRAME AT FULL AND HALF SIZE, READ BACK THROUGH on
+    private static void poolFrame(final Renderer on, final VKEngine engine, final AVBufferRef deviceRef) {
+        final int w = 64, h = 32, visibleW = 60, visibleH = 30;
+        final AVBufferRef framesRef = av_hwframe_ctx_alloc(deviceRef);
+        final AVFrame hw = av_frame_alloc(), sw = av_frame_alloc();
+        try {
+            final AVHWFramesContext fc = new AVHWFramesContext(framesRef.data());
+            fc.format(AV_PIX_FMT_VULKAN).sw_format(AV_PIX_FMT_NV12).width(w).height(h).initial_pool_size(2);
+            assertTrue(av_hwframe_ctx_init(framesRef) >= 0, "the device allocates NV12 pools");
+            assertTrue(av_hwframe_get_buffer(framesRef, hw, 0) >= 0, "a pool frame");
+            sw.format(AV_PIX_FMT_NV12).width(w).height(h);
+            assertTrue(av_frame_get_buffer(sw, 0) >= 0, "a software frame");
+            for (int row = 0; row < h; row++)
+                for (int col = 0; col < w; col++) {
+                    final boolean inside = row < visibleH && col < visibleW;
+                    sw.data(0).put((long) row * sw.linesize(0) + col, (byte) (inside ? 120 : 16));
+                }
+            for (int row = 0; row < h / 2; row++)
+                for (int col = 0; col < w / 2; col++) {
+                    final boolean inside = row < visibleH / 2 && col < visibleW / 2;
+                    sw.data(1).put((long) row * sw.linesize(1) + col * 2L, (byte) (inside ? 90 : 128));
+                    sw.data(1).put((long) row * sw.linesize(1) + col * 2L + 1, (byte) (inside ? 200 : 128));
+                }
+            assertTrue(av_hwframe_transfer_data(hw, sw, 0) >= 0, "the upload into the pool frame");
+            hw.width(visibleW).height(visibleH);
+            assertTrue(engine.samples(hw), "the engine samples the pool's frames instead of bringing them down to RAM");
+
+            // THE LAST COLUMN AND ROW BLEND THEIR CHROMA WITH THE PADDING, AS AN ENCODER'S EDGE EXTENSION WOULD HIDE; EVERY
+            // OTHER PIXEL IS THE PICTURE, WHICH WITHOUT THE CROP WOULD ALREADY SAMPLE THE PADDING FROM COLUMN 56 ON
+            final int[] bt601 = YuvFrames.rgb(KR_601, KB_601, false, 8, 120, 90, 200);
+            for (final int divisor: new int[] { 1, 2 }) {
+                final int outW = visibleW / divisor, outH = visibleH / divisor;
+                assertTrue(engine.format(PixelFormat.NV12, outW, outH, 8, BT601_LIMITED));
+                // HANDED OVER AS THE PLAYER DOES, THEN READ BACK ONCE texture() PUBLISHES IT
+                final long before = engine.texture();
+                engine.upload(hw);
+                assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
+                        "the decoded frame was published within the timeout");
+                System.out.println("[VKEngineTest] decoded frame " + outW + "x" + outH + " -> " + ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute"));
+                final ByteBuffer rgba = on.readback(engine.texture(), outW, outH);
+                for (int y = 0; y < outH - 1; y++)
+                    for (int x = 0; x < outW - 1; x++)
+                        for (int c = 0; c < 3; c++) {
+                            final int shown = rgba.get((y * outW + x) * 4 + c) & 0xFF;
+                            assertTrue(Math.abs(shown - bt601[c]) <= 3, "1/" + divisor + " size: pixel " + x + "," + y + " channel " + c + " shows " + shown + " instead of " + bt601[c]);
+                        }
+            }
+            assertEquals(2L, (long) field(engine, "decodedFrames"));
+        } finally {
+            // THE ENGINE KEEPS ITS OWN REFERENCES TO THE FRAME AND ITS POOL UNTIL IT IS RELEASED
+            av_frame_free(hw);
+            av_frame_free(sw);
+            if (framesRef != null) av_buffer_unref(framesRef);
+        }
     }
 
     // UPLOADS ONE FRAME AS A PRODUCER DOES (ALIGNED COPIES WHEN THE ENGINE CAN IMPORT THEM), WAITS FOR texture() TO PUBLISH
@@ -813,82 +1016,16 @@ public class VKEngineTest {
         System.out.println("[VKEngineTest] " + features + " " + engine.format() + " " + engine.width() + "x" + engine.height()
                 + " " + engine.bits() + "-bit " + engine.color + " -> " + route);
         if (features == Features.FALLBACK) assertEquals("compute, staging", route, "the fallback context forces the compute shader and staging copies");
-        return readback(view, engine.width(), engine.height());
+        return renderer.readback(view, engine.width(), engine.height());
     }
 
-    // SAMPLES THE VIEW WITH THE READBACK PIPELINE INTO A HOST-VISIBLE BUFFER AND RETURNS ITS RGBA BYTES
-    private static ByteBuffer readback(final long view, final int width, final int height) {
-        final int bytes = width * height * 4;
-        try (final MemoryStack stack = stackPush()) {
-            final LongBuffer p = stack.mallocLong(1);
-            check(vkCreateBuffer(device, VkBufferCreateInfo.calloc(stack).sType$Default().size(bytes)
-                    .usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT).sharingMode(VK_SHARING_MODE_EXCLUSIVE), null, p), "create readback buffer");
-            final long buffer = p.get(0);
-            long mem = VK_NULL_HANDLE;
-            try {
-                final VkMemoryRequirements req = VkMemoryRequirements.malloc(stack);
-                vkGetBufferMemoryRequirements(device, buffer, req);
-                final int wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-                int type = -1;
-                for (int i = 0; i < memory.memoryTypeCount() && type < 0; i++)
-                    if ((req.memoryTypeBits() & 1 << i) != 0 && (memory.memoryTypes(i).propertyFlags() & wanted) == wanted) type = i;
-                check(vkAllocateMemory(device, VkMemoryAllocateInfo.calloc(stack).sType$Default()
-                        .allocationSize(req.size()).memoryTypeIndex(type), null, p), "allocate readback memory");
-                mem = p.get(0);
-                check(vkBindBufferMemory(device, buffer, mem, 0), "bind readback memory");
-                final PointerBuffer mapped = stack.mallocPointer(1);
-                check(vkMapMemory(device, mem, 0, bytes, 0, mapped), "map readback memory");
-
-                // BINDING 0 = THE PUBLISHED VIEW IN THE LAYOUT THE ENGINE HANDS OVER, BINDING 1 = THE HOST-VISIBLE BUFFER
-                final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
-                writes.get(0).sType$Default().dstSet(descSet).dstBinding(0).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                        .pImageInfo(VkDescriptorImageInfo.calloc(1, stack).sampler(sampler).imageView(view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-                writes.get(1).sType$Default().dstSet(descSet).dstBinding(1).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                        .pBufferInfo(VkDescriptorBufferInfo.calloc(1, stack).buffer(buffer).offset(0).range(VK_WHOLE_SIZE));
-                vkUpdateDescriptorSets(device, writes, null);
-
-                check(vkResetCommandBuffer(cmd, 0), "reset readback commands");
-                check(vkBeginCommandBuffer(cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)), "begin readback");
-                // THE ENGINE HANDED ITS WRITES TO FRAGMENT SAMPLING; THIS MAKES THEM VISIBLE TO THE READBACK COMPUTE STAGE TOO
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                        VkMemoryBarrier.calloc(1, stack).sType$Default().srcAccessMask(VK_ACCESS_MEMORY_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT), null, null);
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeLayout, 0, stack.longs(descSet), null);
-                vkCmdPushConstants(cmd, pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, stack.ints(width, height));
-                vkCmdDispatch(cmd, (width + 7) / 8, (height + 7) / 8, 1);
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
-                        VkMemoryBarrier.calloc(1, stack).sType$Default().srcAccessMask(VK_ACCESS_SHADER_WRITE_BIT).dstAccessMask(VK_ACCESS_HOST_READ_BIT), null, null);
-                check(vkEndCommandBuffer(cmd), "end readback");
-                synchronized (QUEUE_LOCK) {
-                    check(vkQueueSubmit(queue, VkSubmitInfo.calloc(stack).sType$Default().pCommandBuffers(stack.pointers(cmd)), fence), "submit readback");
-                }
-                check(vkWaitForFences(device, fence, true, FRAME_TIMEOUT_NS), "wait for the readback");
-                check(vkResetFences(device, fence), "reset readback fence");
-                final ByteBuffer rgba = BufferUtils.createByteBuffer(bytes);
-                memCopy(mapped.get(0), memAddress(rgba), bytes);
-                return rgba;
-            } finally {
-                vkDestroyBuffer(device, buffer, null);
-                if (mem != VK_NULL_HANDLE) vkFreeMemory(device, mem, null); // FREEING ALSO UNMAPS
-            }
-        }
-    }
-
-    // RELEASES AN ENGINE LIKE ITS RENDERER: RETIRED OBJECTS DIE ONCE THE DEVICE IS IDLE, AND ONLY THEN THE IMPORTED PLANES
+    // RELEASES AN ENGINE LIKE ITS RENDERER: RETIRED OBJECTS DIE ONCE THE DEVICE IT WAS LENT IS IDLE (A FEATURES CONTEXT LENDS THE
+    // SUITE'S), AND ONLY THEN THE IMPORTED PLANES
     private static void release(final VKEngine engine) {
         engine.release();
-        idle();
+        (field(engine, "ctx") instanceof final Renderer lent ? lent : renderer).idle();
         for (final ByteBuffer plane: ALIGNED) memAlignedFree(plane);
         ALIGNED.clear();
-    }
-
-    // WAITS FOR EVERY SUBMISSION ON THE SHARED QUEUE, THEN RUNS THE DESTRUCTION CALLBACKS THE ENGINES RETIRED
-    private static void idle() {
-        synchronized (QUEUE_LOCK) {
-            check(vkDeviceWaitIdle(device), "wait for the device");
-        }
-        for (final Runnable destroy: RETIRED) destroy.run();
-        RETIRED.clear();
     }
 
     // READS A PRIVATE FIELD OF THE ENGINE: ITS ROUTE AND IMPORT STATE ARE NOT PART OF THE API

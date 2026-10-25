@@ -85,18 +85,29 @@ public interface VKContext {
     void retire(Runnable destroy);
 
     /**
-     * How {@link #vkDevice()} was created, so FFmpeg can decode video on it and the engine samples the
-     * decoded images in place. The default, {@code null}, keeps decoding off the device: frames are
-     * decoded elsewhere and uploaded from host memory.
+     * How {@link #vkDevice()} was created, so FFmpeg decodes video with Vulkan Video and the engine
+     * samples the decoded images without a trip through host memory. The default, {@code null}, keeps
+     * decoding off Vulkan: frames are decoded elsewhere and uploaded from host memory.
      * <p>
      * Decoding needs a Vulkan 1.3 instance and device with {@code timelineSemaphore} and
-     * {@code synchronization2} enabled, {@code VK_KHR_video_queue}, {@code VK_KHR_video_decode_queue}
-     * and the {@code VK_KHR_video_decode_*} extensions of the codecs to accelerate, and queues FFmpeg
-     * can own: a compute-capable and a transfer-capable queue other than {@link #queue()}, plus a video
-     * decode queue. {@link #queue()} must be the last queue created in {@link #queueFamily()}; every
-     * other queue of every family is handed to FFmpeg, which submits to them from its own threads, so
-     * while players exist the consumer never touches those queues nor calls {@code vkDeviceWaitIdle}
-     * (it waits on its own queue instead).
+     * {@code synchronization2} enabled, plus {@code VK_KHR_video_queue}, {@code VK_KHR_video_decode_queue}
+     * and the {@code VK_KHR_video_decode_*} extensions of the codecs to accelerate. FFmpeg then decodes in
+     * one of two places:
+     * <ul>
+     *   <li><b>This device</b>, when it also has queues FFmpeg can own: a compute-capable and a
+     *   transfer-capable queue other than {@link #queue()}, plus a video decode queue. {@link #queue()}
+     *   must be the last queue created in {@link #queueFamily()}. Every other queue of every family goes
+     *   to FFmpeg, which submits to them from its own threads, so while players exist the consumer never
+     *   touches those queues nor calls {@code vkDeviceWaitIdle}; it waits on its own queue instead.</li>
+     *   <li><b>A twin</b>, when the device has no such queues but enables
+     *   {@code VK_KHR_external_memory_win32} and {@code VK_KHR_external_semaphore_win32} on Windows, or
+     *   {@code VK_KHR_external_memory_fd} and {@code VK_KHR_external_semaphore_fd} elsewhere. The engine
+     *   creates a second device on the same GPU with this feature chain and these extensions, FFmpeg
+     *   decodes there, and the engine imports every decoded image into this device. The consumer's
+     *   queues stay its own.</li>
+     * </ul>
+     * Either way, every player must be released before the consumer destroys this device or its
+     * instance: FFmpeg uses them, the twin included, until its last decoder is gone.
      */
     default DeviceInfo deviceInfo() { return null; }
 

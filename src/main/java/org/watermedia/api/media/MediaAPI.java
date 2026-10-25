@@ -36,6 +36,7 @@ public final class MediaAPI {
     private static volatile Throwable ffmpegFailure;
     // private static LogCallback nativeLog; // KEEPS THE NATIVE LOG THUNK REACHABLE WHILE FFMPEG MAY CALL IT
     private static volatile boolean vulkanHwDecode; // THE BUILD DECODES WITH VULKAN VIDEO AND ITS BINDINGS LINK (PROBED AT BOOT)
+    private static volatile boolean bundledNatives; // THE NATIVES LOADED FROM BINARIES, WHOSE FFMPEG EXPORTS ITS VULKAN DECODER POOLS
 
     /**
      * Gets or creates an MRL for the given URI string.
@@ -278,13 +279,18 @@ public final class MediaAPI {
     /**
      * Whether this FFmpeg build decodes with Vulkan Video and its natives expose the
      * {@code hwcontext_vulkan} bindings (probed once at boot). When {@code true}, a player drawing
-     * through a {@link VKEngine} decodes on the engine's own device and samples the decoded images in
-     * place, provided the {@link VKContext#deviceInfo()} of that device describes one created for
-     * decoding; every other engine keeps decoding in software or through the host's accelerators.
+     * through a {@link VKEngine} decodes on the engine's own device, or on a twin of it whose images
+     * the engine imports, as far as the {@link VKContext#deviceInfo()} of that device allows; every
+     * other engine keeps decoding in software or through the host's accelerators.
      * @return {@code true} when Vulkan decoding is available to Vulkan engines on this system
      */
     public static boolean vulkanDecode() {
         return vulkanHwDecode;
+    }
+
+    // WHETHER THE NATIVES CAME FROM BINARIES (SEE VKEngine#importPicture): ITS FFMPEG CARRIES THE VULKAN EXPORT FIX OF UPSTREAM 63d0237033
+    static boolean bundledNatives() {
+        return bundledNatives;
     }
 
     /** Internal module: media resolution, the network cache and native playback; only clients run it. */
@@ -324,8 +330,10 @@ public final class MediaAPI {
             final var customPath = WaterMediaConfig.media.ffmpeg.customPath;
             final String configPath = customPath != null && !customPath.toString().isBlank() ? customPath.toAbsolutePath().toString() : null;
             if (installed == null && configPath == null) throw new IllegalStateException("Verified FFmpeg binaries are unavailable");
+            // THE BINARIES GO FIRST ON THE PRELOAD PATH, SO A CUSTOM DIRECTORY ONLY SERVES WHAT THEY LACK
             final String paths = installed == null ? configPath : configPath == null
                     ? installed.toString() : installed + File.pathSeparator + configPath;
+            bundledNatives = installed != null;
 
             System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);
             System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");

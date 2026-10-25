@@ -13,7 +13,11 @@ import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.PointerBuffer;
+import org.lwjgl.system.JNI;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.Platform;
+import org.lwjgl.system.linux.UNISTD;
+import org.lwjgl.system.windows.Kernel32;
 import org.lwjgl.vulkan.*;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.FFTool;
@@ -21,9 +25,11 @@ import org.watermedia.tools.IOTool;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -41,6 +47,15 @@ import static org.lwjgl.system.MemoryUtil.memAddress;
 import static org.lwjgl.system.MemoryUtil.memCopy;
 import static org.lwjgl.util.shaderc.Shaderc.*;
 import static org.lwjgl.vulkan.EXTExternalMemoryHost.*;
+import static org.lwjgl.vulkan.KHRExternalMemoryFd.VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRExternalMemoryFd.vkGetMemoryFdKHR;
+import static org.lwjgl.vulkan.KHRExternalMemoryWin32.VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRExternalMemoryWin32.vkGetMemoryWin32HandleKHR;
+import static org.lwjgl.vulkan.KHRExternalSemaphoreFd.VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRExternalSemaphoreFd.vkGetSemaphoreFdKHR;
+import static org.lwjgl.vulkan.KHRExternalSemaphoreFd.vkImportSemaphoreFdKHR;
+import static org.lwjgl.vulkan.KHRExternalSemaphoreWin32.VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRExternalSemaphoreWin32.vkGetSemaphoreWin32HandleKHR;
 import static org.lwjgl.vulkan.KHRVideoDecodeAV1.VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME;
 import static org.lwjgl.vulkan.KHRVideoDecodeAV1.VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
 import static org.lwjgl.vulkan.KHRVideoDecodeH264.VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME;
@@ -51,6 +66,7 @@ import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_KHR_VIDEO_DECODE_QUEUE_EXT
 import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_QUEUE_VIDEO_DECODE_BIT_KHR;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.*;
+import static org.lwjgl.vulkan.VK12.VK_SEMAPHORE_TYPE_TIMELINE;
 import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
 import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 import static org.lwjgl.vulkan.VK13.VK_ACCESS_2_SHADER_READ_BIT;
@@ -63,9 +79,10 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Vulkan implementation of {@link GFXEngine}: it uploads decoded video/image planes into an
  * engine-owned RGBA texture and exposes a ready-to-sample {@code VkImageView}.
  * <p>
- * The engine never owns a device — it borrows the consumer's {@link VKContext} (instance, physical
- * device, logical device, a queue and its serialization lock). Every object the engine produces is
- * sampleable by the consumer's own pipeline, and the engine destroys only what it created.
+ * The engine borrows the consumer's {@link VKContext} (instance, physical device, logical device, a
+ * queue and its serialization lock) and never owns that device; the only device it creates is the
+ * decoding twin described below. Every object the engine produces is sampleable by the consumer's own
+ * pipeline, and the engine destroys only what it created.
  * <p>
  * <b>Zero-copy ingestion.</b> When the device exposes {@code VK_EXT_external_memory_host} and the
  * decoder's plane buffer is aligned to {@code minImportedHostPointerAlignment}, the engine imports
@@ -98,9 +115,14 @@ import static org.watermedia.WaterMedia.LOGGER;
  * {@code SHADER_READ}) makes each frame visible to the consumer — no cross-thread semaphores.
  * <p>
  * <b>Decoded frames.</b> When the context describes its device ({@link VKContext#deviceInfo()}) and the
- * FFmpeg build decodes with Vulkan Video, the player decodes on that very device and hands the engine
- * {@code AV_PIX_FMT_VULKAN} frames: the conversion pass samples the decoder's image in place, ordered by
- * the frame's timeline semaphore as {@code hwcontext_vulkan.h} requires, and nothing crosses host memory.
+ * FFmpeg build decodes with Vulkan Video, the player hands the engine {@code AV_PIX_FMT_VULKAN} frames and
+ * nothing crosses host memory. A device created with queues for FFmpeg decodes itself, and the conversion
+ * pass samples the decoder's image in place, ordered by the frame's timeline semaphore as
+ * {@code hwcontext_vulkan.h} requires. A device that only enables the video and external memory
+ * extensions gets a twin: a second device on the same GPU with its feature chain and extensions and
+ * queues of its own, which FFmpeg decodes on. The engine creates each pool image again on the consumer's
+ * device, bound to the twin's exported memory, with its timeline semaphore imported as well, and moves
+ * the image between the two devices through the external queue family.
  * <p>
  * <b>Threading.</b> {@code upload} and {@code format(PixelFormat, int, int, int)} are called from the producer/decode
  * thread; {@link #texture()} from the render thread. {@code texture()} is cheap: it returns the view
@@ -127,8 +149,8 @@ public final class VKEngine extends GFXEngine {
     // ONE CONVERSION KIT PER DEVICE, GUARDED BY ITS OWN MONITOR (SEE Kit). KEYED BY VkDevice IDENTITY, NOT ITS HANDLE: A
     // RECREATED DEVICE MAY REUSE THE ADDRESS OF ONE WHOSE KIT A WEDGED ENGINE STILL HOLDS
     private static final Map<VkDevice, Kit> KITS = new IdentityHashMap<>();
-    // THE EXTENSION NAME ARRAYS HANDED TO FFMPEG'S DEVICE CONTEXTS, KEPT REACHABLE SO JAVACPP NEVER FREES THEM (SEE Kit#strings)
-    private static final List<Pointer> HW_STRINGS = Collections.synchronizedList(new ArrayList<>());
+    // THE EXTENSION NAME ARRAYS AND TWIN FREE CALLBACKS HANDED TO FFMPEG'S DEVICE CONTEXTS, KEPT REACHABLE SO JAVACPP NEVER FREES THEM
+    private static final List<Pointer> HW_NATIVES = Collections.synchronizedList(new ArrayList<>());
 
     // COMPUTE CONVERSION MODES (MUST MATCH THE MODE_* CONSTANTS OF vulkan/convert.comp)
     private static final int MODE_GRAY = 0;
@@ -181,15 +203,23 @@ public final class VKEngine extends GFXEngine {
     private Ycbcr ycbcr;         // THE KIT'S CONVERSION, SAMPLER AND PIPELINE FOR THIS LAYOUT
     private long ycbcrPool;      // SLOTS SETS FOR THE YCBCR LAYOUT
 
-    // DECODED FRAMES (AV_PIX_FMT_VULKAN) SAMPLED IN PLACE: ONE VIEW SET PER DECODER IMAGE, KEYED BY ITS HANDLE, OVER THE FRAMES
-    // CONTEXT THAT OWNS THEM (REFERENCED WHILE THE VIEWS LIVE) AND THE COLORIMETRY CONSTANTS OF ITS IMAGE EXTENT
-    private final Map<Long, long[]> frameViews = new HashMap<>();
+    // DECODED FRAMES: ONE PICTURE PER DECODER IMAGE BY HANDLE, THE POOL THAT OWNS THEM (REFERENCED WHILE THEY LIVE), THE TWIN IT LIVES ON
+    // (NULL ON THIS DEVICE), A POOL REFUSED FOR GOOD AND THE COLORIMETRY CONSTANTS OF ITS IMAGE EXTENT
+    private final Map<Long, Picture> pictures = new HashMap<>();
     private AVBufferRef framesRef;
     private long framesCtx;
+    private Twin framesTwin;
+    private long refusedPool;
     private float[] frameColorimetry;
     private int frameW, frameH;
     private volatile long decodedFrames; // DIAGNOSTICS, READ FROM OTHER THREADS
+    private volatile long importedFrames; // DIAGNOSTICS: THE DECODED FRAMES THAT CAME FROM THE TWIN
     private volatile boolean frameWarned;
+    private volatile boolean importWarned;
+    // THE ENGINE'S OBJECTS ON THE KIT'S TWIN, BUILT ON THE FIRST IMPORT (SEE twinObjects), AND WHETHER A FAILED STEP ENDED ITS USE
+    private VkDevice twinDevice;
+    private long twinPool;
+    private boolean twinBroken;
 
     // SUBMISSION BOOKKEEPING (PRODUCER-THREAD ONLY)
     private long head;           // NUMBER OF FRAMES SUBMITTED
@@ -354,9 +384,9 @@ public final class VKEngine extends GFXEngine {
         this.destroyImportCache();
         // THE YCBCR SETS ARE FORMAT-SPECIFIC AND NEVER REFERENCED BY CONSUMER FRAMES (THEY ONLY SAMPLE THE RGBA VIEW), SO
         // AFTER THE DRAIN ABOVE THEY DIE NOW AND THE KIT'S CONVERSION IS LEFT; THE NEW FORMAT TAKES ITS OWN ON FIRST USE.
-        // THE VIEWS OVER DECODED FRAMES FOLLOW THE PLANE FORMATS, SO THEY DIE WITH THE LAYOUT TOO
+        // THE VIEWS OVER DECODED FRAMES FOLLOW THE PLANE FORMATS, SO THEY DIE WITH THE LAYOUT TOO; THE PICTURES AND THEIR IMPORTS STAY
         this.destroyYcbcrRes();
-        this.destroyFrameViews();
+        this.destroyViews();
 
         this.publish(format, width, height, bits, color);
 
@@ -473,12 +503,12 @@ public final class VKEngine extends GFXEngine {
             LOGGER.error(IT, "VKEngine released while the GPU is wedged; its Vulkan objects are leaked");
             return;
         }
-        // THE DECODED FRAMES ARE FULLY READ: THEY RETURN TO THEIR POOL AND THE VIEWS OVER ITS IMAGES DIE WITH THE REFERENCE
+        // THE DECODED FRAMES ARE FULLY READ: THEY RETURN TO THEIR POOL AND THE PICTURES OF ITS IMAGES DIE WITH THE REFERENCE
         for (final Slot s: this.slots) {
             if (s.held != null) av_frame_free(s.held);
             s.held = null;
         }
-        this.destroyFrameViews();
+        this.destroyPictures();
         this.destroyImportCache();
         final List<Runnable> old;
         synchronized (this.ctx.queueLock()) {
@@ -492,13 +522,15 @@ public final class VKEngine extends GFXEngine {
         });
     }
 
-    // RUNS ON THE CONSUMER'S RENDER THREAD AFTER ITS IN-FLIGHT FRAMES RETIRE (SEE VKContext#retire). THE KIT GOES LAST:
-    // THESE SETS WERE ALLOCATED ON ITS LAYOUTS
+    // RUNS ON THE CONSUMER'S RENDER THREAD AFTER ITS IN-FLIGHT FRAMES RETIRE (SEE VKContext#retire). THE KIT GOES LAST: THESE SETS
+    // WERE ALLOCATED ON ITS LAYOUTS, AND ITS REFERENCE KEEPS ALIVE THE TWIN THAT OWNS THE TWIN POOL AND FENCES
     private void destroyResources() {
         for (final Slot s: this.slots) {
             this.destroySlotFormatRes(s);
             if (s.fence != 0L) { vkDestroyFence(this.device, s.fence, null); s.fence = 0L; }
+            if (s.twinFence != 0L) { vkDestroyFence(this.twinDevice, s.twinFence, null); s.twinFence = 0L; }
         }
+        if (this.twinPool != 0L) { vkDestroyCommandPool(this.twinDevice, this.twinPool, null); this.twinPool = 0L; } // FREES CMD BUFFERS
         this.destroyYcbcrRes();
         if (this.descPool != 0L) { vkDestroyDescriptorPool(this.device, this.descPool, null); this.descPool = 0L; } // FREES SETS
         if (this.cmdPool != 0L) { vkDestroyCommandPool(this.device, this.cmdPool, null); this.cmdPool = 0L; }       // FREES CMD BUFFERS
@@ -536,7 +568,7 @@ public final class VKEngine extends GFXEngine {
             // A DROPPED UPLOAD STILL COUNTS FOR RETENTION: THE LAST SUBMITTED FRAME FINISHES READING THE PRODUCER'S
             // BUFFERS BEFORE THIS CALL RETURNS, SO THE NEXT CALL'S head-2 WAIT CANNOT LEAVE IT IN FLIGHT
             final Slot last = this.slots[(int) ((this.head + SLOTS - 1) % SLOTS)];
-            if (this.head >= 1 && last.submitted) this.await(last.fence, "Retention wait");
+            if (this.head >= 1 && last.submitted) this.await(this.device, last.fence, "Retention wait");
             return;
         }
 
@@ -550,10 +582,10 @@ public final class VKEngine extends GFXEngine {
             // GFXEngine "FINISH READING BEFORE THE SECOND SUBSEQUENT UPLOAD" CONTRACT, WHICH MATTERS
             // FOR THE ZERO-COPY PATH WHERE THE GPU READS THE DECODER'S MEMORY DIRECTLY.
             final Slot twoAgo = this.slots[(int) ((this.head + 1) % SLOTS)];
-            if (this.head >= 2 && twoAgo.submitted && !this.await(twoAgo.fence, "Retention wait")) return;
+            if (this.head >= 2 && twoAgo.submitted && !this.await(this.device, twoAgo.fence, "Retention wait")) return;
             // THE SLOT WE REUSE LAST HELD FRAME head-SLOTS; ITS WORK MUST BE DONE BEFORE WE RESET
             // ITS COMMAND BUFFER AND OVERWRITE ITS IMAGES.
-            if (slot.submitted && !this.await(slot.fence, "Slot wait")) return;
+            if (slot.submitted && !this.await(this.device, slot.fence, "Slot wait")) return;
             synchronized (this.ctx.queueLock()) {
                 check(vkResetFences(this.device, slot.fence), "reset fence");
             }
@@ -658,17 +690,28 @@ public final class VKEngine extends GFXEngine {
         }
     }
 
-    // A FRAME DECODED ON THIS DEVICE (SEE hwDevice) IS SAMPLED IN PLACE UNDER hwcontext_vulkan.h'S PROTOCOL: WAIT sem_value, SIGNAL
-    // sem_value + 1 AND RECORD THE NEW LAYOUT UNDER lock_frame; THE SLOT KEEPS A REFERENCE UNTIL ITS FENCE PROVES THE READ COMPLETE
+    // WHETHER THE ENGINE SAMPLES A FRAME DECODED FOR IT (SEE hwDevice): ALWAYS ON ITS OWN DEVICE, AND ON THE KIT'S TWIN ONCE THE FRAME'S
+    // IMAGE IMPORTS HERE. WHEN FALSE THE PLAYER BRINGS THE FRAME DOWN TO RAM, AND A REFUSED POOL STAYS REFUSED
+    synchronized boolean samples(final AVFrame frame) {
+        if (this.released || frame == null || frame.format() != AV_PIX_FMT_VULKAN || FFTool.isNull(frame.hw_frames_ctx())) return false;
+        final AVVkFrame f = new AVVkFrame(frame.data(0));
+        try (final MemoryStack stack = stackPush()) {
+            return this.picture(stack, frame, new AVHWFramesContext(frame.hw_frames_ctx().data()), f, images(f)) != null;
+        } catch (final RuntimeException | LinkageError e) {
+            this.fail(e);
+            return false;
+        }
+    }
+
+    // SAMPLED UNDER hwcontext_vulkan.h'S PROTOCOL (WAIT sem_value, SIGNAL + 1, NEW LAYOUT UNDER lock_frame); A TWIN'S IMAGE CROSSES THE
+    // EXTERNAL FAMILY: THE TWIN RELEASES IT (+1), THIS DEVICE SAMPLES AND RELEASES IT (+2), THE TWIN ACQUIRES IT BACK (+3)
     synchronized void upload(final AVFrame frame) {
         if (this.released || this.failed || this.width <= 0 || this.height <= 0) return;
         if (frame == null || frame.format() != AV_PIX_FMT_VULKAN || FFTool.isNull(frame.hw_frames_ctx())) return;
         final AVHWFramesContext fc = new AVHWFramesContext(frame.hw_frames_ctx().data());
         final AVVulkanFramesContext vfc = new AVVulkanFramesContext(fc.hwctx());
         final AVVkFrame f = new AVVkFrame(frame.data(0));
-        // THE PLANES SHARE ONE MULTIPLANAR IMAGE OR EACH HAS ITS OWN (ff_vk_count_images)
-        int images = 0;
-        while (images < MAX_PLANES && f.img(images) != 0L) images++;
+        final int images = images(f);
         final FFTool.Pixels pixels = FFTool.pixels(fc.sw_format());
         if (!this.convert || pixels == null || pixels.format() != this.format || pixels.bits() != this.bits
                 || images == 0 || images != 1 && images != this.planeCount) {
@@ -680,42 +723,46 @@ public final class VKEngine extends GFXEngine {
 
         final Slot slot = this.slots[(int) (this.head % SLOTS)];
         boolean locked = false;
+        long crossed = 0L; // THE TIMELINE VALUE A TWIN'S IMAGE REACHED OUTSIDE THE TWIN WHILE ITS STEPS ARE UNFINISHED
         try (final MemoryStack stack = stackPush()) {
-            // THE FRAME THIS SLOT HELD IS FULLY READ ONCE ITS FENCE SIGNALS; ONLY THEN DOES IT RETURN TO THE DECODER'S POOL
-            if (slot.submitted && !this.await(slot.fence, "Slot wait")) return;
+            // THE FRAME THIS SLOT HELD IS FULLY READ ONCE ITS FENCES SIGNAL; ONLY THEN DOES IT RETURN TO THE DECODER'S POOL
+            if (slot.submitted && !this.await(this.device, slot.fence, "Slot wait")) return;
+            if (slot.twinSubmitted) {
+                if (!this.await(this.twinDevice, slot.twinFence, "Twin wait")) return;
+                check(vkResetFences(this.twinDevice, slot.twinFence), "reset twin fence");
+                slot.twinSubmitted = false;
+            }
             synchronized (this.ctx.queueLock()) {
                 check(vkResetFences(this.device, slot.fence), "reset fence");
             }
             slot.submitted = false;
             if (slot.held != null) av_frame_unref(slot.held);
 
-            // A NEW POOL (FIRST FRAME, RESOLUTION CHANGE) REPLACES THE VIEWS AND THE REFERENCE THAT KEEPS ITS IMAGES ALIVE
-            if (fc.address() != this.framesCtx) {
+            final Picture picture = this.picture(stack, frame, fc, f, images);
+            if (picture == null) return; // A POOL THIS DEVICE CANNOT IMPORT: THE PLAYER ASKED samples() AND DOWNLOADS ITS FRAMES
+            final Twin twin = this.framesTwin;
+            // THE SAMPLER ROUTE NEEDS THE DECODER'S OWN MULTIPLANAR IMAGE IN THE CONVERSION'S FORMAT; ANYTHING ELSE RUNS ON COMPUTE
+            if (this.ycbcrFmt != 0 && (images != 1 || vfc.format(0) != this.ycbcrFmt)) {
+                LOGGER.debug(IT, "Decoded frames arrive as {} image(s) of vkFormat {}: the YCbCr sampler route gives way to compute", images, vfc.format(0));
                 if (!this.waitAllIdle()) return;
-                this.destroyFrameViews();
-                this.framesRef = av_buffer_ref(frame.hw_frames_ctx());
-                if (FFTool.isNull(this.framesRef)) throw new IllegalStateException("VKEngine: cannot reference the decoder's frame pool");
-                this.framesCtx = fc.address();
-                // THE SAMPLER ROUTE NEEDS THE DECODER'S OWN MULTIPLANAR IMAGE IN THE CONVERSION'S FORMAT; ANYTHING ELSE RUNS ON COMPUTE
-                if (this.ycbcrFmt != 0 && (images != 1 || vfc.format(0) != this.ycbcrFmt)) {
-                    LOGGER.debug(IT, "Decoded frames arrive as {} image(s) of vkFormat {}: the YCbCr sampler route gives way to compute", images, vfc.format(0));
-                    this.destroyYcbcrRes();
-                    this.ycbcrFmt = 0;
-                    this.formatGen++;
-                }
-                LOGGER.debug(IT, "Decoded frames: {} {}x{} in {} image(s) of vkFormat {} sampled on the {} route into {}x{}",
-                        this.format, fc.width(), fc.height(), images, vfc.format(0), this.ycbcrFmt != 0 ? "YCbCr sampler" : "compute", this.width, this.height);
+                this.destroyViews();
+                this.destroyYcbcrRes();
+                this.ycbcrFmt = 0;
+                this.formatGen++;
             }
             // THE CONSTANTS SITE THE CHROMA ON THE DECODER'S IMAGE EXTENT (THE CODED SIZE); THE CROP MAPS THE OUTPUT ONTO ITS VISIBLE PART
             if (fc.width() != this.frameW || fc.height() != this.frameH) {
                 this.frameW = fc.width();
                 this.frameH = fc.height();
                 this.frameColorimetry = this.color.constants(this.format, this.frameW, this.frameH, this.bits);
+                LOGGER.debug(IT, "Decoded frames: {} {}x{} in {} image(s) of vkFormat {} {} on the {} route into {}x{}", this.format, fc.width(), fc.height(),
+                        images, vfc.format(0), twin != null ? "imported from the twin" : "sampled in place", this.ycbcrFmt != 0 ? "YCbCr sampler" : "compute",
+                        this.width, this.height);
             }
             this.ensureSlot(slot, true);
 
             // BIND THIS FRAME'S VIEWS; THE SLOT IS IDLE, SO ITS SET MAY CHANGE
-            final long[] views = this.frameViews(stack, f, images);
+            final long[] views = this.views(stack, picture, f, images);
             if (this.ycbcrFmt != 0) {
                 final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(1, stack);
                 write(writes.get(0), stack, slot.ycbcrSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, this.ycbcr.sampler, views[MAX_PLANES], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -730,14 +777,16 @@ public final class VKEngine extends GFXEngine {
             // THE FRAME'S SYNCHRONIZATION STATE IS READ AND UPDATED UNDER ITS LOCK, LIKE THE DECODER DOES
             vfc.lock_frame().call(fc, f);
             locked = true;
+            // A TWIN'S IMAGE (ALWAYS ONE) IS WAITED HERE THROUGH ITS IMPORTED SEMAPHORE, ONE STEP AFTER THE TWIN'S RELEASE
+            final int step = twin != null ? 1 : 0;
             final LongBuffer sems = stack.mallocLong(images);
             final LongBuffer waits = stack.mallocLong(images);
             final LongBuffer signals = stack.mallocLong(images);
             final IntBuffer stages = stack.mallocInt(images);
             for (int i = 0; i < images; i++) {
-                sems.put(i, f.sem(i));
-                waits.put(i, f.sem_value(i));
-                signals.put(i, f.sem_value(i) + 1);
+                sems.put(i, twin != null ? picture.semaphore() : f.sem(i));
+                waits.put(i, f.sem_value(i) + step);
+                signals.put(i, f.sem_value(i) + step + 1);
                 stages.put(i, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
             }
 
@@ -745,20 +794,30 @@ public final class VKEngine extends GFXEngine {
             final VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack)
                     .sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
             check(vkBeginCommandBuffer(slot.cmd, begin), "begin command buffer");
-            // THE SEMAPHORE WAIT MADE THE DECODER'S WRITES VISIBLE; THE BARRIERS ONLY MOVE EACH IMAGE INTO A SAMPLEABLE LAYOUT
+            // THE SEMAPHORE WAIT MADE THE DECODER'S WRITES VISIBLE; THE BARRIERS ONLY MOVE EACH IMAGE INTO A SAMPLEABLE LAYOUT, AND A TWIN'S
+            // IMAGE ACQUIRES THE LAYOUT ITS RELEASE ALREADY NAMED FROM THE EXTERNAL FAMILY (BOTH SIDES OF A TRANSFER NAME THE SAME LAYOUTS)
             for (int i = 0; i < images; i++)
-                this.barrier(stack, slot.cmd, f.img(i), f.layout(i), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+                this.barrier(stack, slot.cmd, twin != null ? picture.image() : f.img(i), f.layout(i), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                        twin != null ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
             // THE PICTURE STARTS AT THE LEFT AND TOP CROPS (av_frame_apply_cropping LEAVES THEM ON HARDWARE FRAMES) AND SPANS THE FRAME
             // SIZE; THE DECODER'S PLANES ARE NORMALIZED BY THE SAMPLER, SO THE DEPTH SCALING STAYS 1 WHATEVER THE LAYOUT'S BITS
             final float left = (float) frame.crop_left() / this.frameW, top = (float) frame.crop_top() / this.frameH;
             this.dispatch(stack, slot, left, top, (float) frame.width() / this.frameW - left, (float) frame.height() / this.frameH - top,
                     1.0f, this.frameColorimetry);
+            // THE READ IS DONE: THE IMAGE GOES BACK TO THE EXTERNAL FAMILY, KEEPING ITS LAYOUT, FOR THE TWIN TO ACQUIRE
+            if (twin != null)
+                this.barrier(stack, slot.cmd, picture.image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_EXTERNAL);
             check(vkEndCommandBuffer(slot.cmd), "end command buffer");
 
             // THE REFERENCE IS TAKEN BEFORE THE SUBMISSION, SO A FENCE IN FLIGHT ALWAYS HAS ITS FRAME
             if (slot.held == null) slot.held = av_frame_alloc();
             if (av_frame_ref(slot.held, frame) < 0) throw new IllegalStateException("VKEngine: cannot reference the decoded frame");
+            if (twin != null) {
+                this.twinStep(stack, slot.twinRelease, twin, f, f.layout(0), VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_EXTERNAL, f.sem_value(0), 0L);
+                crossed = f.sem_value(0) + 1;
+            }
             // LWJGL DERIVES THE SIGNAL AND COMMAND BUFFER COUNTS FROM THEIR BUFFERS BUT NOT THE WAIT COUNT, SHARED WITH THE STAGE MASKS
             final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
                     .pNext(VkTimelineSemaphoreSubmitInfo.calloc(stack).sType$Default().pWaitSemaphoreValues(waits).pSignalSemaphoreValues(signals))
@@ -772,16 +831,31 @@ public final class VKEngine extends GFXEngine {
                     return;
                 }
             }
-            // access IS A VkAccessFlags2 MASK: FFMPEG FEEDS IT AS srcAccessMask TO ITS NEXT synchronization2 BARRIER ON THE IMAGE
-            for (int i = 0; i < images; i++)
-                f.sem_value(i, f.sem_value(i) + 1).layout(i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).access(i, VK_ACCESS_2_SHADER_READ_BIT);
             slot.seq = ++this.submitSeq;
             slot.submitted = true;
             this.head++;
+            if (twin != null) {
+                crossed = f.sem_value(0) + 2;
+                this.twinStep(stack, slot.twinAcquire, twin, f, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_QUEUE_FAMILY_EXTERNAL, VK_QUEUE_FAMILY_IGNORED,
+                        f.sem_value(0) + 2, slot.twinFence);
+                slot.twinSubmitted = true;
+                this.importedFrames++;
+            }
+            // access IS A VkAccessFlags2 MASK: FFMPEG FEEDS IT AS srcAccessMask TO ITS NEXT synchronization2 BARRIER ON THE IMAGE. AFTER THE TWIN'S
+            // ACQUIRE NO ACCESS OF ITS OWN IS PENDING, AND THE SEMAPHORE ORDERS THE DECODER'S NEXT WRITE AFTER THIS DEVICE'S READ
+            for (int i = 0; i < images; i++)
+                f.sem_value(i, signals.get(i) + step).layout(i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).access(i, twin != null ? 0L : VK_ACCESS_2_SHADER_READ_BIT);
+            crossed = 0L;
             this.decodedFrames++;
         } catch (final RuntimeException | LinkageError e) {
             this.fail(e);
         } finally {
+            // A FAILED STEP LEAVES A TWIN'S IMAGE WITH THE EXTERNAL FAMILY AT THE LAST VALUE SUBMITTED, FOR THE DECODER'S NEXT BARRIER TO
+            // ACQUIRE, AND THE ENGINE OFF THE TWIN: AN UNFENCED RELEASE MAY STILL BE PENDING
+            if (crossed != 0L) {
+                f.sem_value(0, crossed).layout(0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).queue_family(0, VK_QUEUE_FAMILY_EXTERNAL).access(0, 0L);
+                this.twinBroken = true;
+            }
             if (locked) vfc.unlock_frame().call(fc, f);
         }
     }
@@ -819,35 +893,261 @@ public final class VKEngine extends GFXEngine {
                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     }
 
-    // THE VIEWS OF A DECODER IMAGE, KEPT PER IMAGE HANDLE UNTIL THE POOL OR THE LAYOUT CHANGES: ONE PER PLANE (ITS PLANE ASPECT OF THE
-    // MULTIPLANAR IMAGE, OR ITS OWN IMAGE) FOR THE COMPUTE PASS, OR THE YCBCR CONVERSION'S COLOR VIEW AT INDEX MAX_PLANES
-    private long[] frameViews(final MemoryStack stack, final AVVkFrame f, final int images) {
-        final long key = f.img(0);
-        long[] views = this.frameViews.get(key);
-        if (views != null) return views;
-        views = new long[MAX_PLANES + 1];
+    // THE PICTURE OF A DECODER IMAGE, KEPT UNTIL ITS POOL GOES. A NEW POOL DRAINS THE ENGINE AND REPLACES THE PICTURES AND THE REFERENCE
+    // THAT KEEPS THEIR IMAGES ALIVE; NULL FOR A POOL THIS DEVICE CANNOT SAMPLE
+    private Picture picture(final MemoryStack stack, final AVFrame frame, final AVHWFramesContext fc, final AVVkFrame f, final int images) {
+        if (fc.address() == this.refusedPool) return null;
+        if (fc.address() != this.framesCtx) {
+            if (!this.waitAllIdle()) return null;
+            this.destroyPictures();
+            this.framesRef = av_buffer_ref(frame.hw_frames_ctx());
+            if (FFTool.isNull(this.framesRef)) throw new IllegalStateException("VKEngine: cannot reference the decoder's frame pool");
+            this.framesCtx = fc.address();
+            // THE POOL LIVES ON THIS DEVICE OR ON THE KIT'S TWIN; THE FRAMES OF ANY OTHER DEVICE CANNOT BE REACHED FROM HERE
+            final long owner = new AVVulkanDeviceContext(fc.device_ctx().hwctx()).act_dev();
+            final Twin twin = this.kit.twin;
+            if (owner != this.device.address()) {
+                if (twin == null || owner != twin.device().address()) return this.refuse(fc, "lives on a foreign Vulkan device", null);
+                // A STEP THAT FAILED MID-FRAME MAY LEAVE A TWIN COMMAND BUFFER PENDING, SO THE ENGINE NEVER RECORDS ON THE TWIN AGAIN
+                if (this.twinBroken) return this.refuse(fc, "lives on the twin this engine stopped using after a failed submission", null);
+                this.framesTwin = twin;
+            }
+        }
+        final Picture cached = this.pictures.get(f.img(0));
+        if (cached != null) return cached;
+        final Picture fresh = this.framesTwin != null ? this.importPicture(stack, fc, f, images) : new Picture(f.img(0), 0L, 0L, new long[MAX_PLANES + 1]);
+        if (fresh != null) this.pictures.put(f.img(0), fresh);
+        return fresh;
+    }
+
+    // IMPORTS A TWIN'S DECODER IMAGE: AN IMAGE MADE HERE EXACTLY AS FFMPEG MADE IT (vulkan_pool_alloc AND create_frame OF hwcontext_vulkan.c),
+    // BOUND TO ITS EXPORTED MEMORY, WITH ITS TIMELINE SEMAPHORE IMPORTED FOR GOOD, SO BOTH DEVICES SHARE ONE PAYLOAD; NULL REFUSES THE POOL
+    private Picture importPicture(final MemoryStack stack, final AVHWFramesContext fc, final AVVkFrame f, final int images) {
+        final Twin twin = this.framesTwin;
+        final AVVulkanFramesContext vfc = new AVVulkanFramesContext(fc.hwctx());
+        // DECODER POOLS HOLD ONE OPTIMAL MULTIPLANAR IMAGE PER FRAME IN AN ALLOCATION OF ITS OWN; NOTHING ELSE IS REPEATED HERE
+        if (images != 1 || vfc.tiling() != VK_IMAGE_TILING_OPTIMAL || f.offset(0) != 0L) return this.refuse(fc, "is not one optimal image per frame", null);
+        final long chain = FFTool.isNull(vfc.create_pnext()) ? 0L : vfc.create_pnext().address(); // THE VIDEO PROFILE LIST OF A DECODER POOL
+        final int memoryType = twin.win32() ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT : VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+        final int semaphoreType = twin.win32() ? VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT : VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+        // FFMPEG CHAINS THE HANDLE TYPES ITS EXPORT QUERY CALLS COMPATIBLE INTO THE IMAGE (try_export_flags, WITHOUT THE PROFILE LIST)
+        final int compatible = this.exportable(stack, vfc, memoryType, vfc.img_flags() != 0 ? vfc.img_flags() : VK_IMAGE_CREATE_ALIAS_BIT);
+        if (compatible == 0) return this.refuse(fc, "cannot be imported into this device", null);
+        // BINARIES' FFMPEG ASKS WITH THE POOL'S FLAGS (63d0237033), OLDER ONES WITH THE ALIAS FLAG: OTHER NATIVES ARE TRUSTED ONLY WHERE BOTH
+        // ANSWERS AGREE, AS ASKING FOR THE HANDLE OF MEMORY NEVER EXPORTED IS UNDEFINED
+        if (!MediaAPI.bundledNatives() && this.exportable(stack, vfc, memoryType, VK_IMAGE_CREATE_ALIAS_BIT) != compatible)
+            return this.refuse(fc, "may not be exported by natives other than the bundled ones", null);
+
+        final LongBuffer p = stack.mallocLong(1);
+        long image = 0L, memory = 0L, semaphore = 0L;
+        boolean kept = false;
+        try {
+            if (this.twinPool == 0L) this.twinObjects(stack, twin);
+            // THE RAW pNext ADDRESSES KEEP THE PROFILE LIST BEHIND THE EXTERNAL INFO: LWJGL'S TYPED pNext PREPENDS AND WOULD CUT IT
+            final VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
+                    .pNext(VkExternalMemoryImageCreateInfo.calloc(stack).sType$Default().pNext(chain).handleTypes(compatible).address())
+                    .flags(vfc.img_flags()).imageType(VK_IMAGE_TYPE_2D).format(vfc.format(0))
+                    .mipLevels(1).arrayLayers(vfc.nb_layers()).samples(VK_SAMPLE_COUNT_1_BIT)
+                    .tiling(vfc.tiling()).usage(vfc.usage()).initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
+                    .sharingMode(VK_SHARING_MODE_CONCURRENT).pQueueFamilyIndices(stack.ints(twin.families()));
+            ici.extent().width(fc.width()).height(fc.height()).depth(1);
+            if (vkCreateImage(this.device, ici, null, p) != VK_SUCCESS) return this.refuse(fc, "cannot be created on this device", null);
+            image = p.get(0);
+            // FFMPEG ALLOCATED THE REQUIRED SIZE FROM THE FIRST DEVICE-LOCAL TYPE, DEDICATED WHEN THE DRIVER PREFERS IT: THE IMPORT REPEATS ALL THREE
+            final VkMemoryDedicatedRequirements dedicated = VkMemoryDedicatedRequirements.calloc(stack).sType$Default();
+            final VkMemoryRequirements2 req = VkMemoryRequirements2.calloc(stack).sType$Default().pNext(dedicated);
+            vkGetImageMemoryRequirements2(this.device, VkImageMemoryRequirementsInfo2.calloc(stack).sType$Default().image(image), req);
+            final int type = this.memType(req.memoryRequirements().memoryTypeBits(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (type < 0 || req.memoryRequirements().size() != f.size(0)) return this.refuse(fc, "needs another allocation on this device", null);
+            final long dedicate = dedicated.prefersDedicatedAllocation() || dedicated.requiresDedicatedAllocation()
+                    ? VkMemoryDedicatedAllocateInfo.calloc(stack).sType$Default().image(image).address() : 0L;
+            final VkMemoryAllocateInfo mai = VkMemoryAllocateInfo.calloc(stack).sType$Default().allocationSize(f.size(0)).memoryTypeIndex(type);
+            final VkSemaphoreCreateInfo sci = VkSemaphoreCreateInfo.calloc(stack).sType$Default()
+                    .pNext(VkSemaphoreTypeCreateInfo.calloc(stack).sType$Default().semaphoreType(VK_SEMAPHORE_TYPE_TIMELINE));
+            check(vkCreateSemaphore(this.device, sci, null, p), "create imported semaphore");
+            semaphore = p.get(0);
+
+            // AN NT HANDLE STAYS THE EXPORTER'S TO CLOSE (LWJGL BINDS NO CloseHandle, SO KERNEL32'S IS CALLED BY ADDRESS); A FILE DESCRIPTOR
+            // BELONGS TO THE IMPORT ONCE IT SUCCEEDS AND IS CLOSED HERE ONLY WHEN IT FAILS
+            if (twin.win32()) {
+                final long close = Kernel32.getLibrary().getFunctionAddress("CloseHandle");
+                final PointerBuffer handle = stack.callocPointer(1);
+                if (vkGetMemoryWin32HandleKHR(twin.device(), VkMemoryGetWin32HandleInfoKHR.calloc(stack).sType$Default()
+                        .memory(f.mem(0)).handleType(memoryType), handle) != VK_SUCCESS || handle.get(0) == 0L)
+                    return this.refuse(fc, "exports no memory", null);
+                mai.pNext(VkImportMemoryWin32HandleInfoKHR.calloc(stack).sType$Default().pNext(dedicate).handleType(memoryType).handle(handle.get(0)).address());
+                final int allocated = vkAllocateMemory(this.device, mai, null, p);
+                JNI.callPI(handle.get(0), close);
+                if (allocated != VK_SUCCESS) return this.refuse(fc, "cannot import its memory (VkResult " + allocated + ")", null);
+                memory = p.get(0);
+                handle.put(0, 0L);
+                if (vkGetSemaphoreWin32HandleKHR(twin.device(), VkSemaphoreGetWin32HandleInfoKHR.calloc(stack).sType$Default()
+                        .semaphore(f.sem(0)).handleType(semaphoreType), handle) != VK_SUCCESS || handle.get(0) == 0L)
+                    return this.refuse(fc, "exports no semaphore", null);
+                // LWJGL 3.3.6 REJECTS A NULL name, WHICH THE SPEC REQUIRES NEXT TO A handle, SO THE IMPORT IS CALLED BY ITS ADDRESS
+                final int imported = JNI.callPPI(this.device.address(), VkImportSemaphoreWin32HandleInfoKHR.calloc(stack).sType$Default()
+                        .semaphore(semaphore).handleType(semaphoreType).handle(handle.get(0)).address(), this.device.getCapabilities().vkImportSemaphoreWin32HandleKHR);
+                JNI.callPI(handle.get(0), close);
+                if (imported != VK_SUCCESS) return this.refuse(fc, "cannot import its semaphore (VkResult " + imported + ")", null);
+            } else {
+                final IntBuffer fd = stack.mallocInt(1);
+                if (vkGetMemoryFdKHR(twin.device(), VkMemoryGetFdInfoKHR.calloc(stack).sType$Default().memory(f.mem(0)).handleType(memoryType), fd) != VK_SUCCESS)
+                    return this.refuse(fc, "exports no memory", null);
+                mai.pNext(VkImportMemoryFdInfoKHR.calloc(stack).sType$Default().pNext(dedicate).handleType(memoryType).fd(fd.get(0)).address());
+                final int allocated = vkAllocateMemory(this.device, mai, null, p);
+                if (allocated != VK_SUCCESS) {
+                    UNISTD.close(null, fd.get(0));
+                    return this.refuse(fc, "cannot import its memory (VkResult " + allocated + ")", null);
+                }
+                memory = p.get(0);
+                if (vkGetSemaphoreFdKHR(twin.device(), VkSemaphoreGetFdInfoKHR.calloc(stack).sType$Default().semaphore(f.sem(0)).handleType(semaphoreType), fd) != VK_SUCCESS)
+                    return this.refuse(fc, "exports no semaphore", null);
+                final int imported = vkImportSemaphoreFdKHR(this.device, VkImportSemaphoreFdInfoKHR.calloc(stack).sType$Default()
+                        .semaphore(semaphore).handleType(semaphoreType).fd(fd.get(0)));
+                if (imported != VK_SUCCESS) {
+                    UNISTD.close(null, fd.get(0));
+                    return this.refuse(fc, "cannot import its semaphore (VkResult " + imported + ")", null);
+                }
+            }
+            if (vkBindImageMemory(this.device, image, memory, 0L) != VK_SUCCESS) return this.refuse(fc, "cannot bind its imported memory", null);
+            kept = true;
+            return new Picture(image, memory, semaphore, new long[MAX_PLANES + 1]);
+        } catch (final RuntimeException | LinkageError e) {
+            return this.refuse(fc, "failed to import", e); // A DRIVER OR BINDING FAILURE STILL LEAVES THE RAM PATH, NEVER A PARKED ENGINE
+        } finally {
+            if (!kept) {
+                if (semaphore != 0L) vkDestroySemaphore(this.device, semaphore, null);
+                if (image != 0L) vkDestroyImage(this.device, image, null);
+                if (memory != 0L) vkFreeMemory(this.device, memory, null);
+            }
+        }
+    }
+
+    // THE HANDLE TYPES A POOL'S IMAGE EXPORTS AS COMPATIBLE WITH type WHEN QUERIED WITH flags, OR 0 WHEN THIS DEVICE CANNOT IMPORT IT
+    private int exportable(final MemoryStack stack, final AVVulkanFramesContext vfc, final int type, final int flags) {
+        final VkExternalImageFormatProperties external = VkExternalImageFormatProperties.calloc(stack).sType$Default();
+        final int queried = vkGetPhysicalDeviceImageFormatProperties2(this.ctx.physicalDevice(), VkPhysicalDeviceImageFormatInfo2.calloc(stack).sType$Default()
+                        .pNext(VkPhysicalDeviceExternalImageFormatInfo.calloc(stack).sType$Default().handleType(type))
+                        .format(vfc.format(0)).type(VK_IMAGE_TYPE_2D).tiling(vfc.tiling()).usage(vfc.usage()).flags(flags),
+                VkImageFormatProperties2.calloc(stack).sType$Default().pNext(external));
+        final VkExternalMemoryProperties props = external.externalMemoryProperties();
+        return queried == VK_SUCCESS && (props.externalMemoryFeatures() & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) != 0 ? props.compatibleHandleTypes() : 0;
+    }
+
+    // REFUSES THE CURRENT POOL FOR GOOD, LOGGED ONCE PER ENGINE: samples() TURNS ITS FRAMES DOWN, SO THE PLAYER BRINGS THEM TO RAM
+    private Picture refuse(final AVHWFramesContext fc, final String reason, final Throwable cause) {
+        this.refusedPool = fc.address();
+        if (!this.importWarned) LOGGER.warn(IT, "The decoder's frame pool {}; its frames come down to RAM instead", reason, cause);
+        this.importWarned = true;
+        return null;
+    }
+
+    // THE VIEWS OF A PICTURE, BUILT ON FIRST USE FOR THE CURRENT LAYOUT: ONE PER PLANE (ITS PLANE ASPECT OF THE MULTIPLANAR IMAGE, OR ITS
+    // OWN IMAGE) FOR THE COMPUTE PASS, OR THE YCBCR CONVERSION'S COLOR VIEW AT INDEX MAX_PLANES
+    private long[] views(final MemoryStack stack, final Picture picture, final AVVkFrame f, final int images) {
+        final long[] views = picture.views();
+        if (views[0] != 0L || views[MAX_PLANES] != 0L) return views;
         if (this.ycbcrFmt != 0) {
-            views[MAX_PLANES] = this.view(stack, key, this.ycbcrFmt, VK_IMAGE_ASPECT_COLOR_BIT, this.ycbcr.conv, VK_IMAGE_USAGE_SAMPLED_BIT);
+            views[MAX_PLANES] = this.view(stack, picture.image(), this.ycbcrFmt, VK_IMAGE_ASPECT_COLOR_BIT, this.ycbcr.conv, VK_IMAGE_USAGE_SAMPLED_BIT);
         } else {
             for (int i = 0; i < this.planeCount; i++)
                 views[i] = images == 1
-                        ? this.view(stack, key, this.planeSpecs[i].format, VK_IMAGE_ASPECT_PLANE_0_BIT << i, 0L, VK_IMAGE_USAGE_SAMPLED_BIT)
+                        ? this.view(stack, picture.image(), this.planeSpecs[i].format, VK_IMAGE_ASPECT_PLANE_0_BIT << i, 0L, VK_IMAGE_USAGE_SAMPLED_BIT)
                         : this.view(stack, f.img(i), this.planeSpecs[i].format, VK_IMAGE_ASPECT_COLOR_BIT, 0L, VK_IMAGE_USAGE_SAMPLED_BIT);
         }
-        this.frameViews.put(key, views);
         return views;
     }
 
-    // CALLERS GUARANTEE THE ENGINE'S OWN WORK IS DRAINED: THE VIEWS DIE AND THE POOL REFERENCE THAT KEPT THEIR IMAGES ALIVE GOES
-    private void destroyFrameViews() {
-        for (final long[] views: this.frameViews.values())
-            for (final long view: views) if (view != 0L) vkDestroyImageView(this.device, view, null);
-        this.frameViews.clear();
+    // THE ENGINE'S OBJECTS ON THE TWIN, BUILT ON THE FIRST IMPORT: A COMMAND POOL ON THE SHARED QUEUE'S FAMILY WITH A RELEASE AND AN ACQUIRE
+    // BUFFER PER SLOT, AND A FENCE PER SLOT FOR THE ACQUIRE, THE TWIN'S LAST STEP. ALL OR NOTHING, SO A HALF SET NEVER PASSES samples()
+    private void twinObjects(final MemoryStack stack, final Twin twin) {
+        final LongBuffer p = stack.mallocLong(1);
+        check(vkCreateCommandPool(twin.device(), VkCommandPoolCreateInfo.calloc(stack).sType$Default()
+                .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(twin.family()), null, p), "create twin command pool");
+        this.twinDevice = twin.device();
+        this.twinPool = p.get(0);
+        try {
+            final PointerBuffer cmds = stack.mallocPointer(2 * SLOTS);
+            check(vkAllocateCommandBuffers(twin.device(), VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
+                    .commandPool(this.twinPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(2 * SLOTS), cmds), "alloc twin command buffers");
+            for (int i = 0; i < SLOTS; i++) {
+                this.slots[i].twinRelease = new VkCommandBuffer(cmds.get(2 * i), twin.device());
+                this.slots[i].twinAcquire = new VkCommandBuffer(cmds.get(2 * i + 1), twin.device());
+                check(vkCreateFence(twin.device(), VkFenceCreateInfo.calloc(stack).sType$Default(), null, p), "create twin fence");
+                this.slots[i].twinFence = p.get(0);
+            }
+        } catch (final RuntimeException e) {
+            for (final Slot s: this.slots) {
+                if (s.twinFence != 0L) vkDestroyFence(twin.device(), s.twinFence, null);
+                s.twinFence = 0L;
+                s.twinRelease = null;
+                s.twinAcquire = null;
+            }
+            vkDestroyCommandPool(twin.device(), this.twinPool, null); // FREES CMD BUFFERS
+            this.twinPool = 0L;
+            throw e;
+        }
+    }
+
+    // ONE OWNERSHIP STEP OF A TWIN'S IMAGE ON THE TWIN'S SHARED QUEUE: A LONE BARRIER FROM oldLayout TO THE SAMPLED LAYOUT BETWEEN THE
+    // FAMILIES, WAITING wait AND SIGNALING wait + 1 ON THE IMAGE'S TIMELINE
+    @SuppressWarnings("deprecation") // lock_queue LEAVES WITH avutil 62 FOR VK_KHR_internally_synchronized_queues, WHICH CONSUMERS DO NOT ENABLE
+    private void twinStep(final MemoryStack stack, final VkCommandBuffer cmd, final Twin twin, final AVVkFrame f, final int oldLayout,
+                          final int srcFamily, final int dstFamily, final long wait, final long fence) {
+        check(vkResetCommandBuffer(cmd, 0), "reset twin command buffer");
+        check(vkBeginCommandBuffer(cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)), "begin twin command buffer");
+        this.barrier(stack, cmd, f.img(0), oldLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, srcFamily, dstFamily);
+        check(vkEndCommandBuffer(cmd), "end twin command buffer");
+        final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
+                .pNext(VkTimelineSemaphoreSubmitInfo.calloc(stack).sType$Default().pWaitSemaphoreValues(stack.longs(wait)).pSignalSemaphoreValues(stack.longs(wait + 1)))
+                .waitSemaphoreCount(1).pWaitSemaphores(stack.longs(f.sem(0))).pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT))
+                .pCommandBuffers(stack.pointers(cmd)).pSignalSemaphores(stack.longs(f.sem(0)));
+        // FFMPEG MAY SUBMIT TO THE SAME QUEUE FROM ITS OWN THREADS: ITS lock_queue SERIALIZES BOTH (A NO-OP ON INTERNALLY SYNCHRONIZED QUEUES)
+        twin.vk().lock_queue().call(twin.context(), twin.family(), 0);
+        try {
+            check(vkQueueSubmit(twin.queue(), si, fence), "submit to the twin");
+        } finally {
+            twin.vk().unlock_queue().call(twin.context(), twin.family(), 0);
+        }
+    }
+
+    // CALLERS GUARANTEE THE ENGINE'S OWN WORK IS DRAINED: THE VIEWS AND THE COLORIMETRY OF THE IMAGE EXTENT FOLLOW THE LAYOUT
+    private void destroyViews() {
+        for (final Picture picture: this.pictures.values()) {
+            final long[] views = picture.views();
+            for (int i = 0; i < views.length; i++) {
+                if (views[i] != 0L) vkDestroyImageView(this.device, views[i], null);
+                views[i] = 0L;
+            }
+        }
+        this.frameW = 0;
+        this.frameH = 0;
+    }
+
+    // CALLERS GUARANTEE THE ENGINE'S OWN WORK IS DRAINED: THE PICTURES DIE, IMPORTS INCLUDED, AND THE POOL REFERENCE THAT KEPT THEIR IMAGES
+    // ALIVE GOES
+    private void destroyPictures() {
+        this.destroyViews();
+        for (final Picture picture: this.pictures.values()) {
+            if (picture.memory() == 0L) continue;
+            vkDestroyImage(this.device, picture.image(), null);
+            vkFreeMemory(this.device, picture.memory(), null);
+            vkDestroySemaphore(this.device, picture.semaphore(), null);
+        }
+        this.pictures.clear();
         if (this.framesRef != null) av_buffer_unref(this.framesRef);
         this.framesRef = null;
         this.framesCtx = 0L;
-        this.frameW = 0;
-        this.frameH = 0;
+        this.framesTwin = null;
+        this.refusedPool = 0L;
+    }
+
+    // THE PLANES SHARE ONE MULTIPLANAR IMAGE OR EACH HAS ITS OWN (ff_vk_count_images)
+    private static int images(final AVVkFrame f) {
+        int images = 0;
+        while (images < MAX_PLANES && f.img(images) != 0L) images++;
+        return images;
     }
 
     // ==========================================================================
@@ -1072,10 +1372,11 @@ public final class VKEngine extends GFXEngine {
         this.importCache.clear();
     }
 
-    // DRAINS THE ENGINE'S OWN FENCES; FALSE PARKS THE ENGINE BECAUSE A WEDGED GPU MAY STILL READ EVERY OBJECT
+    // DRAINS THE ENGINE'S OWN FENCES, THE TWIN'S INCLUDED; FALSE PARKS THE ENGINE BECAUSE A WEDGED GPU MAY STILL READ EVERY OBJECT
     private boolean waitAllIdle() {
         for (final Slot s: this.slots) {
-            if (s.fence != 0L && s.submitted && !this.await(s.fence, "Idle wait")) return false;
+            if (s.fence != 0L && s.submitted && !this.await(this.device, s.fence, "Idle wait")) return false;
+            if (s.twinFence != 0L && s.twinSubmitted && !this.await(this.twinDevice, s.twinFence, "Twin idle wait")) return false;
         }
         return true;
     }
@@ -1097,11 +1398,17 @@ public final class VKEngine extends GFXEngine {
     private void barrier(final MemoryStack stack, final VkCommandBuffer cmd, final long image,
                          final int oldLayout, final int newLayout,
                          final int srcStage, final int srcAccess, final int dstStage, final int dstAccess) {
+        this.barrier(stack, cmd, image, oldLayout, newLayout, srcStage, srcAccess, dstStage, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+    }
+
+    // srcFamily AND dstFamily NAME AN OWNERSHIP TRANSFER; A CONCURRENT IMAGE CROSSES DEVICES BETWEEN IGNORED AND THE EXTERNAL FAMILY
+    private void barrier(final MemoryStack stack, final VkCommandBuffer cmd, final long image, final int oldLayout, final int newLayout,
+                         final int srcStage, final int srcAccess, final int dstStage, final int dstAccess, final int srcFamily, final int dstFamily) {
         final VkImageMemoryBarrier.Buffer b = VkImageMemoryBarrier.calloc(1, stack);
         b.get(0).sType$Default()
                 .srcAccessMask(srcAccess).dstAccessMask(dstAccess)
                 .oldLayout(oldLayout).newLayout(newLayout)
-                .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                .srcQueueFamilyIndex(srcFamily).dstQueueFamilyIndex(dstFamily)
                 .image(image);
         b.get(0).subresourceRange(r -> r.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
                 .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1));
@@ -1321,9 +1628,9 @@ public final class VKEngine extends GFXEngine {
         if (result != VK_SUCCESS) throw new IllegalStateException("VKEngine: " + op + " failed (VkResult " + result + ")");
     }
 
-    // FENCE WAIT THAT PARKS THE ENGINE ON A TIMEOUT OR DEVICE LOSS INSTEAD OF RESETTING A FENCE STILL IN FLIGHT
-    private boolean await(final long fence, final String what) {
-        final int result = vkWaitForFences(this.device, fence, true, WAIT_TIMEOUT_NS);
+    // FENCE WAIT ON THIS DEVICE OR THE TWIN THAT PARKS THE ENGINE ON A TIMEOUT OR DEVICE LOSS INSTEAD OF RESETTING A FENCE STILL IN FLIGHT
+    private boolean await(final VkDevice device, final long fence, final String what) {
+        final int result = vkWaitForFences(device, fence, true, WAIT_TIMEOUT_NS);
         if (result == VK_SUCCESS) return true;
         this.fail(what, result);
         return false;
@@ -1357,11 +1664,14 @@ public final class VKEngine extends GFXEngine {
         private final Map<YcbcrKey, Ycbcr> ycbcrs = new HashMap<>(); // GUARDED BY this
         private final Map<Integer, Integer> formatFeatures = new ConcurrentHashMap<>(); // vkFormat -> optimalTilingFeatures
         private int engines; // GUARDED BY KITS
-        // THE FFMPEG DEVICE CONTEXT OVER THIS VkDevice, BUILT ON THE FIRST DESCRIBED REQUEST AND SHARED BY EVERY PLAYER DECODING ON IT,
-        // WITH THE DECODE OPERATIONS ITS QUEUES AND EXTENSIONS COVER; GUARDED BY this
+        // THE FFMPEG DEVICE CONTEXT OVER THIS VkDevice OR ITS TWIN, BUILT ON THE FIRST DESCRIBED REQUEST AND SHARED BY EVERY PLAYER, WITH THE
+        // DECODE OPERATIONS IT COVERS; ITS OWN LOCK, SO BUILDING A TWIN NEVER STALLS THE RENDER THREAD ON THE KIT MONITOR
+        private final Object hwLock = new Object();
         private AVBufferRef hwDevice;
         private boolean hwDeviceTried;
         private int decodeOps;
+        // THE TWIN FFMPEG DECODES ON WHEN THIS DEVICE GIVES IT NO QUEUES (SEE buildHwDevice), NULL OTHERWISE; READ BY THE ENGINES
+        volatile Twin twin;
 
         private Kit(final VkDevice device, final VkPhysicalDevice physical) {
             this.device = device;
@@ -1427,9 +1737,11 @@ public final class VKEngine extends GFXEngine {
             if (this.pipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.pipeLayout, null);
             if (this.descLayout != 0L) vkDestroyDescriptorSetLayout(this.device, this.descLayout, null);
             if (this.sampler != 0L) vkDestroySampler(this.device, this.sampler, null);
-            // PLAYERS KEEP THEIR OWN REFERENCES, SO THE CONTEXT ONLY GOES WHEN THE LAST OF THEM IS GONE TOO
-            if (this.hwDevice != null) av_buffer_unref(this.hwDevice);
-            this.hwDevice = null;
+            // PLAYERS KEEP THEIR OWN REFERENCES, SO THE CONTEXT (AND A TWIN) ONLY GOES WHEN THE LAST OF THEM IS GONE TOO
+            synchronized (this.hwLock) {
+                if (this.hwDevice != null) av_buffer_unref(this.hwDevice);
+                this.hwDevice = null;
+            }
         }
 
         // A NEW REFERENCE TO THE FFMPEG DEVICE CONTEXT WHEN THE DEVICE DECODES codecId, ELSE NULL; THE DEVICE IS JUDGED ONCE DESCRIBED
@@ -1441,7 +1753,7 @@ public final class VKEngine extends GFXEngine {
                 default -> 0;
             };
             if (operation == 0) return null;
-            synchronized (this) {
+            synchronized (this.hwLock) {
                 if (!this.hwDeviceTried && ctx.deviceInfo() != null) {
                     this.hwDeviceTried = true;
                     try {
@@ -1454,8 +1766,8 @@ public final class VKEngine extends GFXEngine {
             }
         }
 
-        // HANDS FFMPEG THE CONSUMER'S DEVICE AS hwcontext_vulkan.h DESCRIBES IT: THE HANDLES, THE LOADER ENTRY POINT, THE FEATURE
-        // CHAIN AND EXTENSIONS IT WAS CREATED WITH, AND THE QUEUE FAMILIES IT MAY USE
+        // THE DEVICE FFMPEG DECODES ON: THE CONSUMER'S OWN WHEN IT CREATED QUEUES FOR FFMPEG, ELSE A TWIN WHOSE FRAMES THE ENGINES IMPORT;
+        // BOTH NEED THE VIDEO EXTENSIONS, TIMELINE SEMAPHORES, synchronization2 AND VULKAN 1.3
         private AVBufferRef buildHwDevice(final VKContext ctx) {
             final VKContext.DeviceInfo info = ctx.deviceInfo();
             if (info == null || !MediaAPI.vulkanDecode()) return null;
@@ -1486,77 +1798,156 @@ public final class VKEngine extends GFXEngine {
             try (final MemoryStack stack = stackPush()) {
                 final VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.malloc(stack);
                 vkGetPhysicalDeviceProperties(this.physical, props);
-                if (Math.min(ctx.vkInstance().getCapabilities().apiVersion, props.apiVersion()) < VK_API_VERSION_1_3) {
+                final int api = Math.min(ctx.vkInstance().getCapabilities().apiVersion, props.apiVersion());
+                if (api < VK_API_VERSION_1_3) {
                     LOGGER.debug(IT, "Vulkan decoding off: FFmpeg needs a Vulkan 1.3 instance and device");
                     return null;
                 }
-
-                // FFMPEG TAKES THE FIRST ENTRY THAT FITS EACH ROLE AND SUBMITS TO ITS QUEUES 0..num-1, SO DEDICATED TRANSFER AND COMPUTE
-                // FAMILIES GO FIRST AND THE CONSUMER'S OWN FAMILY LAST, SHORT OF ITS LAST QUEUE
-                final int[] counts = info.queueCounts();
                 final IntBuffer count = stack.mallocInt(1);
                 vkGetPhysicalDeviceQueueFamilyProperties2(this.physical, count, null);
-                final int families = Math.min(count.get(0), counts.length);
+                final int families = count.get(0);
                 final VkQueueFamilyVideoPropertiesKHR.Buffer video = VkQueueFamilyVideoPropertiesKHR.calloc(families, stack);
                 final VkQueueFamilyProperties2.Buffer properties = VkQueueFamilyProperties2.calloc(families, stack);
                 for (int i = 0; i < families; i++) properties.get(i).sType$Default().pNext(video.get(i).sType$Default());
-                count.put(0, families);
                 vkGetPhysicalDeviceQueueFamilyProperties2(this.physical, count, properties);
-                final List<int[]> entries = new ArrayList<>(); // { idx, num, flags, video_caps, rank }
-                boolean compute = false, transfer = false;
-                int operations = 0;
-                for (int i = 0; i < families; i++) {
-                    if (counts[i] <= 0) continue;
-                    int flags = properties.get(i).queueFamilyProperties().queueFlags();
-                    if ((flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0) flags |= VK_QUEUE_TRANSFER_BIT; // IMPLIED BY THE SPEC
-                    int num = i == ctx.queueFamily() ? counts[i] - 1 : counts[i];
-                    // THE RENDER QUEUE ALONE IN ITS FAMILY: A GRAPHICS-ONLY ENTRY FFMPEG NEVER SUBMITS TO, LISTED SO THE DECODED
-                    // IMAGES ARE SHARED WITH THE QUEUE THAT SAMPLES THEM
-                    if (num == 0) {
-                        num = 1;
-                        flags = VK_QUEUE_GRAPHICS_BIT;
-                    }
-                    final int caps = video.get(i).videoCodecOperations();
-                    compute |= (flags & VK_QUEUE_COMPUTE_BIT) != 0;
-                    transfer |= (flags & VK_QUEUE_TRANSFER_BIT) != 0;
-                    if ((flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0) operations |= caps & enabled;
-                    final int rank = (flags & VK_QUEUE_GRAPHICS_BIT) != 0 ? 3 : (flags & VK_QUEUE_COMPUTE_BIT) != 0 ? 1
-                            : (flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 ? 2 : 0;
-                    entries.add(new int[] { i, num, flags, caps, rank });
-                }
-                if (!compute || !transfer || operations == 0) {
-                    LOGGER.debug(IT, "Vulkan decoding off: FFmpeg needs compute, transfer and video decode queues of its own (compute={}, transfer={}, decode operations=0x{})",
-                            compute, transfer, Integer.toHexString(operations));
-                    return null;
-                }
-                entries.sort(Comparator.comparingInt(entry -> entry[4]));
 
-                final AVBufferRef ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
-                if (FFTool.isNull(ref)) return null;
-                final AVVulkanDeviceContext vk = new AVVulkanDeviceContext(new AVHWDeviceContext(ref.data()).hwctx());
-                vk.get_proc_addr(VK.getFunctionProvider().getFunctionAddress("vkGetInstanceProcAddr"));
-                vk.inst(ctx.vkInstance().address()).phys_dev(this.physical.address()).act_dev(this.device.address());
-                // THE EMBEDDED VkPhysicalDeviceFeatures2 TAKES THE CONSUMER'S COPY; ITS pNext CHAIN STAYS THE CONSUMER'S, KEPT ALIVE BY IT
-                memCopy(info.features().address(), vk.device_features().address(), VkPhysicalDeviceFeatures2.SIZEOF);
-                vk.enabled_inst_extensions(strings(info.instanceExtensions())).nb_enabled_inst_extensions(info.instanceExtensions().size());
-                vk.enabled_dev_extensions(strings(info.deviceExtensions())).nb_enabled_dev_extensions(info.deviceExtensions().size());
-                for (int i = 0; i < entries.size(); i++) {
-                    final int[] entry = entries.get(i);
-                    vk.qf(i).idx(entry[0]).num(entry[1]).flags(entry[2]).video_caps(entry[3]);
-                }
-                vk.nb_qf(entries.size());
-                final int result = av_hwdevice_ctx_init(ref);
-                if (result < 0) {
-                    LOGGER.warn(IT, "FFmpeg refused the Vulkan device: {}", FFTool.error(result));
-                    av_buffer_unref(ref);
+                // THE CONSUMER CREATED QUEUES FOR FFMPEG: IT DECODES ON THE CONSUMER'S OWN DEVICE
+                final Queues lent = queues(Arrays.copyOf(info.queueCounts(), families), ctx.queueFamily(), properties, video, enabled);
+                if (lent.decodes()) return this.context(ctx, info, this.device, lent, props, null);
+
+                // OTHERWISE ON A TWIN: THE CONSUMER'S FEATURE CHAIN AND EXTENSIONS ON A DEVICE OF ITS OWN, SO FFMPEG'S IMAGES TAKE ONLY CREATE
+                // PARAMETERS THE CONSUMER'S DEVICE CAN REPEAT; THEY CROSS AS OPAQUE HANDLES AND MUST BE CONCURRENT (TWO FAMILIES OR MORE)
+                final boolean win32 = Platform.get() == Platform.WINDOWS;
+                final String memory = win32 ? VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME : VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+                final String semaphore = win32 ? VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME : VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+                final VKCapabilitiesDevice caps = this.device.getCapabilities();
+                final boolean bound = win32 ? caps.VK_KHR_external_memory_win32 && caps.VK_KHR_external_semaphore_win32
+                        : caps.VK_KHR_external_memory_fd && caps.VK_KHR_external_semaphore_fd;
+                // FFMPEG EXPORTS ITS TIMELINE SEMAPHORES ONLY WHEN THIS QUERY CALLS THEM EXPORTABLE, AND THIS DEVICE MUST IMPORT THEM
+                final VkExternalSemaphoreProperties semaphores = VkExternalSemaphoreProperties.calloc(stack).sType$Default();
+                vkGetPhysicalDeviceExternalSemaphoreProperties(this.physical, VkPhysicalDeviceExternalSemaphoreInfo.calloc(stack).sType$Default()
+                        .handleType(win32 ? VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT : VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT), semaphores);
+                final int crossing = VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
+                // ONE QUEUE PER FAMILY DECODING USES (GRAPHICS, COMPUTE, DECODE): EACH LISTED FAMILY SHARES FFMPEG'S CONCURRENT IMAGES, SO ENCODE,
+                // OPTICAL FLOW AND TRANSFER-ONLY FAMILIES STAY OUT. NONE IS KEPT BACK: THE ENGINES TAKE THE CONSUMER'S FAMILY WITH FFMPEG'S LOCK
+                final int[] counts = new int[families];
+                for (int i = 0; i < families; i++)
+                    if ((properties.get(i).queueFamilyProperties().queueFlags() & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_VIDEO_DECODE_BIT_KHR)) != 0)
+                        counts[i] = 1;
+                final Queues spare = queues(counts, -1, properties, video, enabled);
+                if (!info.deviceExtensions().contains(memory) || !info.deviceExtensions().contains(semaphore) || !bound
+                        || (semaphores.externalSemaphoreFeatures() & crossing) != crossing || !spare.decodes() || spare.families().length < 2
+                        || counts[ctx.queueFamily()] == 0) {
+                    LOGGER.debug(IT, "Vulkan decoding off: the device leaves FFmpeg no compute, transfer and video decode queues (compute={}, transfer={}, "
+                            + "decode operations=0x{}), and a twin needs {} and {} enabled, shareable semaphores and a GPU that decodes (operations=0x{})",
+                            lent.compute(), lent.transfer(), Integer.toHexString(lent.operations()), memory, semaphore, Integer.toHexString(spare.operations()));
                     return null;
                 }
-                this.decodeOps = operations;
-                final StringBuilder queues = new StringBuilder();
-                for (final int[] entry: entries) queues.append(queues.isEmpty() ? "" : ", ").append(entry[0]).append('x').append(entry[1]).append(" flags=0x").append(Integer.toHexString(entry[2]));
-                LOGGER.info(IT, "FFmpeg decodes on the Vulkan device {} (decode operations 0x{}, queue families {})", props.deviceNameString(), Integer.toHexString(operations), queues);
+                final VkDeviceQueueCreateInfo.Buffer created = VkDeviceQueueCreateInfo.calloc(spare.families().length, stack);
+                for (int i = 0; i < spare.families().length; i++) {
+                    final int family = spare.families()[i];
+                    final FloatBuffer priorities = stack.mallocFloat(counts[family]);
+                    for (int q = 0; q < counts[family]; q++) priorities.put(q, 1.0f);
+                    created.get(i).sType$Default().queueFamilyIndex(family).pQueuePriorities(priorities);
+                }
+                final PointerBuffer names = stack.mallocPointer(info.deviceExtensions().size());
+                for (final String name: info.deviceExtensions()) names.put(stack.UTF8(name));
+                // THE CONSUMER'S CHAIN STARTS WITH ITS VkPhysicalDeviceFeatures2, SO IT GOES IN pNext AND pEnabledFeatures STAYS NULL
+                final VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(stack).sType$Default().pNext(info.features().address())
+                        .pQueueCreateInfos(created).ppEnabledExtensionNames(names.flip());
+                final PointerBuffer handle = stack.mallocPointer(1);
+                final int result = vkCreateDevice(this.physical, dci, null, handle);
+                if (result != VK_SUCCESS) {
+                    LOGGER.warn(IT, "Vulkan decoding off: the twin device cannot be created (VkResult {})", result);
+                    return null;
+                }
+                final VkDevice twin = new VkDevice(handle.get(0), this.physical, dci, api);
+                final TwinFree free = new TwinFree(twin);
+                HW_NATIVES.add(free);
+                final AVBufferRef ref;
+                try {
+                    ref = this.context(ctx, info, twin, spare, props, free);
+                } catch (final RuntimeException | LinkageError e) {
+                    free.call(null);
+                    throw e;
+                }
+                if (ref == null) {
+                    free.call(null);
+                    return null;
+                }
+                // THE ENGINES MOVE THE IMAGES ON THE QUEUE OF THE CONSUMER'S FAMILY, WHICH FFMPEG MAY ALSO SUBMIT TO UNDER ITS lock_queue
+                vkGetDeviceQueue(twin, ctx.queueFamily(), 0, handle);
+                final AVHWDeviceContext context = new AVHWDeviceContext(ref.data());
+                this.twin = new Twin(twin, context, new AVVulkanDeviceContext(context.hwctx()), new VkQueue(handle.get(0), twin), ctx.queueFamily(),
+                        spare.families(), win32);
                 return ref;
             }
+        }
+
+        // THE FAMILIES FFMPEG MAY USE ON A DEVICE WITH counts QUEUES PER FAMILY. IT TAKES THE FIRST ENTRY FITTING EACH ROLE, SO DEDICATED
+        // TRANSFER AND COMPUTE FAMILIES GO FIRST AND THE CONSUMER'S FAMILY LAST, SHORT OF THE LAST QUEUE OF own (-1 KEEPS NONE BACK)
+        private static Queues queues(final int[] counts, final int own, final VkQueueFamilyProperties2.Buffer properties,
+                                     final VkQueueFamilyVideoPropertiesKHR.Buffer video, final int enabled) {
+            final List<int[]> entries = new ArrayList<>();
+            boolean compute = false, transfer = false;
+            int operations = 0;
+            for (int i = 0; i < counts.length; i++) {
+                if (counts[i] <= 0) continue;
+                int flags = properties.get(i).queueFamilyProperties().queueFlags();
+                if ((flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0) flags |= VK_QUEUE_TRANSFER_BIT; // IMPLIED BY THE SPEC
+                int num = i == own ? counts[i] - 1 : counts[i];
+                // THE RENDER QUEUE ALONE IN ITS FAMILY: A GRAPHICS-ONLY ENTRY FFMPEG NEVER SUBMITS TO, LISTED SO THE DECODED
+                // IMAGES ARE SHARED WITH THE QUEUE THAT SAMPLES THEM
+                if (num == 0) {
+                    num = 1;
+                    flags = VK_QUEUE_GRAPHICS_BIT;
+                }
+                final int caps = video.get(i).videoCodecOperations();
+                compute |= (flags & VK_QUEUE_COMPUTE_BIT) != 0;
+                transfer |= (flags & VK_QUEUE_TRANSFER_BIT) != 0;
+                if ((flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0) operations |= caps & enabled;
+                final int rank = (flags & VK_QUEUE_GRAPHICS_BIT) != 0 ? 3 : (flags & VK_QUEUE_COMPUTE_BIT) != 0 ? 1
+                        : (flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 ? 2 : 0;
+                entries.add(new int[] { i, num, flags, caps, rank });
+            }
+            entries.sort(Comparator.comparingInt(entry -> entry[4]));
+            // ONE ENTRY PER FAMILY, SO THE LIST ORDER IS THE ORDER FFMPEG SHARES ITS IMAGES IN (img_qfs)
+            return new Queues(entries, compute, transfer, operations, entries.stream().mapToInt(entry -> entry[0]).toArray());
+        }
+
+        // HANDS FFMPEG A DEVICE AS hwcontext_vulkan.h DESCRIBES IT: THE HANDLES, THE LOADER ENTRY POINT, THE CONSUMER'S FEATURE CHAIN AND
+        // EXTENSIONS (A TWIN WAS CREATED WITH THEM TOO) AND THE QUEUE FAMILIES; A TWIN'S CONTEXT DESTROYS THE TWIN WHEN FFMPEG FREES IT
+        private AVBufferRef context(final VKContext ctx, final VKContext.DeviceInfo info, final VkDevice device, final Queues queues,
+                                    final VkPhysicalDeviceProperties props, final TwinFree free) {
+            final AVBufferRef ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
+            if (FFTool.isNull(ref)) return null;
+            final AVHWDeviceContext hw = new AVHWDeviceContext(ref.data());
+            if (free != null) hw._free(free);
+            final AVVulkanDeviceContext vk = new AVVulkanDeviceContext(hw.hwctx());
+            vk.get_proc_addr(VK.getFunctionProvider().getFunctionAddress("vkGetInstanceProcAddr"));
+            vk.inst(ctx.vkInstance().address()).phys_dev(this.physical.address()).act_dev(device.address());
+            // THE EMBEDDED VkPhysicalDeviceFeatures2 TAKES THE CONSUMER'S COPY; ITS pNext CHAIN STAYS THE CONSUMER'S, KEPT ALIVE BY IT
+            memCopy(info.features().address(), vk.device_features().address(), VkPhysicalDeviceFeatures2.SIZEOF);
+            vk.enabled_inst_extensions(strings(info.instanceExtensions())).nb_enabled_inst_extensions(info.instanceExtensions().size());
+            vk.enabled_dev_extensions(strings(info.deviceExtensions())).nb_enabled_dev_extensions(info.deviceExtensions().size());
+            for (int i = 0; i < queues.entries().size(); i++) {
+                final int[] entry = queues.entries().get(i);
+                vk.qf(i).idx(entry[0]).num(entry[1]).flags(entry[2]).video_caps(entry[3]);
+            }
+            vk.nb_qf(queues.entries().size());
+            final int result = av_hwdevice_ctx_init(ref);
+            if (result < 0) {
+                LOGGER.warn(IT, "FFmpeg refused the Vulkan device: {}", FFTool.error(result));
+                av_buffer_unref(ref);
+                return null;
+            }
+            this.decodeOps = queues.operations();
+            final StringBuilder families = new StringBuilder();
+            for (final int[] entry: queues.entries())
+                families.append(families.isEmpty() ? "" : ", ").append(entry[0]).append('x').append(entry[1]).append(" flags=0x").append(Integer.toHexString(entry[2]));
+            LOGGER.info(IT, "FFmpeg decodes on {} {} (decode operations 0x{}, queue families {})", free == null ? "the Vulkan device" : "a twin of the Vulkan device",
+                    props.deviceNameString(), Integer.toHexString(queues.operations()), families);
+            return ref;
         }
 
         // A C STRING ARRAY FOR THE DEVICE CONTEXT, OR NULL FOR NO ENTRIES. FFMPEG RE-READS THE EXTENSION NAMES ON EVERY DECODER INIT AND
@@ -1566,10 +1957,10 @@ public final class VKEngine extends GFXEngine {
             final PointerPointer<BytePointer> array = new PointerPointer<>(names.size());
             for (int i = 0; i < names.size(); i++) {
                 final BytePointer name = new BytePointer(names.get(i));
-                HW_STRINGS.add(name);
+                HW_NATIVES.add(name);
                 array.put(i, name);
             }
-            HW_STRINGS.add(array);
+            HW_NATIVES.add(array);
             return array;
         }
 
@@ -1732,6 +2123,25 @@ public final class VKEngine extends GFXEngine {
         }
     }
 
+    // DESTROYS A TWIN ONCE FFMPEG FREES ITS DEVICE CONTEXT, AFTER THE KIT AND THE LAST PLAYER LET GO OF IT, OR WHEN THE CONTEXT NEVER
+    // CAME TO BE; THE ENGINES' TWIN OBJECTS ARE GONE BY THEN, AS THE KIT OUTLIVES THEM
+    private static final class TwinFree extends AVHWDeviceContext.Free_AVHWDeviceContext {
+        private final VkDevice device;
+        private boolean destroyed;
+
+        TwinFree(final VkDevice device) {
+            this.device = device;
+        }
+
+        @Override
+        public synchronized void call(final AVHWDeviceContext context) {
+            if (this.destroyed) return;
+            this.destroyed = true;
+            vkDestroyDevice(this.device, null);
+            LOGGER.debug(IT, "Destroyed the twin Vulkan device 0x{}", Long.toHexString(this.device.address()));
+        }
+    }
+
     // ONE KEY'S SHARED YCBCR OBJECTS; perSet IS THE COMBINED-SAMPLER DESCRIPTOR COST OF ONE SET ON layout
     private static final class Ycbcr {
         final YcbcrKey key;
@@ -1766,7 +2176,10 @@ public final class VKEngine extends GFXEngine {
         long ycbcrSet;           // SET FOR THE YCBCR LAYOUT (0 UNTIL THE YCBCR OBJECTS EXIST)
         long gen = -1L;          // FORMAT GENERATION THIS SLOT'S RESOURCES MATCH
         boolean external;        // BUILT FOR DECODED FRAMES: NO PLANE IMAGES, THE PLANES ARE BOUND PER FRAME
-        AVFrame held;            // THE DECODED FRAME THE LAST SUBMISSION READS, REFERENCED UNTIL ITS FENCE SIGNALS
+        AVFrame held;            // THE DECODED FRAME THE LAST SUBMISSION READS, REFERENCED UNTIL ITS FENCES SIGNAL
+        VkCommandBuffer twinRelease, twinAcquire; // A TWIN'S IMAGE: ITS RELEASE BEFORE AND ITS ACQUIRE AFTER THIS DEVICE'S READ
+        long twinFence;          // SIGNALED BY THE ACQUIRE, THE LAST STEP OF A TWIN'S FRAME
+        boolean twinSubmitted;
     }
 
     // A PERSISTENT MAPPED HOST-VISIBLE STAGING BUFFER (FALLBACK COPY SOURCE).
@@ -1777,6 +2190,20 @@ public final class VKEngine extends GFXEngine {
 
     // AN IMAGE + ITS BACKING MEMORY + ITS VIEW.
     private record Img(long image, long memory, long view) {}
+
+    // WHAT THE ENGINE SAMPLES OF A DECODER IMAGE: THE IMAGE AND ITS VIEWS (BUILT PER LAYOUT). FOR A TWIN'S IMAGE THE IMAGE IS ITS COPY ON
+    // THIS DEVICE, BOUND TO THE IMPORTED memory AND WAITED THROUGH THE IMPORTED semaphore; BOTH ARE 0 FOR AN IMAGE OF THIS DEVICE
+    private record Picture(long image, long memory, long semaphore, long[] views) {}
+
+    // A TWIN AS ENGINES IMPORT FROM IT: ITS DEVICE AND FFMPEG CONTEXTS, THE QUEUE 0 OF family THE ENGINES SHARE WITH FFMPEG UNDER ITS QUEUE
+    // LOCK, THE FAMILIES FFMPEG SHARES ITS IMAGES WITH IN ITS OWN ORDER, AND WHETHER ITS OPAQUE HANDLES ARE WIN32 HANDLES OR FILE DESCRIPTORS
+    private record Twin(VkDevice device, AVHWDeviceContext context, AVVulkanDeviceContext vk, VkQueue queue, int family, int[] families, boolean win32) {}
+
+    // THE QUEUE FAMILIES FFMPEG MAY USE ON A DEVICE ({ idx, num, flags, video_caps, rank } IN ITS ORDER), THE ROLES THEY COVER, THE DECODE
+    // OPERATIONS THEIR VIDEO FAMILIES OFFER AND THE FAMILIES THEY LIST, ONCE EACH
+    private record Queues(List<int[]> entries, boolean compute, boolean transfer, int operations, int[] families) {
+        boolean decodes() { return this.compute && this.transfer && this.operations != 0; }
+    }
 
     // PER-PLANE GPU IMAGE DESCRIPTOR FOR THE CURRENT FORMAT.
     private static final class PlaneSpec {
