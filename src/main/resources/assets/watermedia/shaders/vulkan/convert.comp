@@ -1,6 +1,7 @@
 #version 450
 // ONE COMPUTE SHADER FOR EVERY NON-PASSTHROUGH FORMAT, MIRRORING THE OPENGL FRAGMENT SHADERS THROUGH colorimetry.glsl.
-// PLANES SAMPLE NORMALIZED (CHROMA AT colorimetry[2]'S SITED COORDS); PACKED YUV USES texelFetch TO KEEP PAIRS APART
+// PLANES SAMPLE NORMALIZED (CHROMA AT colorimetry[2]'S SITED COORDS); PACKED YUV USES texelFetch TO KEEP PAIRS APART.
+// THE OUTPUT COVERS THE PLANES FROM origin ACROSS crop (FRACTIONS): THE WHOLE PLANE FOR UPLOADS, THE PICTURE OF A DECODER'S PADDED IMAGE
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D plane0;
 layout(binding = 1) uniform sampler2D plane1;
@@ -13,6 +14,8 @@ layout(push_constant) uniform PC {
     int width;
     int height;
     vec4 colorimetry[4];
+    vec2 crop;
+    vec2 origin;
 } pc;
 
 // MUST MATCH THE MODE_* CONSTANTS OF VKEngine
@@ -29,7 +32,7 @@ const int MODE_UYVY = 6;
 void main() {
     ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
     if (gid.x >= pc.width || gid.y >= pc.height) return;
-    vec2 uv = (vec2(gid) + 0.5) / vec2(float(pc.width), float(pc.height));
+    vec2 uv = pc.origin + (vec2(gid) + 0.5) / vec2(float(pc.width), float(pc.height)) * pc.crop;
     vec2 chroma = uv * pc.colorimetry[2].xy + pc.colorimetry[2].zw;
     float bs = pc.bitScale;
     float alpha = 1.0;

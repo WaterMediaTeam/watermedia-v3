@@ -1,6 +1,7 @@
 package org.watermedia.tools;
 
 import org.bytedeco.javacpp.BytePointer;
+import org.bytedeco.javacpp.IntPointer;
 import org.bytedeco.javacpp.Pointer;
 import org.watermedia.api.util.PixelFormat;
 
@@ -113,6 +114,18 @@ public final class FFTool {
 
     /** Returns whether a native pointer is missing or null. */
     public static boolean isNull(final Pointer pointer) { return pointer == null || pointer.isNull(); }
+
+    /** Returns whether the natives link the Vulkan bindings of libavutil; a JNI library built without them lacks their symbols. */
+    public static boolean vulkanBindings() {
+        try {
+            final Pointer extensions = av_vk_get_optional_device_extensions(new IntPointer(1));
+            if (isNull(extensions)) return false;
+            av_free(extensions);
+            return true;
+        } catch (final RuntimeException | LinkageError e) {
+            return false;
+        }
+    }
 
     /** Reads a native string, or returns {@code orElse} as text when the pointer is null. */
     public static String string(final BytePointer pointer, final Object orElse) {

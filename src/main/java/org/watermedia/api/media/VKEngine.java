@@ -2,29 +2,61 @@ package org.watermedia.api.media;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.bytedeco.ffmpeg.avutil.AVBufferRef;
+import org.bytedeco.ffmpeg.avutil.AVFrame;
+import org.bytedeco.ffmpeg.avutil.AVHWDeviceContext;
+import org.bytedeco.ffmpeg.avutil.AVHWFramesContext;
+import org.bytedeco.ffmpeg.avutil.AVVkFrame;
+import org.bytedeco.ffmpeg.avutil.AVVulkanDeviceContext;
+import org.bytedeco.ffmpeg.avutil.AVVulkanFramesContext;
+import org.bytedeco.javacpp.BytePointer;
+import org.bytedeco.javacpp.Pointer;
+import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.FFTool;
 import org.watermedia.tools.IOTool;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_AV1;
+import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_H264;
+import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_HEVC;
+import static org.bytedeco.ffmpeg.global.avutil.*;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.memAddress;
 import static org.lwjgl.system.MemoryUtil.memCopy;
 import static org.lwjgl.util.shaderc.Shaderc.*;
 import static org.lwjgl.vulkan.EXTExternalMemoryHost.*;
+import static org.lwjgl.vulkan.KHRVideoDecodeAV1.VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeAV1.VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
+import static org.lwjgl.vulkan.KHRVideoDecodeH264.VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeH264.VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR;
+import static org.lwjgl.vulkan.KHRVideoDecodeH265.VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeH265.VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR;
+import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_QUEUE_VIDEO_DECODE_BIT_KHR;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.*;
+import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+import static org.lwjgl.vulkan.VK13.VK_ACCESS_2_SHADER_READ_BIT;
+import static org.lwjgl.vulkan.VK13.VK_API_VERSION_1_3;
+import static org.lwjgl.vulkan.VK13.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+import static org.lwjgl.vulkan.VK13.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 import static org.watermedia.WaterMedia.LOGGER;
 
 /**
@@ -65,6 +97,11 @@ import static org.watermedia.WaterMedia.LOGGER;
  * {@link VKContext#queueLock()}, so a single same-queue image barrier (to {@code FRAGMENT_SHADER} /
  * {@code SHADER_READ}) makes each frame visible to the consumer — no cross-thread semaphores.
  * <p>
+ * <b>Decoded frames.</b> When the context describes its device ({@link VKContext#deviceInfo()}) and the
+ * FFmpeg build decodes with Vulkan Video, the player decodes on that very device and hands the engine
+ * {@code AV_PIX_FMT_VULKAN} frames: the conversion pass samples the decoder's image in place, ordered by
+ * the frame's timeline semaphore as {@code hwcontext_vulkan.h} requires, and nothing crosses host memory.
+ * <p>
  * <b>Threading.</b> {@code upload} and {@code format(PixelFormat, int, int, int)} are called from the producer/decode
  * thread; {@link #texture()} from the render thread. {@code texture()} is cheap: it returns the view
  * of the most-recently-submitted slot whose fence has signaled (or the last one it returned), reading
@@ -77,8 +114,8 @@ public final class VKEngine extends GFXEngine {
     // COMPLETED FRAME WHILE NEWER ONES ARE STILL ON THE GPU.
     private static final int SLOTS = 3;
     private static final int MAX_PLANES = 4;
-    private static final int PUSH_BYTES = 80; // { int mode; float bitScale; int width; int height; vec4 colorimetry[4]; } (std430)
-    private static final int YCBCR_PUSH_BYTES = 8; // { int width; int height; }
+    private static final int PUSH_BYTES = 96; // { int mode; float bitScale; int width; int height; vec4 colorimetry[4]; vec2 crop; vec2 origin; } (std430)
+    private static final int YCBCR_PUSH_BYTES = 24; // { int width; int height; vec2 crop; vec2 origin; }
     private static final long WAIT_TIMEOUT_NS = 5_000_000_000L; // 5s — GUARD AGAINST A WEDGED GPU
 
     // PROCESS-WIDE CACHES OF THE COMPILED SHADERS (SPIR-V IS DEVICE-INDEPENDENT), FILLED LAZILY
@@ -90,6 +127,8 @@ public final class VKEngine extends GFXEngine {
     // ONE CONVERSION KIT PER DEVICE, GUARDED BY ITS OWN MONITOR (SEE Kit). KEYED BY VkDevice IDENTITY, NOT ITS HANDLE: A
     // RECREATED DEVICE MAY REUSE THE ADDRESS OF ONE WHOSE KIT A WEDGED ENGINE STILL HOLDS
     private static final Map<VkDevice, Kit> KITS = new IdentityHashMap<>();
+    // THE EXTENSION NAME ARRAYS HANDED TO FFMPEG'S DEVICE CONTEXTS, KEPT REACHABLE SO JAVACPP NEVER FREES THEM (SEE Kit#strings)
+    private static final List<Pointer> HW_STRINGS = Collections.synchronizedList(new ArrayList<>());
 
     // COMPUTE CONVERSION MODES (MUST MATCH THE MODE_* CONSTANTS OF vulkan/convert.comp)
     private static final int MODE_GRAY = 0;
@@ -141,6 +180,16 @@ public final class VKEngine extends GFXEngine {
     private int ycbcrFilter;     // CHOSEN VkFilter FOR min/mag/chroma (ALWAYS THE SAME THREE)
     private Ycbcr ycbcr;         // THE KIT'S CONVERSION, SAMPLER AND PIPELINE FOR THIS LAYOUT
     private long ycbcrPool;      // SLOTS SETS FOR THE YCBCR LAYOUT
+
+    // DECODED FRAMES (AV_PIX_FMT_VULKAN) SAMPLED IN PLACE: ONE VIEW SET PER DECODER IMAGE, KEYED BY ITS HANDLE, OVER THE FRAMES
+    // CONTEXT THAT OWNS THEM (REFERENCED WHILE THE VIEWS LIVE) AND THE COLORIMETRY CONSTANTS OF ITS IMAGE EXTENT
+    private final Map<Long, long[]> frameViews = new HashMap<>();
+    private AVBufferRef framesRef;
+    private long framesCtx;
+    private float[] frameColorimetry;
+    private int frameW, frameH;
+    private volatile long decodedFrames; // DIAGNOSTICS, READ FROM OTHER THREADS
+    private volatile boolean frameWarned;
 
     // SUBMISSION BOOKKEEPING (PRODUCER-THREAD ONLY)
     private long head;           // NUMBER OF FRAMES SUBMITTED
@@ -295,36 +344,19 @@ public final class VKEngine extends GFXEngine {
     synchronized boolean apply(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
         // DRAIN ENGINE WORK SO PER-FORMAT RESOURCES CAN BE DESTROYED SAFELY; A WEDGED GPU REFUSES THE LAYOUT INSTEAD
         if (!this.waitAllIdle()) return false;
-        synchronized (this.ctx.queueLock()) {
-            for (final Slot s: this.slots) {
-                // THE CONSUMER MAY STILL SAMPLE THE VIEW texture() RETURNED (waitAllIdle DRAINS ONLY OUR FENCES), SO IT
-                // DIES AFTER THE NEXT PUBLISHED FRAME; PLANE/STAGING RESOURCES ARE PRIVATE AND DRAINED, SO THEY DIE NOW
-                final long view = s.view, img = s.outImg, mem = s.outMem;
-                if (view != 0L || img != 0L || mem != 0L) {
-                    s.view = 0L;
-                    s.outImg = 0L;
-                    s.outMem = 0L;
-                    final Runnable destroy = () -> {
-                        if (view != 0L) vkDestroyImageView(this.device, view, null);
-                        if (img != 0L) vkDestroyImage(this.device, img, null);
-                        if (mem != 0L) vkFreeMemory(this.device, mem, null);
-                    };
-                    // ONLY THE EXPOSED VIEW WAITS FOR THE NEXT PUBLISHED FRAME; THE OTHERS RETIRE WITH THE IN-FLIGHT FRAMES
-                    if (view == this.lastView) this.retiring.add(destroy);
-                    else this.ctx.retire(destroy);
-                }
-                s.seq = 0L;
-                s.submitted = false;
-            }
-        }
         for (final Slot s: this.slots) {
+            // THE DECODED FRAME A SLOT HELD IS FULLY READ, SO IT RETURNS TO THE DECODER'S POOL
+            if (s.held != null) av_frame_unref(s.held);
+            this.retireOutput(s);
             this.destroySlotFormatRes(s);
             s.gen = -1L;
         }
         this.destroyImportCache();
         // THE YCBCR SETS ARE FORMAT-SPECIFIC AND NEVER REFERENCED BY CONSUMER FRAMES (THEY ONLY SAMPLE THE RGBA VIEW), SO
-        // AFTER THE DRAIN ABOVE THEY DIE NOW AND THE KIT'S CONVERSION IS LEFT; THE NEW FORMAT TAKES ITS OWN ON FIRST USE
+        // AFTER THE DRAIN ABOVE THEY DIE NOW AND THE KIT'S CONVERSION IS LEFT; THE NEW FORMAT TAKES ITS OWN ON FIRST USE.
+        // THE VIEWS OVER DECODED FRAMES FOLLOW THE PLANE FORMATS, SO THEY DIE WITH THE LAYOUT TOO
         this.destroyYcbcrRes();
+        this.destroyFrameViews();
 
         this.publish(format, width, height, bits, color);
 
@@ -427,6 +459,11 @@ public final class VKEngine extends GFXEngine {
         vkFreeMemory(this.device, imp.memory(), null);
     }
 
+    // A NEW REFERENCE TO THE FFMPEG DEVICE CONTEXT PLAYERS DECODE ON (SEE Kit#hwDevice), OR NULL WHEN THE DEVICE CANNOT DECODE codecId
+    AVBufferRef hwDevice(final int codecId) {
+        return this.released ? null : this.kit.hwDevice(this.ctx, codecId);
+    }
+
     // HOST IMPORTS DIE NOW: THE PRODUCER FREES THEIR MEMORY RIGHT AFTER release() AND AN IMPORT OUTLIVING ITS HOST POINTER
     // CRASHES THE DRIVER; THE REST IS RETIRED BY THE BACKEND ONCE ITS IN-FLIGHT FRAMES (WHICH MAY SAMPLE THE VIEW) COMPLETE
     @Override
@@ -436,6 +473,12 @@ public final class VKEngine extends GFXEngine {
             LOGGER.error(IT, "VKEngine released while the GPU is wedged; its Vulkan objects are leaked");
             return;
         }
+        // THE DECODED FRAMES ARE FULLY READ: THEY RETURN TO THEIR POOL AND THE VIEWS OVER ITS IMAGES DIE WITH THE REFERENCE
+        for (final Slot s: this.slots) {
+            if (s.held != null) av_frame_free(s.held);
+            s.held = null;
+        }
+        this.destroyFrameViews();
         this.destroyImportCache();
         final List<Runnable> old;
         synchronized (this.ctx.queueLock()) {
@@ -517,7 +560,7 @@ public final class VKEngine extends GFXEngine {
             slot.submitted = false; // texture() SKIPS THIS SLOT WHILE WE RE-RECORD IT
 
             // LAZILY (RE)CREATE PLANE/OUTPUT IMAGES FOR THE CURRENT FORMAT (NO-OP IN STEADY STATE).
-            this.ensureSlot(slot);
+            this.ensureSlot(slot, false);
 
             // RESOLVE EACH SOURCE TO A VkBuffer BEFORE RECORDING. THE STAGING FALLBACK COPIES HOST
             // BYTES NOW (SYNCHRONOUSLY), SO THE PRODUCER BUFFER IS FULLY READ ON RETURN; THE IMPORT
@@ -565,27 +608,7 @@ public final class VKEngine extends GFXEngine {
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-                // srcStage FRAGMENT_SHADER: SAME WRITE-AFTER-READ REASONING AS THE COMPUTE PATH BELOW.
-                this.barrier(stack, slot.cmd, slot.outImg,
-                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-                vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.ycbcr.pipeline);
-                vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.ycbcr.pipeLayout, 0,
-                        stack.longs(slot.ycbcrSet), null);
-                final ByteBuffer push = stack.malloc(YCBCR_PUSH_BYTES);
-                push.putInt(0, this.width);
-                push.putInt(4, this.height);
-                vkCmdPushConstants(slot.cmd, this.ycbcr.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
-                vkCmdDispatch(slot.cmd, (this.width + 7) / 8, (this.height + 7) / 8, 1);
-                // HAND THE RESULT TO THE CONSUMER'S FRAGMENT SAMPLING (SAME-QUEUE BARRIER).
-                this.barrier(stack, slot.cmd, slot.outImg,
-                        VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
             } else if (this.convert) {
-                // THE DEVICE'S FIRST CONVERSION FRAME BUILDS THE KIT'S PIPELINE; EVERY LATER ENGINE REUSES IT
-                final long pipeline = this.kit.pipeline();
                 for (int i = 0; i < this.planeCount; i++) {
                     final PlaneSpec spec = this.planeSpecs[i];
                     this.barrier(stack, slot.cmd, slot.planeImg[i],
@@ -599,32 +622,8 @@ public final class VKEngine extends GFXEngine {
                             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
                 }
-                // STORAGE IMAGE MUST BE IN GENERAL WHILE THE COMPUTE PASS WRITES IT. srcStage IS
-                // FRAGMENT_SHADER: A PRIOR CONSUMER FRAME ON THIS SHARED QUEUE MAY STILL SAMPLE THIS
-                // SLOT'S VIEW (texture() FALLBACK), AND THE ENGINE FENCE DOES NOT COVER IT — THE
-                // EXECUTION DEPENDENCY ALONE RESOLVES THE WRITE-AFTER-READ HAZARD (srcAccess 0).
-                this.barrier(stack, slot.cmd, slot.outImg,
-                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-                vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-                vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.kit.pipeLayout, 0,
-                        stack.longs(slot.descSet), null);
-                final ByteBuffer push = stack.malloc(PUSH_BYTES);
-                push.putInt(0, this.mode);
-                push.putFloat(4, this.bitScale);
-                push.putInt(8, this.width);
-                push.putInt(12, this.height);
-                for (int i = 0; i < this.colorimetry.length; i++) push.putFloat(16 + i * 4, this.colorimetry[i]);
-                vkCmdPushConstants(slot.cmd, this.kit.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
-                vkCmdDispatch(slot.cmd, (this.width + 7) / 8, (this.height + 7) / 8, 1);
-                // HAND THE RESULT TO THE CONSUMER'S FRAGMENT SAMPLING (SAME-QUEUE BARRIER).
-                this.barrier(stack, slot.cmd, slot.outImg,
-                        VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
             } else {
-                // srcStage FRAGMENT_SHADER FOR THE SAME WRITE-AFTER-READ REASON AS THE CONVERT PATH.
+                // srcStage FRAGMENT_SHADER FOR THE SAME WRITE-AFTER-READ REASON AS THE CONVERSION (SEE dispatch)
                 this.barrier(stack, slot.cmd, slot.outImg,
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
@@ -636,6 +635,8 @@ public final class VKEngine extends GFXEngine {
                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
             }
+            // THE PLANES COVER THEIR IMAGES EXACTLY, SO NOTHING IS CROPPED AND THE DEPTH SCALING IS THE LAYOUT'S
+            if (this.convert) this.dispatch(stack, slot, 0.0f, 0.0f, 1.0f, 1.0f, this.bitScale, this.colorimetry);
             check(vkEndCommandBuffer(slot.cmd), "end command buffer");
 
             // SUBMIT UNDER THE SHARED QUEUE LOCK SIGNALING THIS SLOT'S FENCE.
@@ -655,6 +656,198 @@ public final class VKEngine extends GFXEngine {
         } catch (final RuntimeException | LinkageError e) {
             this.fail(e);
         }
+    }
+
+    // A FRAME DECODED ON THIS DEVICE (SEE hwDevice) IS SAMPLED IN PLACE UNDER hwcontext_vulkan.h'S PROTOCOL: WAIT sem_value, SIGNAL
+    // sem_value + 1 AND RECORD THE NEW LAYOUT UNDER lock_frame; THE SLOT KEEPS A REFERENCE UNTIL ITS FENCE PROVES THE READ COMPLETE
+    synchronized void upload(final AVFrame frame) {
+        if (this.released || this.failed || this.width <= 0 || this.height <= 0) return;
+        if (frame == null || frame.format() != AV_PIX_FMT_VULKAN || FFTool.isNull(frame.hw_frames_ctx())) return;
+        final AVHWFramesContext fc = new AVHWFramesContext(frame.hw_frames_ctx().data());
+        final AVVulkanFramesContext vfc = new AVVulkanFramesContext(fc.hwctx());
+        final AVVkFrame f = new AVVkFrame(frame.data(0));
+        // THE PLANES SHARE ONE MULTIPLANAR IMAGE OR EACH HAS ITS OWN (ff_vk_count_images)
+        int images = 0;
+        while (images < MAX_PLANES && f.img(images) != 0L) images++;
+        final FFTool.Pixels pixels = FFTool.pixels(fc.sw_format());
+        if (!this.convert || pixels == null || pixels.format() != this.format || pixels.bits() != this.bits
+                || images == 0 || images != 1 && images != this.planeCount) {
+            if (!this.frameWarned) LOGGER.warn(IT, "Decoded frames of layout {} ({} images) do not match the engine's {} {}-bit layout; frames are dropped",
+                    FFTool.string(av_get_pix_fmt_name(fc.sw_format()), fc.sw_format()), images, this.format, this.bits);
+            this.frameWarned = true;
+            return;
+        }
+
+        final Slot slot = this.slots[(int) (this.head % SLOTS)];
+        boolean locked = false;
+        try (final MemoryStack stack = stackPush()) {
+            // THE FRAME THIS SLOT HELD IS FULLY READ ONCE ITS FENCE SIGNALS; ONLY THEN DOES IT RETURN TO THE DECODER'S POOL
+            if (slot.submitted && !this.await(slot.fence, "Slot wait")) return;
+            synchronized (this.ctx.queueLock()) {
+                check(vkResetFences(this.device, slot.fence), "reset fence");
+            }
+            slot.submitted = false;
+            if (slot.held != null) av_frame_unref(slot.held);
+
+            // A NEW POOL (FIRST FRAME, RESOLUTION CHANGE) REPLACES THE VIEWS AND THE REFERENCE THAT KEEPS ITS IMAGES ALIVE
+            if (fc.address() != this.framesCtx) {
+                if (!this.waitAllIdle()) return;
+                this.destroyFrameViews();
+                this.framesRef = av_buffer_ref(frame.hw_frames_ctx());
+                if (FFTool.isNull(this.framesRef)) throw new IllegalStateException("VKEngine: cannot reference the decoder's frame pool");
+                this.framesCtx = fc.address();
+                // THE SAMPLER ROUTE NEEDS THE DECODER'S OWN MULTIPLANAR IMAGE IN THE CONVERSION'S FORMAT; ANYTHING ELSE RUNS ON COMPUTE
+                if (this.ycbcrFmt != 0 && (images != 1 || vfc.format(0) != this.ycbcrFmt)) {
+                    LOGGER.debug(IT, "Decoded frames arrive as {} image(s) of vkFormat {}: the YCbCr sampler route gives way to compute", images, vfc.format(0));
+                    this.destroyYcbcrRes();
+                    this.ycbcrFmt = 0;
+                    this.formatGen++;
+                }
+                LOGGER.debug(IT, "Decoded frames: {} {}x{} in {} image(s) of vkFormat {} sampled on the {} route into {}x{}",
+                        this.format, fc.width(), fc.height(), images, vfc.format(0), this.ycbcrFmt != 0 ? "YCbCr sampler" : "compute", this.width, this.height);
+            }
+            // THE CONSTANTS SITE THE CHROMA ON THE DECODER'S IMAGE EXTENT (THE CODED SIZE); THE CROP MAPS THE OUTPUT ONTO ITS VISIBLE PART
+            if (fc.width() != this.frameW || fc.height() != this.frameH) {
+                this.frameW = fc.width();
+                this.frameH = fc.height();
+                this.frameColorimetry = this.color.constants(this.format, this.frameW, this.frameH, this.bits);
+            }
+            this.ensureSlot(slot, true);
+
+            // BIND THIS FRAME'S VIEWS; THE SLOT IS IDLE, SO ITS SET MAY CHANGE
+            final long[] views = this.frameViews(stack, f, images);
+            if (this.ycbcrFmt != 0) {
+                final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(1, stack);
+                write(writes.get(0), stack, slot.ycbcrSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, this.ycbcr.sampler, views[MAX_PLANES], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                vkUpdateDescriptorSets(this.device, writes, null);
+            } else {
+                final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(MAX_PLANES, stack);
+                for (int j = 0; j < MAX_PLANES; j++)
+                    write(writes.get(j), stack, slot.descSet, j, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, this.kit.sampler, views[j < this.planeCount ? j : 0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                vkUpdateDescriptorSets(this.device, writes, null);
+            }
+
+            // THE FRAME'S SYNCHRONIZATION STATE IS READ AND UPDATED UNDER ITS LOCK, LIKE THE DECODER DOES
+            vfc.lock_frame().call(fc, f);
+            locked = true;
+            final LongBuffer sems = stack.mallocLong(images);
+            final LongBuffer waits = stack.mallocLong(images);
+            final LongBuffer signals = stack.mallocLong(images);
+            final IntBuffer stages = stack.mallocInt(images);
+            for (int i = 0; i < images; i++) {
+                sems.put(i, f.sem(i));
+                waits.put(i, f.sem_value(i));
+                signals.put(i, f.sem_value(i) + 1);
+                stages.put(i, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            }
+
+            check(vkResetCommandBuffer(slot.cmd, 0), "reset command buffer");
+            final VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack)
+                    .sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+            check(vkBeginCommandBuffer(slot.cmd, begin), "begin command buffer");
+            // THE SEMAPHORE WAIT MADE THE DECODER'S WRITES VISIBLE; THE BARRIERS ONLY MOVE EACH IMAGE INTO A SAMPLEABLE LAYOUT
+            for (int i = 0; i < images; i++)
+                this.barrier(stack, slot.cmd, f.img(i), f.layout(i), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+            // THE PICTURE STARTS AT THE LEFT AND TOP CROPS (av_frame_apply_cropping LEAVES THEM ON HARDWARE FRAMES) AND SPANS THE FRAME
+            // SIZE; THE DECODER'S PLANES ARE NORMALIZED BY THE SAMPLER, SO THE DEPTH SCALING STAYS 1 WHATEVER THE LAYOUT'S BITS
+            final float left = (float) frame.crop_left() / this.frameW, top = (float) frame.crop_top() / this.frameH;
+            this.dispatch(stack, slot, left, top, (float) frame.width() / this.frameW - left, (float) frame.height() / this.frameH - top,
+                    1.0f, this.frameColorimetry);
+            check(vkEndCommandBuffer(slot.cmd), "end command buffer");
+
+            // THE REFERENCE IS TAKEN BEFORE THE SUBMISSION, SO A FENCE IN FLIGHT ALWAYS HAS ITS FRAME
+            if (slot.held == null) slot.held = av_frame_alloc();
+            if (av_frame_ref(slot.held, frame) < 0) throw new IllegalStateException("VKEngine: cannot reference the decoded frame");
+            // LWJGL DERIVES THE SIGNAL AND COMMAND BUFFER COUNTS FROM THEIR BUFFERS BUT NOT THE WAIT COUNT, SHARED WITH THE STAGE MASKS
+            final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
+                    .pNext(VkTimelineSemaphoreSubmitInfo.calloc(stack).sType$Default().pWaitSemaphoreValues(waits).pSignalSemaphoreValues(signals))
+                    .waitSemaphoreCount(images).pWaitSemaphores(sems).pWaitDstStageMask(stages)
+                    .pCommandBuffers(stack.pointers(slot.cmd)).pSignalSemaphores(sems);
+            synchronized (this.ctx.queueLock()) {
+                final int r = vkQueueSubmit(this.ctx.queue(), si, slot.fence);
+                if (r != VK_SUCCESS) {
+                    av_frame_unref(slot.held);
+                    this.fail("vkQueueSubmit", r);
+                    return;
+                }
+            }
+            // access IS A VkAccessFlags2 MASK: FFMPEG FEEDS IT AS srcAccessMask TO ITS NEXT synchronization2 BARRIER ON THE IMAGE
+            for (int i = 0; i < images; i++)
+                f.sem_value(i, f.sem_value(i) + 1).layout(i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).access(i, VK_ACCESS_2_SHADER_READ_BIT);
+            slot.seq = ++this.submitSeq;
+            slot.submitted = true;
+            this.head++;
+            this.decodedFrames++;
+        } catch (final RuntimeException | LinkageError e) {
+            this.fail(e);
+        } finally {
+            if (locked) vfc.unlock_frame().call(fc, f);
+        }
+    }
+
+    // RECORDS THE CONVERSION INTO THE SLOT'S MANAGED IMAGE FROM THE PLANES BOUND TO ITS SET: THE STORAGE BARRIER, THE YCBCR OR COMPUTE
+    // PASS OVER THE SOURCE FROM origin ACROSS crop (FRACTIONS) AND THE HAND-OVER TO THE CONSUMER'S FRAGMENT SAMPLING (SAME-QUEUE BARRIER)
+    private void dispatch(final MemoryStack stack, final Slot slot, final float originX, final float originY, final float cropX, final float cropY,
+                          final float bitScale, final float[] colorimetry) {
+        // THE STORAGE IMAGE MUST BE IN GENERAL WHILE THE PASS WRITES IT; srcStage FRAGMENT_SHADER ORDERS IT AFTER A CONSUMER FRAME THAT
+        // MAY STILL SAMPLE THIS SLOT'S VIEW (texture() FALLBACK) ON THE SHARED QUEUE, A WRITE-AFTER-READ HAZARD THE FENCE DOES NOT COVER
+        this.barrier(stack, slot.cmd, slot.outImg,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+        if (this.ycbcrFmt != 0) {
+            vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.ycbcr.pipeline);
+            vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.ycbcr.pipeLayout, 0, stack.longs(slot.ycbcrSet), null);
+            final ByteBuffer push = stack.malloc(YCBCR_PUSH_BYTES);
+            push.putInt(0, this.width).putInt(4, this.height).putFloat(8, cropX).putFloat(12, cropY).putFloat(16, originX).putFloat(20, originY);
+            vkCmdPushConstants(slot.cmd, this.ycbcr.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+        } else {
+            // THE DEVICE'S FIRST CONVERSION FRAME BUILDS THE KIT'S PIPELINE; EVERY LATER ENGINE REUSES IT
+            vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.kit.pipeline());
+            vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.kit.pipeLayout, 0, stack.longs(slot.descSet), null);
+            final ByteBuffer push = stack.malloc(PUSH_BYTES);
+            push.putInt(0, this.mode).putFloat(4, bitScale).putInt(8, this.width).putInt(12, this.height);
+            for (int i = 0; i < colorimetry.length; i++) push.putFloat(16 + i * 4, colorimetry[i]);
+            push.putFloat(80, cropX).putFloat(84, cropY).putFloat(88, originX).putFloat(92, originY);
+            vkCmdPushConstants(slot.cmd, this.kit.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+        }
+        vkCmdDispatch(slot.cmd, (this.width + 7) / 8, (this.height + 7) / 8, 1);
+        this.barrier(stack, slot.cmd, slot.outImg,
+                VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    }
+
+    // THE VIEWS OF A DECODER IMAGE, KEPT PER IMAGE HANDLE UNTIL THE POOL OR THE LAYOUT CHANGES: ONE PER PLANE (ITS PLANE ASPECT OF THE
+    // MULTIPLANAR IMAGE, OR ITS OWN IMAGE) FOR THE COMPUTE PASS, OR THE YCBCR CONVERSION'S COLOR VIEW AT INDEX MAX_PLANES
+    private long[] frameViews(final MemoryStack stack, final AVVkFrame f, final int images) {
+        final long key = f.img(0);
+        long[] views = this.frameViews.get(key);
+        if (views != null) return views;
+        views = new long[MAX_PLANES + 1];
+        if (this.ycbcrFmt != 0) {
+            views[MAX_PLANES] = this.view(stack, key, this.ycbcrFmt, VK_IMAGE_ASPECT_COLOR_BIT, this.ycbcr.conv, VK_IMAGE_USAGE_SAMPLED_BIT);
+        } else {
+            for (int i = 0; i < this.planeCount; i++)
+                views[i] = images == 1
+                        ? this.view(stack, key, this.planeSpecs[i].format, VK_IMAGE_ASPECT_PLANE_0_BIT << i, 0L, VK_IMAGE_USAGE_SAMPLED_BIT)
+                        : this.view(stack, f.img(i), this.planeSpecs[i].format, VK_IMAGE_ASPECT_COLOR_BIT, 0L, VK_IMAGE_USAGE_SAMPLED_BIT);
+        }
+        this.frameViews.put(key, views);
+        return views;
+    }
+
+    // CALLERS GUARANTEE THE ENGINE'S OWN WORK IS DRAINED: THE VIEWS DIE AND THE POOL REFERENCE THAT KEPT THEIR IMAGES ALIVE GOES
+    private void destroyFrameViews() {
+        for (final long[] views: this.frameViews.values())
+            for (final long view: views) if (view != 0L) vkDestroyImageView(this.device, view, null);
+        this.frameViews.clear();
+        if (this.framesRef != null) av_buffer_unref(this.framesRef);
+        this.framesRef = null;
+        this.framesCtx = 0L;
+        this.frameW = 0;
+        this.frameH = 0;
     }
 
     // ==========================================================================
@@ -772,10 +965,34 @@ public final class VKEngine extends GFXEngine {
     // ==========================================================================
     // PER-SLOT FORMAT RESOURCES
     // ==========================================================================
-    // (RE)BUILDS THIS SLOT'S MANAGED IMAGE, PLANE IMAGES AND DESCRIPTOR SET FOR THE CURRENT FORMAT.
-    // SAFE WITHOUT EXTRA SYNC: A FORMAT CHANGE DRAINS ALL FENCES, SO THE SLOT IS IDLE HERE.
-    private void ensureSlot(final Slot slot) {
-        if (slot.gen == this.formatGen) return;
+    // HANDS A SLOT'S MANAGED IMAGE TO THE CONSUMER'S RETIREMENT: IT MAY STILL SAMPLE THE VIEW texture() RETURNED (THE ENGINE'S
+    // FENCES COVER ONLY ITS OWN WORK), SO THE EXPOSED VIEW DIES AFTER THE NEXT PUBLISHED FRAME AND THE OTHERS WITH THE
+    // IN-FLIGHT FRAMES; PLANE AND STAGING RESOURCES ARE PRIVATE AND STAY FOR destroySlotFormatRes. CALLERS DRAINED THE SLOT
+    private void retireOutput(final Slot s) {
+        synchronized (this.ctx.queueLock()) {
+            final long view = s.view, img = s.outImg, mem = s.outMem;
+            if (view != 0L || img != 0L || mem != 0L) {
+                s.view = 0L;
+                s.outImg = 0L;
+                s.outMem = 0L;
+                final Runnable destroy = () -> {
+                    if (view != 0L) vkDestroyImageView(this.device, view, null);
+                    if (img != 0L) vkDestroyImage(this.device, img, null);
+                    if (mem != 0L) vkFreeMemory(this.device, mem, null);
+                };
+                if (view == this.lastView) this.retiring.add(destroy);
+                else this.ctx.retire(destroy);
+            }
+            s.seq = 0L;
+            s.submitted = false;
+        }
+    }
+
+    // (RE)BUILDS THIS IDLE SLOT'S MANAGED IMAGE, PLANE IMAGES AND DESCRIPTOR SET FOR THE CURRENT FORMAT; A SLOT FED DECODED FRAMES
+    // (external) SAMPLES THE DECODER'S OWN IMAGES, SO IT OWNS NO PLANE IMAGES AND upload(AVFrame) BINDS THE PLANES PER FRAME
+    private void ensureSlot(final Slot slot, final boolean external) {
+        if (slot.gen == this.formatGen && slot.external == external) return;
+        this.retireOutput(slot);
         this.destroySlotFormatRes(slot);
         try (final MemoryStack stack = stackPush()) {
             final Img out = this.image(stack, this.outFormat, this.width, this.height, this.outUsage, 0L);
@@ -784,52 +1001,50 @@ public final class VKEngine extends GFXEngine {
             slot.view = out.view();
             if (this.ycbcrFmt != 0) {
                 this.ensureYcbcr(); // CONVERSION/SAMPLER/PIPELINE/SETS MUST EXIST BEFORE THE VIEW CHAINS THEM
-                // ONE MULTIPLANAR IMAGE HOLDS EVERY PLANE; ITS SAMPLED VIEW CHAINS THE SAME CONVERSION
-                // THE IMMUTABLE SAMPLER WAS CREATED WITH (REQUIRED TO MATCH).
-                final Img mp = this.image(stack, this.ycbcrFmt, this.width, this.height,
-                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, this.ycbcr.conv);
-                slot.planeImg[0] = mp.image();
-                slot.planeMem[0] = mp.memory();
-                slot.planeView[0] = mp.view();
-                // BINDING 0 = MULTIPLANAR VIEW (SAMPLER FIELD IGNORED — THE LAYOUT'S IMMUTABLE SAMPLER
-                // WINS), BINDING 1 = THIS SLOT'S RGBA STORAGE VIEW.
-                final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
-                final VkDescriptorImageInfo.Buffer srcInfo = VkDescriptorImageInfo.calloc(1, stack);
-                srcInfo.get(0).sampler(this.ycbcr.sampler).imageView(mp.view()).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                writes.get(0).sType$Default().dstSet(slot.ycbcrSet).dstBinding(0).dstArrayElement(0)
-                        .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(srcInfo);
-                final VkDescriptorImageInfo.Buffer outInfo = VkDescriptorImageInfo.calloc(1, stack);
-                outInfo.get(0).imageView(out.view()).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
-                writes.get(1).sType$Default().dstSet(slot.ycbcrSet).dstBinding(1).dstArrayElement(0)
-                        .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outInfo);
+                // ONE MULTIPLANAR IMAGE HOLDS EVERY PLANE AND ITS VIEW CHAINS THE IMMUTABLE SAMPLER'S CONVERSION (REQUIRED TO MATCH);
+                // BINDING 0 = THAT VIEW (THE SAMPLER FIELD IS IGNORED), BINDING 1 = THIS SLOT'S RGBA STORAGE VIEW
+                final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(external ? 1 : 2, stack);
+                if (!external) {
+                    final Img mp = this.image(stack, this.ycbcrFmt, this.width, this.height,
+                            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, this.ycbcr.conv);
+                    slot.planeImg[0] = mp.image();
+                    slot.planeMem[0] = mp.memory();
+                    slot.planeView[0] = mp.view();
+                    write(writes.get(1), stack, slot.ycbcrSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, this.ycbcr.sampler, mp.view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                }
+                write(writes.get(0), stack, slot.ycbcrSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0L, out.view(), VK_IMAGE_LAYOUT_GENERAL);
                 vkUpdateDescriptorSets(this.device, writes, null);
             } else if (this.convert) {
-                for (int i = 0; i < this.planeCount; i++) {
-                    final PlaneSpec spec = this.planeSpecs[i];
-                    final Img p = this.image(stack, spec.format, spec.w, spec.h,
-                            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0L);
-                    slot.planeImg[i] = p.image();
-                    slot.planeMem[i] = p.memory();
-                    slot.planeView[i] = p.view();
-                }
-                // REWRITE THE SLOT'S DESCRIPTOR SET: BINDINGS 0..3 = PLANE VIEWS, BINDING 4 = OUTPUT.
-                final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(5, stack);
-                for (int j = 0; j < MAX_PLANES; j++) {
+                // REWRITE THE SLOT'S DESCRIPTOR SET: BINDINGS 0..3 = PLANE VIEWS, BINDING 4 = OUTPUT
+                final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(external ? 1 : 1 + MAX_PLANES, stack);
+                if (!external) {
+                    for (int i = 0; i < this.planeCount; i++) {
+                        final PlaneSpec spec = this.planeSpecs[i];
+                        final Img p = this.image(stack, spec.format, spec.w, spec.h,
+                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0L);
+                        slot.planeImg[i] = p.image();
+                        slot.planeMem[i] = p.memory();
+                        slot.planeView[i] = p.view();
+                    }
                     // UNUSED PLANE SLOTS BIND PLANE 0 (ALWAYS PRESENT FOR CONVERT) — A VALID VIEW THE SHADER NEVER READS
-                    final long view = j < this.planeCount ? slot.planeView[j] : slot.planeView[0];
-                    final VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
-                    info.get(0).sampler(this.kit.sampler).imageView(view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    writes.get(j).sType$Default().dstSet(slot.descSet).dstBinding(j).dstArrayElement(0)
-                            .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(info);
+                    for (int j = 0; j < MAX_PLANES; j++)
+                        write(writes.get(1 + j), stack, slot.descSet, j, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, this.kit.sampler,
+                                slot.planeView[j < this.planeCount ? j : 0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 }
-                final VkDescriptorImageInfo.Buffer outInfo = VkDescriptorImageInfo.calloc(1, stack);
-                outInfo.get(0).imageView(slot.view).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
-                writes.get(4).sType$Default().dstSet(slot.descSet).dstBinding(4).dstArrayElement(0)
-                        .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outInfo);
+                write(writes.get(0), stack, slot.descSet, MAX_PLANES, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0L, slot.view, VK_IMAGE_LAYOUT_GENERAL);
                 vkUpdateDescriptorSets(this.device, writes, null);
             }
         }
         slot.gen = this.formatGen;
+        slot.external = external;
+    }
+
+    // ONE IMAGE DESCRIPTOR WRITE OF A SET'S BINDING (A COMBINED SAMPLER OR A STORAGE IMAGE)
+    private static void write(final VkWriteDescriptorSet write, final MemoryStack stack, final long set, final int binding,
+                              final int type, final long sampler, final long view, final int layout) {
+        final VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
+        info.get(0).sampler(sampler).imageView(view).imageLayout(layout);
+        write.sType$Default().dstSet(set).dstBinding(binding).dstArrayElement(0).descriptorCount(1).descriptorType(type).pImageInfo(info);
     }
 
     private void destroySlotFormatRes(final Slot s) {
@@ -918,21 +1133,26 @@ public final class VKEngine extends GFXEngine {
             check(vkAllocateMemory(this.device, mai, null, pm), "alloc image memory");
             mem = pm.get(0);
             check(vkBindImageMemory(this.device, img, mem, 0), "bind image memory");
-
-            final VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
-                    .image(img).viewType(VK_IMAGE_VIEW_TYPE_2D).format(format);
-            // COMPONENTS STAY IDENTITY (calloc): REQUIRED WHEN A CONVERSION IS CHAINED.
-            if (conv != 0L) vci.pNext(VkSamplerYcbcrConversionInfo.calloc(stack).sType$Default().conversion(conv));
-            vci.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
-            final LongBuffer pv = stack.mallocLong(1);
-            check(vkCreateImageView(this.device, vci, null, pv), "create image view");
-            return new Img(img, mem, pv.get(0));
+            return new Img(img, mem, this.view(stack, img, format, VK_IMAGE_ASPECT_COLOR_BIT, conv, 0));
         } catch (final RuntimeException e) {
             // A PARTIAL FAILURE MUST NOT LEAK THE IMAGE OR ITS MEMORY
             if (mem != 0L) vkFreeMemory(this.device, mem, null);
             vkDestroyImage(this.device, img, null);
             throw e;
         }
+    }
+
+    // A 2D VIEW OF ONE ASPECT OF AN IMAGE WITH IDENTITY COMPONENTS (REQUIRED WITH A CONVERSION); usage NARROWS IT TO WHAT ITS FORMAT
+    // SUPPORTS (0 INHERITS THE IMAGE'S), AS A DECODER IMAGE CARRIES EXTENDED USAGES SUCH AS STORAGE THAT ITS MULTIPLANAR FORMAT LACKS
+    private long view(final MemoryStack stack, final long image, final int format, final int aspect, final long conv, final int usage) {
+        final VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
+                .image(image).viewType(VK_IMAGE_VIEW_TYPE_2D).format(format);
+        if (conv != 0L) vci.pNext(VkSamplerYcbcrConversionInfo.calloc(stack).sType$Default().conversion(conv));
+        if (usage != 0) vci.pNext(VkImageViewUsageCreateInfo.calloc(stack).sType$Default().usage(usage));
+        vci.subresourceRange().aspectMask(aspect).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+        final LongBuffer pv = stack.mallocLong(1);
+        check(vkCreateImageView(this.device, vci, null, pv), "create image view");
+        return pv.get(0);
     }
 
     // FINDS A MEMORY TYPE INDEX IN typeBits WITH ALL props SET, OR -1. props == 0 MATCHES ANY TYPE.
@@ -1137,6 +1357,11 @@ public final class VKEngine extends GFXEngine {
         private final Map<YcbcrKey, Ycbcr> ycbcrs = new HashMap<>(); // GUARDED BY this
         private final Map<Integer, Integer> formatFeatures = new ConcurrentHashMap<>(); // vkFormat -> optimalTilingFeatures
         private int engines; // GUARDED BY KITS
+        // THE FFMPEG DEVICE CONTEXT OVER THIS VkDevice, BUILT ON THE FIRST DESCRIBED REQUEST AND SHARED BY EVERY PLAYER DECODING ON IT,
+        // WITH THE DECODE OPERATIONS ITS QUEUES AND EXTENSIONS COVER; GUARDED BY this
+        private AVBufferRef hwDevice;
+        private boolean hwDeviceTried;
+        private int decodeOps;
 
         private Kit(final VkDevice device, final VkPhysicalDevice physical) {
             this.device = device;
@@ -1202,6 +1427,150 @@ public final class VKEngine extends GFXEngine {
             if (this.pipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.pipeLayout, null);
             if (this.descLayout != 0L) vkDestroyDescriptorSetLayout(this.device, this.descLayout, null);
             if (this.sampler != 0L) vkDestroySampler(this.device, this.sampler, null);
+            // PLAYERS KEEP THEIR OWN REFERENCES, SO THE CONTEXT ONLY GOES WHEN THE LAST OF THEM IS GONE TOO
+            if (this.hwDevice != null) av_buffer_unref(this.hwDevice);
+            this.hwDevice = null;
+        }
+
+        // A NEW REFERENCE TO THE FFMPEG DEVICE CONTEXT WHEN THE DEVICE DECODES codecId, ELSE NULL; THE DEVICE IS JUDGED ONCE DESCRIBED
+        AVBufferRef hwDevice(final VKContext ctx, final int codecId) {
+            final int operation = switch (codecId) {
+                case AV_CODEC_ID_H264 -> VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR;
+                case AV_CODEC_ID_HEVC -> VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR;
+                case AV_CODEC_ID_AV1 -> VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
+                default -> 0;
+            };
+            if (operation == 0) return null;
+            synchronized (this) {
+                if (!this.hwDeviceTried && ctx.deviceInfo() != null) {
+                    this.hwDeviceTried = true;
+                    try {
+                        this.hwDevice = this.buildHwDevice(ctx);
+                    } catch (final RuntimeException | LinkageError e) {
+                        LOGGER.warn(IT, "FFmpeg cannot decode on this Vulkan device", e);
+                    }
+                }
+                return this.hwDevice == null || (this.decodeOps & operation) == 0 ? null : av_buffer_ref(this.hwDevice);
+            }
+        }
+
+        // HANDS FFMPEG THE CONSUMER'S DEVICE AS hwcontext_vulkan.h DESCRIBES IT: THE HANDLES, THE LOADER ENTRY POINT, THE FEATURE
+        // CHAIN AND EXTENSIONS IT WAS CREATED WITH, AND THE QUEUE FAMILIES IT MAY USE
+        private AVBufferRef buildHwDevice(final VKContext ctx) {
+            final VKContext.DeviceInfo info = ctx.deviceInfo();
+            if (info == null || !MediaAPI.vulkanDecode()) return null;
+            if (!info.deviceExtensions().contains(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME)) {
+                LOGGER.debug(IT, "Vulkan decoding off: the device lacks {}", VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
+                return null;
+            }
+            // FFMPEG WAITS ON TIMELINE SEMAPHORES AND SUBMITS WITH synchronization2 WITHOUT READING THE CHAIN, SO BOTH MUST BE ENABLED
+            boolean timeline = false, sync2 = false;
+            for (VkBaseInStructure next = VkBaseInStructure.createSafe(info.features().pNext()); next != null; next = next.pNext()) {
+                switch (next.sType()) {
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES -> timeline |= VkPhysicalDeviceVulkan12Features.create(next.address()).timelineSemaphore();
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES -> timeline |= VkPhysicalDeviceTimelineSemaphoreFeatures.create(next.address()).timelineSemaphore();
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES -> sync2 |= VkPhysicalDeviceVulkan13Features.create(next.address()).synchronization2();
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES -> sync2 |= VkPhysicalDeviceSynchronization2Features.create(next.address()).synchronization2();
+                    default -> { }
+                }
+            }
+            if (!timeline || !sync2) {
+                LOGGER.debug(IT, "Vulkan decoding off: the device was created without timeline semaphores or synchronization2 (timeline={}, synchronization2={})", timeline, sync2);
+                return null;
+            }
+            // THE CODEC EXTENSIONS ENABLED ON THE DEVICE BOUND WHAT ITS DECODE FAMILIES ADVERTISE
+            int enabled = 0;
+            if (info.deviceExtensions().contains(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME)) enabled |= VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR;
+            if (info.deviceExtensions().contains(VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME)) enabled |= VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR;
+            if (info.deviceExtensions().contains(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME)) enabled |= VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
+            try (final MemoryStack stack = stackPush()) {
+                final VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.malloc(stack);
+                vkGetPhysicalDeviceProperties(this.physical, props);
+                if (Math.min(ctx.vkInstance().getCapabilities().apiVersion, props.apiVersion()) < VK_API_VERSION_1_3) {
+                    LOGGER.debug(IT, "Vulkan decoding off: FFmpeg needs a Vulkan 1.3 instance and device");
+                    return null;
+                }
+
+                // FFMPEG TAKES THE FIRST ENTRY THAT FITS EACH ROLE AND SUBMITS TO ITS QUEUES 0..num-1, SO DEDICATED TRANSFER AND COMPUTE
+                // FAMILIES GO FIRST AND THE CONSUMER'S OWN FAMILY LAST, SHORT OF ITS LAST QUEUE
+                final int[] counts = info.queueCounts();
+                final IntBuffer count = stack.mallocInt(1);
+                vkGetPhysicalDeviceQueueFamilyProperties2(this.physical, count, null);
+                final int families = Math.min(count.get(0), counts.length);
+                final VkQueueFamilyVideoPropertiesKHR.Buffer video = VkQueueFamilyVideoPropertiesKHR.calloc(families, stack);
+                final VkQueueFamilyProperties2.Buffer properties = VkQueueFamilyProperties2.calloc(families, stack);
+                for (int i = 0; i < families; i++) properties.get(i).sType$Default().pNext(video.get(i).sType$Default());
+                count.put(0, families);
+                vkGetPhysicalDeviceQueueFamilyProperties2(this.physical, count, properties);
+                final List<int[]> entries = new ArrayList<>(); // { idx, num, flags, video_caps, rank }
+                boolean compute = false, transfer = false;
+                int operations = 0;
+                for (int i = 0; i < families; i++) {
+                    if (counts[i] <= 0) continue;
+                    int flags = properties.get(i).queueFamilyProperties().queueFlags();
+                    if ((flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0) flags |= VK_QUEUE_TRANSFER_BIT; // IMPLIED BY THE SPEC
+                    int num = i == ctx.queueFamily() ? counts[i] - 1 : counts[i];
+                    // THE RENDER QUEUE ALONE IN ITS FAMILY: A GRAPHICS-ONLY ENTRY FFMPEG NEVER SUBMITS TO, LISTED SO THE DECODED
+                    // IMAGES ARE SHARED WITH THE QUEUE THAT SAMPLES THEM
+                    if (num == 0) {
+                        num = 1;
+                        flags = VK_QUEUE_GRAPHICS_BIT;
+                    }
+                    final int caps = video.get(i).videoCodecOperations();
+                    compute |= (flags & VK_QUEUE_COMPUTE_BIT) != 0;
+                    transfer |= (flags & VK_QUEUE_TRANSFER_BIT) != 0;
+                    if ((flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0) operations |= caps & enabled;
+                    final int rank = (flags & VK_QUEUE_GRAPHICS_BIT) != 0 ? 3 : (flags & VK_QUEUE_COMPUTE_BIT) != 0 ? 1
+                            : (flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 ? 2 : 0;
+                    entries.add(new int[] { i, num, flags, caps, rank });
+                }
+                if (!compute || !transfer || operations == 0) {
+                    LOGGER.debug(IT, "Vulkan decoding off: FFmpeg needs compute, transfer and video decode queues of its own (compute={}, transfer={}, decode operations=0x{})",
+                            compute, transfer, Integer.toHexString(operations));
+                    return null;
+                }
+                entries.sort(Comparator.comparingInt(entry -> entry[4]));
+
+                final AVBufferRef ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
+                if (FFTool.isNull(ref)) return null;
+                final AVVulkanDeviceContext vk = new AVVulkanDeviceContext(new AVHWDeviceContext(ref.data()).hwctx());
+                vk.get_proc_addr(VK.getFunctionProvider().getFunctionAddress("vkGetInstanceProcAddr"));
+                vk.inst(ctx.vkInstance().address()).phys_dev(this.physical.address()).act_dev(this.device.address());
+                // THE EMBEDDED VkPhysicalDeviceFeatures2 TAKES THE CONSUMER'S COPY; ITS pNext CHAIN STAYS THE CONSUMER'S, KEPT ALIVE BY IT
+                memCopy(info.features().address(), vk.device_features().address(), VkPhysicalDeviceFeatures2.SIZEOF);
+                vk.enabled_inst_extensions(strings(info.instanceExtensions())).nb_enabled_inst_extensions(info.instanceExtensions().size());
+                vk.enabled_dev_extensions(strings(info.deviceExtensions())).nb_enabled_dev_extensions(info.deviceExtensions().size());
+                for (int i = 0; i < entries.size(); i++) {
+                    final int[] entry = entries.get(i);
+                    vk.qf(i).idx(entry[0]).num(entry[1]).flags(entry[2]).video_caps(entry[3]);
+                }
+                vk.nb_qf(entries.size());
+                final int result = av_hwdevice_ctx_init(ref);
+                if (result < 0) {
+                    LOGGER.warn(IT, "FFmpeg refused the Vulkan device: {}", FFTool.error(result));
+                    av_buffer_unref(ref);
+                    return null;
+                }
+                this.decodeOps = operations;
+                final StringBuilder queues = new StringBuilder();
+                for (final int[] entry: entries) queues.append(queues.isEmpty() ? "" : ", ").append(entry[0]).append('x').append(entry[1]).append(" flags=0x").append(Integer.toHexString(entry[2]));
+                LOGGER.info(IT, "FFmpeg decodes on the Vulkan device {} (decode operations 0x{}, queue families {})", props.deviceNameString(), Integer.toHexString(operations), queues);
+                return ref;
+            }
+        }
+
+        // A C STRING ARRAY FOR THE DEVICE CONTEXT, OR NULL FOR NO ENTRIES. FFMPEG RE-READS THE EXTENSION NAMES ON EVERY DECODER INIT AND
+        // A PLAYER'S REFERENCE MAY OUTLIVE THE KIT, SO THE ARRAYS LIVE FOR THE PROCESS (A FEW HUNDRED BYTES PER DEVICE)
+        private static PointerPointer<BytePointer> strings(final List<String> names) {
+            if (names.isEmpty()) return null;
+            final PointerPointer<BytePointer> array = new PointerPointer<>(names.size());
+            for (int i = 0; i < names.size(); i++) {
+                final BytePointer name = new BytePointer(names.get(i));
+                HW_STRINGS.add(name);
+                array.put(i, name);
+            }
+            HW_STRINGS.add(array);
+            return array;
         }
 
         // PIPELINES ARE BUILT OUTSIDE THE KIT MONITOR, SO A RELEASE ON THE RENDER THREAD NEVER WAITS FOR A DRIVER COMPILE; A
@@ -1396,6 +1765,8 @@ public final class VKEngine extends GFXEngine {
         long descSet;
         long ycbcrSet;           // SET FOR THE YCBCR LAYOUT (0 UNTIL THE YCBCR OBJECTS EXIST)
         long gen = -1L;          // FORMAT GENERATION THIS SLOT'S RESOURCES MATCH
+        boolean external;        // BUILT FOR DECODED FRAMES: NO PLANE IMAGES, THE PLANES ARE BOUND PER FRAME
+        AVFrame held;            // THE DECODED FRAME THE LAST SUBMISSION READS, REFERENCED UNTIL ITS FENCE SIGNALS
     }
 
     // A PERSISTENT MAPPED HOST-VISIBLE STAGING BUFFER (FALLBACK COPY SOURCE).

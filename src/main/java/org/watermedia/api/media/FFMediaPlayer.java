@@ -135,6 +135,11 @@ public final class FFMediaPlayer extends MediaPlayer {
     // HW
     private volatile AVBufferRef hwDeviceCtx;
     private int hwPixelFormat = AV_PIX_FMT_NONE;
+    // THE DECODER WRITES AV_PIX_FMT_VULKAN FRAMES ON THE ENGINE'S OWN DEVICE: NOTHING IS TRANSFERRED, THE ENGINE SAMPLES THEM
+    private boolean vulkanFrames;
+    // THE POOL OF THE LAST DECODED FRAME AND ITS SOFTWARE LAYOUT (CONSUME THREAD ONLY), MAPPED ONCE PER POOL
+    private long cachedFramesCtx;
+    private int cachedFramesFormat = AV_PIX_FMT_NONE;
     private int swsInputFormat = AV_PIX_FMT_NONE;
     private int swsInputWidth;
     private int swsInputHeight;
@@ -186,6 +191,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // SWS DESTINATION FRAME (LAZY-INIT — ONLY WHEN sws_scale IS NEEDED)
     private AVFrame scaledFrame;
+    // A FRAME DECODED ON THE ENGINE'S DEVICE IN A LAYOUT IT CANNOT SAMPLE, BROUGHT DOWN TO RAM (LAZY-INIT)
+    private AVFrame downloadedFrame;
 
     // ROTATING PLANE BUFFER POOL FOR UPLOADS
     // FRAME DATA FROM FrameQueue IS EPHEMERAL — RECYCLED AFTER next() — SO PLANE
@@ -268,6 +275,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ANOMALY LATCHES: EACH REPEATABLE ANOMALY IS LOGGED ONCE PER PLAYER
     private boolean rateWarned;
     private boolean refusedWarned;
+    private boolean decodedWarned;
     private boolean starvationWarned;
     private boolean slotWarned;
     private boolean audioUnusableWarned;
@@ -1019,27 +1027,59 @@ public final class FFMediaPlayer extends MediaPlayer {
                         }
 
                         // scale/LOD MAY REQUIRE A DOWNSCALE BEFORE UPLOAD; THE TARGET IS RESOLVED PER FRAME, SO HOT LOD
-                        // CHANGES APPLY WITHOUT TOUCHING THE DECODE PIPELINE OR THE CLOCK
-                        if (slot.format != this.cachedUploadFmt) {
-                            this.cachedUploadFmt = slot.format;
-                            this.cachedUploadMapping = FFTool.pixels(slot.format);
+                        // CHANGES APPLY WITHOUT TOUCHING THE DECODE PIPELINE OR THE CLOCK. A FRAME DECODED ON THE ENGINE'S
+                        // VULKAN DEVICE CARRIES THE LAYOUT OF ITS POOL AND IS SAMPLED IN PLACE, SCALED BY THE ENGINE
+                        final boolean decoded = slot.format == AV_PIX_FMT_VULKAN;
+                        AVFrame uploadFrame = slot.frame;
+                        int layout = slot.format;
+                        if (decoded) {
+                            final Pointer pool = slot.frame.hw_frames_ctx().data();
+                            if (pool.address() != this.cachedFramesCtx) {
+                                this.cachedFramesCtx = pool.address();
+                                this.cachedFramesFormat = new AVHWFramesContext(pool).sw_format();
+                            }
+                            layout = this.cachedFramesFormat;
+                        }
+                        if (layout != this.cachedUploadFmt) {
+                            this.cachedUploadFmt = layout;
+                            this.cachedUploadMapping = FFTool.pixels(layout);
                         }
                         FFTool.Pixels mapping = this.cachedUploadMapping;
                         // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
                         // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
                         if (mapping != null && !this.gfx.supports(mapping.format(), mapping.bits())) mapping = null;
+                        // A POOL LAYOUT THE ENGINE CANNOT SAMPLE COMES DOWN TO RAM, COLOR TAGS INCLUDED, AND FOLLOWS THE SOFTWARE PATH
+                        boolean sampled = decoded;
+                        if (decoded && mapping == null) {
+                            if (this.downloadedFrame == null) this.downloadedFrame = avutil.av_frame_alloc();
+                            if (av_hwframe_transfer_data(this.downloadedFrame, slot.frame, 0) < 0) {
+                                if (!this.decodedWarned) LOGGER.error(IT, "Frames decoded on the GPU in {} can neither be sampled nor downloaded; frames are dropped",
+                                        FFTool.string(av_get_pix_fmt_name(layout), layout));
+                                this.decodedWarned = true;
+                                this.videoFrameQueue.next();
+                                this.totalSkippedFrames++;
+                                break;
+                            }
+                            this.downloadedFrame.colorspace(slot.frame.colorspace()).color_range(slot.frame.color_range())
+                                    .chroma_location(slot.frame.chroma_location()).color_trc(slot.frame.color_trc())
+                                    .color_primaries(slot.frame.color_primaries());
+                            uploadFrame = this.downloadedFrame;
+                            layout = uploadFrame.format();
+                            mapping = FFTool.pixels(layout);
+                            if (mapping != null && !this.gfx.supports(mapping.format(), mapping.bits())) mapping = null;
+                            sampled = false;
+                        }
                         final int targetW = scaled(slot.width, this.scaleWidth, this.lod.percent());
                         final int targetH = scaled(slot.height, this.scaleHeight, this.lod.percent());
 
-                        AVFrame uploadFrame = slot.frame;
                         int uploadW = slot.width;
                         int uploadH = slot.height;
                         // THE TAGS RARELY CHANGE: PACKED WITH THE FORMAT (12 BITS EACH, 4 FOR RANGE AND SITING) THEY GATE THE REMAP
-                        final long tags = (slot.format & 0xFFFL) | (uploadFrame.colorspace() & 0xFFFL) << 12
+                        final long tags = (layout & 0xFFFL) | (uploadFrame.colorspace() & 0xFFFL) << 12
                                 | (uploadFrame.color_range() & 0xFL) << 24 | (uploadFrame.chroma_location() & 0xFL) << 28
                                 | (uploadFrame.color_trc() & 0xFFFL) << 32 | (uploadFrame.color_primaries() & 0xFFFL) << 44;
                         if (tags != this.colorTags || slot.width != this.colorWidth || slot.height != this.colorHeight) {
-                            this.frameColor = colorimetry(slot.format, slot.width, slot.height, uploadFrame.colorspace(),
+                            this.frameColor = colorimetry(layout, slot.width, slot.height, uploadFrame.colorspace(),
                                     uploadFrame.color_range(), uploadFrame.chroma_location(), uploadFrame.color_trc(), uploadFrame.color_primaries());
                             this.colorTags = tags;
                             this.colorWidth = slot.width;
@@ -1048,17 +1088,21 @@ public final class FFMediaPlayer extends MediaPlayer {
                         final Colorimetry color = this.frameColor;
 
                         final long workStart = System.nanoTime();
-                        if (mapping == null || targetW != slot.width || targetH != slot.height) {
+                        if (sampled) {
+                            // THE ENGINE SAMPLES THE POOL IMAGE IN PLACE AND SCALES TO THE TARGET AS IT CONVERTS
+                            uploadW = targetW;
+                            uploadH = targetH;
+                        } else if (mapping == null || targetW != slot.width || targetH != slot.height) {
                             // SWS PATH: DOWNSCALE AND/OR CONVERT. THE NATIVE FORMAT IS KEPT WHEN SWS
                             // CAN WRITE IT (SKIPS THE BGRA EXPANSION AND UPLOADS FEWER BYTES);
                             // UNSUPPORTED OUTPUTS CONVERT TO BGRA INSTEAD.
-                            final int dstFormat = mapping != null && swscale.sws_isSupportedOutput(slot.format) != 0
-                                    ? slot.format : AV_PIX_FMT_BGRA;
-                            if (this.ensureScaler(slot.width, slot.height, slot.format, targetW, targetH, dstFormat, color)) {
+                            final int dstFormat = mapping != null && swscale.sws_isSupportedOutput(layout) != 0
+                                    ? layout : AV_PIX_FMT_BGRA;
+                            if (this.ensureScaler(slot.width, slot.height, layout, targetW, targetH, dstFormat, color)) {
                                 final int result = swscale.sws_scale(
                                         this.swsContext,
-                                        slot.frame.data(),
-                                        slot.frame.linesize(),
+                                        uploadFrame.data(),
+                                        uploadFrame.linesize(),
                                         0,
                                         slot.height,
                                         this.scaledFrame.data(),
@@ -1113,6 +1157,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // A REFUSED LAYOUT SKIPS ONLY THE UPLOAD: THE FRAME IS STILL CONSUMED AND THE CLOCK ADVANCES, SO
                         // PLAYBACK AND LOOPING KEEP THEIR PACE (COUNTED AS SKIPPED FOR THE ZERO-FRAME → ERROR CHECK)
                         if (this.uploadRefused) this.totalSkippedFrames++;
+                        else if (sampled && this.gfx instanceof final VKEngine vk) vk.upload(slot.frame);
                         else this.uploadNativePlanes(uploadFrame, mapping.format(), uploadH);
 
                         // TRACK RENDER DEBT (CONVERT+UPLOAD TIME VS FRAME BUDGET)
@@ -1506,7 +1551,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     // VIDEO DECODE THREAD
     private void videoDecodeLoop() {
         final AVFrame tempFrame = avutil.av_frame_alloc();
-        final AVFrame hwTransfer = (this.hwDeviceCtx != null) ? avutil.av_frame_alloc() : null;
+        // FRAMES DECODED ON THE ENGINE'S VULKAN DEVICE ARE QUEUED AS THEY ARE; EVERY OTHER ACCELERATOR'S COME DOWN TO RAM
+        final AVFrame hwTransfer = this.hwDeviceCtx != null && !this.vulkanFrames ? avutil.av_frame_alloc() : null;
         final int again = avutil.AVERROR_EAGAIN();
         final int[] serialOut = new int[1];
         int lastSerial = -1;
@@ -2479,7 +2525,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             this.opened = true;
             this.playable = true;
-            LOGGER.info(IT, "FFMediaPlayer started - video: {} (hw: {}), audio: {}", videoInit, this.hwAccel(), audioInit);
+            LOGGER.info(IT, "FFMediaPlayer started - video: {} (hw: {}{}), audio: {}", videoInit, this.hwAccel(),
+                    this.vulkanFrames ? ", frames stay on the GPU" : "", audioInit);
             return true;
         } catch (final Exception e) {
             // A SETUP CUT SHORT BY stop()/RESTART IS NOT A FAILURE WORTH RECORDING
@@ -2659,38 +2706,56 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private boolean initHwDecoder(final AVCodec decoder, final AVStream videoStream) {
-        for (final int hw: VIDEO_HW_CODECS) {
-            for (int i = 0; ; i++) {
-                final AVCodecHWConfig config = avcodec.avcodec_get_hw_config(decoder, i);
-                if (config == null) break;
-                if (config.device_type() != hw || (config.methods() & avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) == 0) continue;
-
-                this.hwDeviceCtx = new AVBufferRef();
-                if (av_hwdevice_ctx_create(this.hwDeviceCtx, hw, (String) null, null, 0) >= 0) {
-                    this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
-                    if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
-                        this.cleanupHwContext();
-                        continue;
-                    }
-
-                    this.videoCodecContext.hw_device_ctx(av_buffer_ref(this.hwDeviceCtx));
-                    this.hwPixelFormat = config.pix_fmt();
-
-                    if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) >= 0) {
-                        final BytePointer hwName = av_hwdevice_get_type_name(hw);
-                        LOGGER.debug(IT, "Hardware decoder initialized: {}", FFTool.string(hwName, "unknown (" + hw + ")"));
-                        IOTool.closeQuietly(hwName);
-                        return true;
-                    }
-
-                    this.cleanupHwContext();
-                } else {
-                    this.hwDeviceCtx.releaseReference();
-                    this.hwDeviceCtx = null;
-                }
+        // THE ENGINE'S OWN VULKAN DEVICE FIRST: FRAMES DECODED THERE ARE SAMPLED IN PLACE, EVERY OTHER ACCELERATOR DOWNLOADS THEM TO
+        // RAM. ONLY 4:2:0 STREAMS OF A CODEC THE DEVICE DECODES QUALIFY, WHOSE VULKAN POOLS (NV12, P010) THE ENGINE SAMPLES
+        final int streamFormat = videoStream.codecpar().format();
+        if (this.gfx instanceof final VKEngine vk && (streamFormat == AV_PIX_FMT_YUV420P || streamFormat == AV_PIX_FMT_YUVJ420P || streamFormat == AV_PIX_FMT_YUV420P10LE)) {
+            final AVCodecHWConfig config = hwConfig(decoder, AV_HWDEVICE_TYPE_VULKAN);
+            final AVBufferRef device = config == null ? null : vk.hwDevice(videoStream.codecpar().codec_id());
+            if (device != null && this.openHw(decoder, videoStream, config, device)) {
+                this.vulkanFrames = true;
+                return true;
             }
         }
+        for (final int hw: VIDEO_HW_CODECS) {
+            final AVCodecHWConfig config = hwConfig(decoder, hw);
+            if (config == null) continue;
+            final AVBufferRef device = new AVBufferRef();
+            if (av_hwdevice_ctx_create(device, hw, (String) null, null, 0) < 0) {
+                device.releaseReference();
+                continue;
+            }
+            if (this.openHw(decoder, videoStream, config, device)) return true;
+        }
+        return false;
+    }
 
+    // THE DECODER'S CONFIGURATION THAT TAKES A DEVICE CONTEXT OF TYPE hw, OR NULL
+    private static AVCodecHWConfig hwConfig(final AVCodec decoder, final int hw) {
+        for (int i = 0; ; i++) {
+            final AVCodecHWConfig config = avcodec.avcodec_get_hw_config(decoder, i);
+            if (config == null) return null;
+            if (config.device_type() == hw && (config.methods() & avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) return config;
+        }
+    }
+
+    // OPENS THE DECODER ON device, A REFERENCE THIS PLAYER OWNS FROM HERE ON; FALSE LEAVES NOTHING OPEN
+    private boolean openHw(final AVCodec decoder, final AVStream videoStream, final AVCodecHWConfig config, final AVBufferRef device) {
+        this.hwDeviceCtx = device;
+        this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
+        if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
+            this.cleanupHwContext();
+            return false;
+        }
+        this.videoCodecContext.hw_device_ctx(av_buffer_ref(device));
+        this.hwPixelFormat = config.pix_fmt();
+        if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) >= 0) {
+            final BytePointer hwName = av_hwdevice_get_type_name(config.device_type());
+            LOGGER.debug(IT, "Hardware decoder initialized: {}", FFTool.string(hwName, "unknown (" + config.device_type() + ")"));
+            IOTool.closeQuietly(hwName);
+            return true;
+        }
+        this.cleanupHwContext();
         return false;
     }
 
@@ -2704,6 +2769,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.hwDeviceCtx = null;
         }
         this.hwPixelFormat = AV_PIX_FMT_NONE;
+        this.vulkanFrames = false;
     }
 
     // RESOLVES A SOFTWARE-CAPABLE VIDEO DECODER FOR THE SOFTWARE DECODE PATH.
@@ -2783,6 +2849,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.hwDeviceCtx = null;
         }
         this.hwPixelFormat = AV_PIX_FMT_NONE;
+        this.vulkanFrames = false;
 
         LOGGER.info(IT, "Software decoding fallback active");
         return true;
@@ -2981,6 +3048,9 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.hwDeviceCtx = null;
         }
         this.hwPixelFormat = AV_PIX_FMT_NONE;
+        this.vulkanFrames = false;
+        this.cachedFramesCtx = 0L;
+        this.cachedFramesFormat = AV_PIX_FMT_NONE;
 
         if (this.swsContext != null) {
             swscale.sws_freeContext(this.swsContext);
@@ -3026,6 +3096,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (this.scaledFrame != null) {
             avutil.av_frame_free(this.scaledFrame);
             this.scaledFrame = null;
+        }
+        if (this.downloadedFrame != null) {
+            avutil.av_frame_free(this.downloadedFrame);
+            this.downloadedFrame = null;
         }
 
         // FREE THE PLANE POOL ON EVERY TEARDOWN SO A STOPPED-BUT-KEPT PLAYER RETAINS NO FRAME MEMORY

@@ -114,6 +114,22 @@ Optional device features the engine uses when you enable them at device creation
   ``minImportedHostPointerAlignment``. Without it the engine falls back to staging buffers.
 - ``samplerYcbcrConversion`` (Vulkan 1.1) — YUV→RGB conversion in sampler hardware for NV12 and
   planar YUV; otherwise a compute pass does the exact same BT.709 math.
+- **Vulkan Video decoding** — override ``deviceInfo()`` with the feature chain, extension lists and
+  queue counts you created the device with, and the player decodes H.264, H.265 and AV1 on that very
+  device: the engine samples the decoded images in place, nothing passes through RAM. It needs a 1.3
+  instance and device with ``timelineSemaphore`` and ``synchronization2``, ``VK_KHR_video_queue``,
+  ``VK_KHR_video_decode_queue`` and the ``VK_KHR_video_decode_*`` codec extensions, plus queues FFmpeg
+  can own: a compute-capable and a transfer-capable queue other than ``queue()`` and a video decode
+  queue, with ``queue()`` the last queue created in its family. FFmpeg submits to those queues from its
+  own threads, so never call ``vkDeviceWaitIdle`` while players exist: wait on your own queue. Only
+  4:2:0 streams decode this way (their NV12 and P010 pools are what the engine samples).
+  Without ``deviceInfo()`` the engine keeps the host-import path above.
+
+```java
+public VKContext.DeviceInfo deviceInfo() {
+    return new VKContext.DeviceInfo(this.features2, this.instanceExtensions, this.deviceExtensions, this.queueCounts);
+}
+```
 
 ### Minecraft 26.x (Vulkan backend)
 WaterMedia stays engine-agnostic and never touches Mojang's Blaze3D internals — bridging is the
@@ -223,10 +239,12 @@ The **binaries** module's own code is under the same DPS (NC) License v1.0.1. It
 third-party native binaries and libraries, whose license texts and notices are bundled under
 `binaries/src/main/resources/META-INF/licenses/` and shipped as `META-INF/licenses/`:
 
-- **LGPL-3.0-or-later** — FFmpeg 8.1.2, built without `--enable-gpl`, x264 or x265
+- **LGPL-3.0-or-later** — FFmpeg 9.0.2, built without `--enable-gpl`, x264 or x265
+- **LGPL-2.1-or-later** — ALSA (Linux ARM64 native)
 - **GPL-3.0-or-later WITH GCC-exception-3.1** — libatomic on macOS and eligible GCC runtime portions
 - **Apache-2.0** — JavaCPP JNI glue (native)
-- **MIT / X11** — libva, libva-drm and libdrm (Linux native); rustypipe-botguard (downloaded binary)
+- **MIT / X11** — libva, libva-drm and libdrm (Linux x64 native); rustypipe-botguard (downloaded binary)
+- **BSD-3-Clause** — Raspberry Pi userland (Linux ARM64 native)
 - **MIT / BSD-3-Clause** — winpthreads (Windows native)
 - **0BSD** — XZ for Java (shaded)
 - **Unlicense** — yt-dlp (downloaded binary)

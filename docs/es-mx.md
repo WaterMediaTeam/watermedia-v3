@@ -44,7 +44,7 @@ La configuración se carga antes de preparar los binarios. Revisa el archivo gen
 | --- | --- |
 | `media.ffmpeg.disable` | `false`; activarlo omite la preparación e inicialización de FFmpeg. Los ajustes de arranque se aplican en el siguiente inicio. Las imágenes siguen siendo independientes de FFmpeg. |
 | `media.ffmpeg.customPath` | Vacío; un directorio explícito debe contener bibliotecas nativas compatibles, no el programa de consola `ffmpeg.exe`. Se siguen exigiendo las capacidades corregidas de TLS y origen de credenciales. |
-| `media.ffmpeg.hardwareAccel` | `true`; su uso depende también del binario, controlador, códec y motor de salida. Sigue disponible la decodificación por software. |
+| `media.ffmpeg.hardwareAccel` | `true`; su uso depende también del binario, controlador, códec y motor de salida. Sigue disponible la decodificación por software. En un `VKEngine` cuyo `VKContext.deviceInfo()` describe un dispositivo creado para decodificar, los videos 4:2:0 en H.264, H.265 y AV1 se decodifican en ese dispositivo y el motor los muestrea ahí mismo; cualquier otro acelerador baja sus cuadros a RAM. |
 | `media.ffmpeg.analyzeDuration` / `probeSize` | 7,000 ms / 10 MiB; se aplican a la entrada principal y al audio separado. Una duración de análisis de cero conserva el valor de FFmpeg. Aumentarlos puede retrasar el inicio. |
 | `decoders.maxImageSourceSize` | 128 MiB de imagen codificada. Es independiente del límite de 512 MiB de datos decodificados del lector. |
 | `media.watertx.texturesBudget` | 32 MiB; la precarga exige además un motor compatible, una cantidad válida de cuadros y que tanto los cuadros originales decodificados como las texturas de salida quepan en el presupuesto. Cero fuerza la reproducción de animaciones cuadro por cuadro. |
@@ -201,7 +201,7 @@ El desarrollo da prioridad a Vulkan; OpenGL sigue disponible como motor secundar
 | Fábrica | Responsabilidad de la aplicación anfitriona |
 | --- | --- |
 | `MediaAPI.glEngine(renderThread, executor)` | Mantener el contexto OpenGL y procesar el executor en su hilo mientras la reproducción o la liberación puedan necesitarlo. |
-| `MediaAPI.vkEngine(context)` | Proporcionar un `VKContext` cuyos objetos y mecanismos de retiro sigan vivos hasta liberar el motor. |
+| `MediaAPI.vkEngine(context)` | Proporcionar un `VKContext` cuyos objetos y mecanismos de retiro sigan vivos hasta liberar el motor. Sobrescribe `deviceInfo()` con la cadena de features, las extensiones y las colas del dispositivo para decodificar video en él (ver el README); `MediaAPI.vulkanDecode()` dice si los nativos lo permiten. |
 | `MediaAPI.awtEngine(onFrame)` | Dibujar la imagen publicada desde la interfaz AWT/Swing y enviar el callback al hilo de interfaz cuando corresponda. |
 | `MediaAPI.jfxEngine(onFrame)` | Proporcionar JavaFX 13 o posterior y enlazar la imagen del motor con la interfaz; sin él, la fábrica lanza `IllegalStateException` en lugar de un error de enlace. |
 | `MediaAPI.headlessEngine()` / `headlessEngine(preload)` | Recibir cuadros en memoria sin contexto gráfico; útil para procesamiento y pruebas. Como todo motor y reproductor multimedia sólo existe en un cliente; un servidor dedicado sólo puede crear relojes `ServerMediaPlayer`. |

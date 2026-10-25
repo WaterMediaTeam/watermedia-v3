@@ -42,7 +42,7 @@ Configuration loads before native provisioning. Check the generated configuratio
 | --- | --- |
 | `media.ffmpeg.disable` | `false`; enabling it skips FFmpeg provisioning and initialization. Startup settings take effect on the next launch. Images remain independent of FFmpeg. |
 | `media.ffmpeg.customPath` | Empty; an explicit directory must contain compatible native libraries, not an `ffmpeg.exe` command-line program. Patched TLS/origin capabilities remain required. |
-| `media.ffmpeg.hardwareAccel` | `true`; actual use also depends on native/driver capabilities, codec and output engine. Software decoding remains available. |
+| `media.ffmpeg.hardwareAccel` | `true`; actual use also depends on native/driver capabilities, codec and output engine. Software decoding remains available. On a `VKEngine` whose `VKContext.deviceInfo()` describes a device created for decoding, 4:2:0 H.264, H.265 and AV1 streams decode on that device and the engine samples them in place; every other accelerator downloads its frames to RAM. |
 | `media.ffmpeg.analyzeDuration` / `probeSize` | 7,000 ms / 10 MiB; both main and separate-audio inputs use them. Zero analysis duration leaves FFmpeg's default. Larger values can increase startup time. |
 | `decoders.maxImageSourceSize` | 128 MiB of encoded image data. This is separate from the image reader's 512 MiB decoded-data limit. |
 | `media.watertx.texturesBudget` | 32 MiB; preloading also requires a capable engine, a valid frame count, and both decoded source frames and output textures fitting the budget. Zero forces animation streaming. |
@@ -192,7 +192,7 @@ Vulkan development takes priority; OpenGL remains supported as the secondary bac
 | Factory | Host obligation |
 | --- | --- |
 | `MediaAPI.glEngine(renderThread, executor)` | Executor dispatches to the thread owning the OpenGL context and is pumped while playback/release can wait for it. |
-| `MediaAPI.vkEngine(context)` | Supply a `VKContext`; its Vulkan objects and retirement mechanism outlive the engine. |
+| `MediaAPI.vkEngine(context)` | Supply a `VKContext`; its Vulkan objects and retirement mechanism outlive the engine. Override `deviceInfo()` with the feature chain, extensions and queue counts of the device to decode video on it (see the README); `MediaAPI.vulkanDecode()` tells whether the natives support that. |
 | `MediaAPI.awtEngine(onFrame)` | Paint the published image from the AWT/Swing UI; marshal the optional callback to the UI thread as needed. |
 | `MediaAPI.jfxEngine(onFrame)` | Supply a JavaFX 13 or newer runtime and bind the engine's image to the host UI; without it the factory throws `IllegalStateException` instead of a linkage error. |
 | `MediaAPI.headlessEngine()` / `headlessEngine(preload)` | Captures uploaded frames without a graphics context; useful for tests and image processing. Like every engine and media player it only exists on a client; a dedicated server can only create `ServerMediaPlayer` clocks. |

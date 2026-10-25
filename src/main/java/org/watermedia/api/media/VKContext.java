@@ -3,8 +3,11 @@ package org.watermedia.api.media;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkInstance;
 import org.lwjgl.vulkan.VkPhysicalDevice;
+import org.lwjgl.vulkan.VkPhysicalDeviceFeatures2;
 import org.lwjgl.vulkan.VkPhysicalDeviceMemoryProperties;
 import org.lwjgl.vulkan.VkQueue;
+
+import java.util.List;
 
 /**
  * Bridge a Vulkan consumer implements to lend {@link VKEngine}
@@ -80,4 +83,26 @@ public interface VKContext {
      * thread; the consumer must also run any still-pending callbacks when it tears down the device.
      */
     void retire(Runnable destroy);
+
+    /**
+     * How {@link #vkDevice()} was created, so FFmpeg can decode video on it and the engine samples the
+     * decoded images in place. The default, {@code null}, keeps decoding off the device: frames are
+     * decoded elsewhere and uploaded from host memory.
+     * <p>
+     * Decoding needs a Vulkan 1.3 instance and device with {@code timelineSemaphore} and
+     * {@code synchronization2} enabled, {@code VK_KHR_video_queue}, {@code VK_KHR_video_decode_queue}
+     * and the {@code VK_KHR_video_decode_*} extensions of the codecs to accelerate, and queues FFmpeg
+     * can own: a compute-capable and a transfer-capable queue other than {@link #queue()}, plus a video
+     * decode queue. {@link #queue()} must be the last queue created in {@link #queueFamily()}; every
+     * other queue of every family is handed to FFmpeg, which submits to them from its own threads, so
+     * while players exist the consumer never touches those queues nor calls {@code vkDeviceWaitIdle}
+     * (it waits on its own queue instead).
+     */
+    default DeviceInfo deviceInfo() { return null; }
+
+    /**
+     * What a device was created with: the feature chain given to {@code vkCreateDevice} (kept allocated and
+     * unchanged while the device lives), the enabled instance and device extensions and the queues created per family index.
+     */
+    record DeviceInfo(VkPhysicalDeviceFeatures2 features, List<String> instanceExtensions, List<String> deviceExtensions, int[] queueCounts) {}
 }

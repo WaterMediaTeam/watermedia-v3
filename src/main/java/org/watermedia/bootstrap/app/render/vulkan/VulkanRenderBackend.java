@@ -26,9 +26,11 @@ import java.nio.LongBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
@@ -42,8 +44,16 @@ import static org.lwjgl.vulkan.KHRPortabilityEnumeration.*;
 import static org.lwjgl.vulkan.KHRPortabilitySubset.*;
 import static org.lwjgl.vulkan.KHRSurface.*;
 import static org.lwjgl.vulkan.KHRSwapchain.*;
+import static org.lwjgl.vulkan.KHRVideoDecodeAV1.VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeH264.VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeH265.VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_QUEUE_VIDEO_DECODE_BIT_KHR;
+import static org.lwjgl.vulkan.KHRVideoQueue.VK_KHR_VIDEO_QUEUE_EXTENSION_NAME;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.*;
+import static org.lwjgl.vulkan.VK12.VK_API_VERSION_1_2;
+import static org.lwjgl.vulkan.VK13.VK_API_VERSION_1_3;
 
 /**
  * Vulkan render backend of the app UI that owns the instance, device and swapchain, and doubles as the {@link VKContext}
@@ -79,6 +89,16 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private long minAlign;
     private boolean wideLines;
     private boolean ycbcrSampler;
+    // WHAT THE DEVICE WAS CREATED WITH, LENT THROUGH VKContext#deviceInfo SO FFMPEG DECODES ON IT: THE FEATURE CHAIN LIVES AS LONG AS
+    // THE DEVICE, THE EXTENSION LISTS AND QUEUE COUNTS ARE FIXED, AND THE RENDER QUEUE IS THE LAST OF ITS FAMILY
+    private VkPhysicalDeviceFeatures2 features;
+    private VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrFeatures;
+    private VkPhysicalDeviceVulkan12Features features12;
+    private VkPhysicalDeviceVulkan13Features features13;
+    private final List<String> instanceExtensions = new ArrayList<>();
+    private final List<String> deviceExtensions = new ArrayList<>();
+    private int[] queueCounts = new int[0];
+    private String decodeCodecs = "off";
 
     // STATIC CORE RESOURCES (BUILT LAZILY ONCE IN ensureCore())
     private boolean coreReady;
@@ -161,8 +181,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             this.cleanup();
             throw t;
         }
-        WaterMedia.LOGGER.info(IT, "VulkanRenderBackend device ready (queueFamily={}, hostImport={}, minAlign={}, wideLines={}, ycbcrSampler={})",
-                this.queueFamily, this.hostImport, this.minAlign, this.wideLines, this.ycbcrSampler);
+        WaterMedia.LOGGER.info(IT, "VulkanRenderBackend device ready (queueFamily={}, hostImport={}, minAlign={}, wideLines={}, ycbcrSampler={}, videoDecode={})",
+                this.queueFamily, this.hostImport, this.minAlign, this.wideLines, this.ycbcrSampler, this.decodeCodecs);
     }
 
     // ==========================================================================
@@ -203,6 +223,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                 exts = stack.mallocPointer(glfwExts.remaining() + 1);
                 exts.put(glfwExts).put(stack.UTF8(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)).flip();
             }
+            for (int i = 0; i < exts.remaining(); i++) this.instanceExtensions.add(MemoryUtil.memUTF8(exts.get(i)));
 
             final VkInstanceCreateInfo ici = VkInstanceCreateInfo.calloc(stack).sType$Default()
                     .flags(portEnum ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0)
@@ -263,50 +284,110 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     private void createDeviceAndQueue() {
         try (final MemoryStack stack = stackPush()) {
-            final VkDeviceQueueCreateInfo.Buffer q = VkDeviceQueueCreateInfo.calloc(1, stack);
-            q.get(0).sType$Default().queueFamilyIndex(this.queueFamily).pQueuePriorities(stack.floats(1.0f));
-
-            // ONE QUEUE FAMILY FOR GRAPHICS, PRESENT AND THE ENGINE'S TRANSFER/COMPUTE, SO NO OWNERSHIP TRANSFERS;
-            // A DEVICE ADVERTISING VK_KHR_portability_subset (MoltenVK) MUST ENABLE IT OR vkCreateDevice FAILS
-            final boolean portability = hasDeviceExtension(this.physicalDevice, stack, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
-            final PointerBuffer exts = stack.mallocPointer(1 + (this.hostImport ? 1 : 0) + (portability ? 1 : 0));
-            exts.put(stack.UTF8(VK_KHR_SWAPCHAIN_EXTENSION_NAME));
-            if (this.hostImport) exts.put(stack.UTF8(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME));
-            if (portability) exts.put(stack.UTF8(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME));
-            exts.flip();
-
-            final VkPhysicalDeviceFeatures feats = VkPhysicalDeviceFeatures.calloc(stack);
-            if (this.wideLines) feats.wideLines(true); // ENABLE wideLines IFF SUPPORTED (FOR lineWidth)
-
-            // SAMPLER YCBCR CONVERSION (OPTIONAL 1.1 FEATURE, QUERIED ONLY ON 1.1+ DEVICES) LETS THE VKEngine
-            // CONVERT MULTIPLANAR YUV IN SAMPLER HARDWARE INSTEAD OF ITS COMPUTE SHADER
             final VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.malloc(stack);
             vkGetPhysicalDeviceProperties(this.physicalDevice, props);
             // CAPTURE THE GPU NAME + MAX API VERSION ONCE FOR DIAGNOSTICS (SAFE TO READ OFF-THREAD AFTERWARDS)
             final String name = props.deviceNameString();
             if (!name.isBlank()) this.deviceName = name;
-            final int api = props.apiVersion();
-            this.deviceVersion = ((api >>> 22) & 0x7F) + "." + ((api >>> 12) & 0x3FF);
-            if (props.apiVersion() >= VK_API_VERSION_1_1) {
-                final VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr =
-                        VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc(stack).sType$Default();
-                final VkPhysicalDeviceFeatures2 feats2 = VkPhysicalDeviceFeatures2.calloc(stack).sType$Default().pNext(ycbcr);
-                vkGetPhysicalDeviceFeatures2(this.physicalDevice, feats2);
-                this.ycbcrSampler = ycbcr.samplerYcbcrConversion();
+            final int deviceApi = props.apiVersion();
+            this.deviceVersion = ((deviceApi >>> 22) & 0x7F) + "." + ((deviceApi >>> 12) & 0x3FF);
+            // WHAT MAY BE USED IS THE LOWER OF THE INSTANCE'S AND THE DEVICE'S VERSIONS
+            final int api = Math.min(deviceApi, this.instance.getCapabilities().apiVersion);
+
+            // ONE QUEUE FAMILY FOR GRAPHICS, PRESENT AND THE ENGINE'S TRANSFER/COMPUTE, SO NO OWNERSHIP TRANSFERS; A DEVICE ADVERTISING
+            // VK_KHR_portability_subset (MoltenVK) MUST ENABLE IT, AND A 1.3 DEVICE GETS THE VIDEO DECODE EXTENSIONS IT OFFERS
+            final IntBuffer count = stack.mallocInt(1);
+            vkEnumerateDeviceExtensionProperties(this.physicalDevice, (ByteBuffer) null, count, null);
+            final VkExtensionProperties.Buffer available = VkExtensionProperties.malloc(count.get(0), stack);
+            vkEnumerateDeviceExtensionProperties(this.physicalDevice, (ByteBuffer) null, count, available);
+            final Set<String> supported = new HashSet<>();
+            for (int i = 0; i < available.capacity(); i++) supported.add(available.get(i).extensionNameString());
+            this.deviceExtensions.add(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+            if (this.hostImport) this.deviceExtensions.add(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+            if (supported.contains(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)) this.deviceExtensions.add(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+            final List<String> codecs = new ArrayList<>();
+            if (api >= VK_API_VERSION_1_3 && supported.contains(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME) && supported.contains(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME)) {
+                if (supported.contains(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME)) codecs.add(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
+                if (supported.contains(VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME)) codecs.add(VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME);
+                if (supported.contains(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME)) codecs.add(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME);
             }
 
-            final VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(stack).sType$Default()
-                    .pQueueCreateInfos(q).ppEnabledExtensionNames(exts).pEnabledFeatures(feats);
-            if (this.ycbcrSampler) {
-                dci.pNext(VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc(stack).sType$Default()
-                        .samplerYcbcrConversion(true));
+            // FFMPEG NEEDS QUEUES OF ITS OWN: A VIDEO DECODE FAMILY PLUS COMPUTE AND TRANSFER QUEUES OTHER THAN THE RENDER QUEUE. WITHOUT
+            // A SEPARATE COMPUTE FAMILY IT TAKES THE FIRST QUEUE OF THE RENDER FAMILY AND THE APP RENDERS ON THE SECOND, THE LAST ONE
+            vkGetPhysicalDeviceQueueFamilyProperties(this.physicalDevice, count, null);
+            final VkQueueFamilyProperties.Buffer families = VkQueueFamilyProperties.malloc(count.get(0), stack);
+            vkGetPhysicalDeviceQueueFamilyProperties(this.physicalDevice, count, families);
+            this.queueCounts = new int[families.capacity()];
+            this.queueCounts[this.queueFamily] = 1;
+            if (!codecs.isEmpty()) {
+                int decode = -1, compute = -1, transfer = -1;
+                for (int i = 0; i < families.capacity(); i++) {
+                    final int flags = families.get(i).queueFlags();
+                    if (decode < 0 && (flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0) decode = i;
+                    if (compute < 0 && (flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0) compute = i;
+                    if (transfer < 0 && (flags & VK_QUEUE_TRANSFER_BIT) != 0 && (flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_VIDEO_DECODE_BIT_KHR)) == 0) transfer = i;
+                }
+                if (compute < 0 && families.get(this.queueFamily).queueCount() >= 2) compute = this.queueFamily;
+                if (decode >= 0 && compute >= 0) {
+                    this.queueCounts[decode] = 1;
+                    this.queueCounts[compute] = compute == this.queueFamily ? 2 : 1;
+                    if (transfer >= 0) this.queueCounts[transfer] = 1;
+                    this.deviceExtensions.add(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
+                    this.deviceExtensions.add(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
+                    this.deviceExtensions.addAll(codecs);
+                    this.decodeCodecs = String.join(",", codecs).replace("VK_KHR_video_decode_", "");
+                }
             }
+            int used = 0;
+            for (final int queues: this.queueCounts) if (queues > 0) used++;
+            final VkDeviceQueueCreateInfo.Buffer q = VkDeviceQueueCreateInfo.calloc(used, stack);
+            for (int i = 0, j = 0; i < this.queueCounts.length; i++) {
+                if (this.queueCounts[i] <= 0) continue;
+                final FloatBuffer priorities = stack.mallocFloat(this.queueCounts[i]);
+                for (int k = 0; k < this.queueCounts[i]; k++) priorities.put(k, 1.0f);
+                q.get(j++).sType$Default().queueFamilyIndex(i).pQueuePriorities(priorities);
+            }
+            final PointerBuffer exts = stack.mallocPointer(this.deviceExtensions.size());
+            for (final String extension: this.deviceExtensions) exts.put(stack.UTF8(extension));
+            exts.flip();
+
+            // THE FEATURES, KEPT AS FFMPEG READS THEM: wideLines FOR lineWidth, THE YCBCR SAMPLER THE VKEngine CONVERTS WITH (OPTIONAL
+            // 1.1 FEATURE) AND THE TIMELINE SEMAPHORES AND synchronization2 DECODING RUNS ON, EACH ONLY WHEN THE DEVICE OFFERS IT
+            this.features = VkPhysicalDeviceFeatures2.calloc().sType$Default();
+            this.features.features().wideLines(this.wideLines);
+            if (api >= VK_API_VERSION_1_1) {
+                final VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc(stack).sType$Default();
+                final VkPhysicalDeviceVulkan12Features vulkan12 = VkPhysicalDeviceVulkan12Features.calloc(stack).sType$Default();
+                final VkPhysicalDeviceVulkan13Features vulkan13 = VkPhysicalDeviceVulkan13Features.calloc(stack).sType$Default();
+                // THE RAW ADDRESS: LWJGL'S TYPED pNext PREPENDS AND WOULD CUT THE CHAIN BEHIND THE STRUCT
+                final VkPhysicalDeviceFeatures2 query = VkPhysicalDeviceFeatures2.calloc(stack).sType$Default().pNext(ycbcr.address());
+                if (api >= VK_API_VERSION_1_2) ycbcr.pNext(vulkan12.address());
+                if (api >= VK_API_VERSION_1_3) vulkan12.pNext(vulkan13.address());
+                vkGetPhysicalDeviceFeatures2(this.physicalDevice, query);
+                this.ycbcrSampler = ycbcr.samplerYcbcrConversion();
+                this.ycbcrFeatures = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc().sType$Default().samplerYcbcrConversion(this.ycbcrSampler);
+                this.features.pNext(this.ycbcrFeatures.address());
+                if (api >= VK_API_VERSION_1_2) {
+                    this.features12 = VkPhysicalDeviceVulkan12Features.calloc().sType$Default().timelineSemaphore(vulkan12.timelineSemaphore());
+                    this.ycbcrFeatures.pNext(this.features12.address());
+                }
+                if (api >= VK_API_VERSION_1_3) {
+                    this.features13 = VkPhysicalDeviceVulkan13Features.calloc().sType$Default().synchronization2(vulkan13.synchronization2());
+                    this.features12.pNext(this.features13.address());
+                }
+            }
+
+            // A 1.0 DEVICE TAKES THE BASE FEATURES THE OLD WAY; VkPhysicalDeviceFeatures2 IN THE CHAIN NEEDS 1.1
+            final VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(stack).sType$Default()
+                    .pQueueCreateInfos(q).ppEnabledExtensionNames(exts);
+            if (api >= VK_API_VERSION_1_1) dci.pNext(this.features.address());
+            else dci.pEnabledFeatures(this.features.features());
             final PointerBuffer pDev = stack.mallocPointer(1);
             check(vkCreateDevice(this.physicalDevice, dci, null, pDev), "create device");
             this.device = new VkDevice(pDev.get(0), this.physicalDevice, dci);
 
             final PointerBuffer pQ = stack.mallocPointer(1);
-            vkGetDeviceQueue(this.device, this.queueFamily, 0, pQ);
+            vkGetDeviceQueue(this.device, this.queueFamily, this.queueCounts[this.queueFamily] - 1, pQ);
             this.queue = new VkQueue(pQ.get(0), this.device);
 
             // PERSISTENT MEMORY PROPERTIES (OUTLIVES EVERY STACK FRAME; SHARED WITH THE VKEngine).
@@ -682,10 +763,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // RESIZE / OUT-OF-DATE: DRAIN, TEAR DOWN THE SWAPCHAIN-DERIVED OBJECTS, AND REBUILD. THE RENDER PASS
     // AND PIPELINES SURVIVE BECAUSE THE FORMAT NEVER CHANGES.
     private void recreateSwapchain() {
-        // UNDER THE QUEUE LOCK: vkDeviceWaitIdle NEEDS EXCLUSIVE QUEUE ACCESS, BUT THE DECODE THREAD SUBMITS
-        // UPLOADS TO THE SAME QUEUE — CONCURRENT ACCESS WOULD CORRUPT DEVICE/SWAPCHAIN STATE.
+        // ONLY THE RENDER QUEUE TOUCHES THE SWAPCHAIN, SO IT ALONE DRAINS, UNDER THE LOCK THE ENGINE'S UPLOADS SHARE; A DEVICE-WIDE
+        // WAIT WOULD RACE FFMPEG, WHICH SUBMITS DECODE WORK TO ITS OWN QUEUES FROM ITS OWN THREADS
         synchronized (this.queueLock) {
-            vkDeviceWaitIdle(this.device);
+            vkQueueWaitIdle(this.queue);
             this.destroySwapchainObjects();
             this.buildSwapchain();
         }
@@ -1340,10 +1421,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         if (texture == null || texture.id() <= 0) return;
         final TextureRecord rec = this.textures.remove(texture.id());
         if (rec == null) return;
-        // RARE (ATLAS/ICON TEARDOWN): DRAIN SO NO IN-FLIGHT FRAME STILL SAMPLES THE VIEW, UNDER THE QUEUE LOCK
-        // BECAUSE vkDeviceWaitIdle NEEDS EXCLUSIVE QUEUE ACCESS WHILE THE DECODE THREAD SUBMITS
+        // RARE (ATLAS/ICON TEARDOWN): DRAIN THE RENDER QUEUE, THE ONLY ONE THAT SAMPLES THE VIEW, UNDER THE LOCK THE ENGINE'S UPLOADS
+        // SHARE; A DEVICE-WIDE WAIT WOULD RACE FFMPEG'S DECODE SUBMISSIONS ON ITS OWN QUEUES
         synchronized (this.queueLock) {
-            vkDeviceWaitIdle(this.device);
+            vkQueueWaitIdle(this.queue);
         }
         vkDestroyImageView(this.device, rec.view(), null);
         vkDestroyImage(this.device, rec.image(), null);
@@ -1563,6 +1644,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
         if (this.memProps != null) { this.memProps.free(); this.memProps = null; }
         if (this.device != null) { vkDestroyDevice(this.device, null); this.device = null; }
+        if (this.features13 != null) { this.features13.free(); this.features13 = null; }
+        if (this.features12 != null) { this.features12.free(); this.features12 = null; }
+        if (this.ycbcrFeatures != null) { this.ycbcrFeatures.free(); this.ycbcrFeatures = null; }
+        if (this.features != null) { this.features.free(); this.features = null; }
         if (this.surface != 0L) { vkDestroySurfaceKHR(this.instance, this.surface, null); this.surface = 0L; }
         if (this.instance != null) { vkDestroyInstance(this.instance, null); this.instance = null; }
         WaterMedia.LOGGER.info(IT, "VulkanRenderBackend cleaned up");
@@ -1629,6 +1714,11 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     @Override
     public boolean ycbcrSampler() {
         return this.ycbcrSampler;
+    }
+
+    @Override
+    public VKContext.DeviceInfo deviceInfo() {
+        return new VKContext.DeviceInfo(this.features, List.copyOf(this.instanceExtensions), List.copyOf(this.deviceExtensions), this.queueCounts.clone());
     }
 
     private static void check(final int result, final String op) {

@@ -1,6 +1,5 @@
 import groovy.json.JsonOutput
 import me.modmuss50.mpp.platforms.curseforge.AdditionalFileOptions
-import org.gradle.api.tasks.testing.Test
 
 import java.security.MessageDigest
 import java.util.jar.JarEntry
@@ -48,8 +47,12 @@ def javafxHost = [windows: 'win', linux: 'linux', osx: 'mac'][osdetector.os]
 if (osdetector.arch == 'aarch_64' && osdetector.os != 'windows') javafxHost += '-aarch64'
 def lwjglTargets = lwjgl_platforms.tokenize(',')*.trim()
 
+// THE FFMPEG API JAR COMES FROM THE JAVACPP PRESETS FORK BINARIES REBUILDS ITS NATIVES FROM (hwcontext_vulkan BINDINGS),
+// SO IT SHIPS NEXT TO THEM INSTEAD OF MAVEN CENTRAL; JAVACPP ITSELF KEEPS THE VERSION THE PRESET SUFFIX NAMES
+def javacppVersion = ffmpeg_version.split('-', 2)[1]
 dependencies {
-    include "org.bytedeco:ffmpeg:$ffmpeg_version"
+    include files('binaries/libs/ffmpeg-' + ffmpeg_version + '.jar')
+    include "org.bytedeco:javacpp:$javacppVersion"
     // NESTED LIBRARIES RESOLVE AN EXACT VERSION; THE RANGE LOADERS ACCEPT IS "<artifact>_range" IN gradle.properties.
     // A RESOLVED RANGE WOULD READ EVERY NEWER RELEASE'S METADATA AND BREAK DEPENDENCY VERIFICATION ON EACH UPSTREAM PUBLISH
     jarJar "com.github.SrRapero720:waterconfig:$waterconfig_version"

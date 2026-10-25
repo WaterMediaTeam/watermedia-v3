@@ -1,10 +1,14 @@
 package org.watermedia.api.media;
 
+import org.bytedeco.ffmpeg.avutil.AVBufferRef;
+import org.bytedeco.ffmpeg.avutil.AVFrame;
+import org.bytedeco.ffmpeg.avutil.AVHWFramesContext;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -13,12 +17,14 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 import org.watermedia.test.support.YuvFrames;
 
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.ArrayList;
@@ -27,6 +33,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_H264;
+import static org.bytedeco.ffmpeg.global.avutil.AV_PIX_FMT_NV12;
+import static org.bytedeco.ffmpeg.global.avutil.AV_PIX_FMT_VULKAN;
+import static org.bytedeco.ffmpeg.global.avutil.av_buffer_unref;
+import static org.bytedeco.ffmpeg.global.avutil.av_frame_alloc;
+import static org.bytedeco.ffmpeg.global.avutil.av_frame_free;
+import static org.bytedeco.ffmpeg.global.avutil.av_frame_get_buffer;
+import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_ctx_alloc;
+import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_ctx_init;
+import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_get_buffer;
+import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_transfer_data;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -44,17 +61,26 @@ import static org.lwjgl.vulkan.EXTDebugUtils.*;
 import static org.lwjgl.vulkan.EXTExternalMemoryHost.*;
 import static org.lwjgl.vulkan.KHRPortabilityEnumeration.*;
 import static org.lwjgl.vulkan.KHRPortabilitySubset.*;
+import static org.lwjgl.vulkan.KHRVideoDecodeAV1.VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeH264.VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeH265.VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME;
+import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_QUEUE_VIDEO_DECODE_BIT_KHR;
+import static org.lwjgl.vulkan.KHRVideoQueue.VK_KHR_VIDEO_QUEUE_EXTENSION_NAME;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.*;
+import static org.lwjgl.vulkan.VK12.VK_API_VERSION_1_2;
+import static org.lwjgl.vulkan.VK13.VK_API_VERSION_1_3;
 import static org.watermedia.test.support.YuvFrames.assertUniform;
 
 /**
- * Verifies {@link VKEngine} conversions on a headless Vulkan 1.1 device, once with every feature the device offers
+ * Verifies {@link VKEngine} conversions on a headless Vulkan device, once with every feature the device offers
  * (YCbCr sampler, host import) and once forced onto the compute shader and staging copies: odd-sized planar and
  * packed frames, BT.601 and BT.709 matrices, full and limited range, chroma siting, PQ mapping and ragged strides,
- * each read back through the RGBA view {@link VKEngine#texture()} publishes, and the device objects engines share
- * until the last one is released. Validation-layer errors fail the test
- * when the Khronos layer is installed. Skipped without a Vulkan loader or a 1.1 device.
+ * each read back through the RGBA view {@link VKEngine#texture()} publishes, the device objects engines share
+ * until the last one is released, and the frames FFmpeg decodes on the device itself when it can decode video
+ * (a 1.3 device with the video extensions). Validation-layer errors fail the test when the Khronos layer is
+ * installed. Skipped without a Vulkan loader or a 1.1 device.
  */
 @DisplayName("VKEngine")
 public class VKEngineTest {
@@ -103,6 +129,13 @@ public class VKEngineTest {
     private static boolean ycbcr420;
     private static long alignment;
     private static String name;
+    // WHAT THE DEVICE WAS CREATED WITH (SEE VKContext#deviceInfo), AND WHETHER IT CAN DECODE VIDEO FOR FFMPEG
+    private static VkPhysicalDeviceFeatures2 features;
+    private static VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrEnabled;
+    private static VkPhysicalDeviceVulkan12Features vulkan12Enabled;
+    private static VkPhysicalDeviceVulkan13Features vulkan13Enabled;
+    private static VKContext.DeviceInfo info;
+    private static boolean decoding;
 
     // READBACK OBJECTS
     private static VkCommandBuffer cmd;
@@ -133,9 +166,11 @@ public class VKEngineTest {
             if (debug) instanceEnabled.put(stack.UTF8(VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
             if (portability) instanceEnabled.put(stack.UTF8(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME));
             instanceEnabled.flip();
+            // A 1.3 INSTANCE WHEN THE LOADER OFFERS IT: FFMPEG DECODES ONLY THROUGH ONE, AND THE ENGINE STAYS 1.1-CORE
+            final int apiVersion = VK.getInstanceVersionSupported() >= VK_API_VERSION_1_3 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_1;
             final VkInstanceCreateInfo ici = VkInstanceCreateInfo.calloc(stack).sType$Default()
                     .flags(portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0)
-                    .pApplicationInfo(VkApplicationInfo.calloc(stack).sType$Default().pApplicationName(stack.UTF8("VKEngineTest")).apiVersion(VK_API_VERSION_1_1))
+                    .pApplicationInfo(VkApplicationInfo.calloc(stack).sType$Default().pApplicationName(stack.UTF8("VKEngineTest")).apiVersion(apiVersion))
                     .ppEnabledLayerNames(validation ? stack.pointers(stack.UTF8(VALIDATION_LAYER)) : null)
                     .ppEnabledExtensionNames(instanceEnabled);
             final PointerBuffer handle = stack.mallocPointer(1);
@@ -178,9 +213,16 @@ public class VKEngineTest {
             }
             if (physical == null) throw new IllegalStateException("no Vulkan 1.1 device with a graphics and compute queue");
 
-            // OPTIONAL FEATURES THE ENGINE CAN USE: THE YCBCR SAMPLER AND ZERO-COPY HOST IMPORT
+            // OPTIONAL FEATURES THE ENGINE CAN USE: THE YCBCR SAMPLER AND ZERO-COPY HOST IMPORT, AND THE VIDEO DECODING FFMPEG RUNS ON
+            // A 1.3 DEVICE WITH THE VIDEO EXTENSIONS, TIMELINE SEMAPHORES, synchronization2 AND QUEUES OF ITS OWN NEXT TO THE RENDER QUEUE
+            final int api = Math.min(props.apiVersion(), apiVersion);
             final VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrFeatures = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc(stack).sType$Default();
-            vkGetPhysicalDeviceFeatures2(physical, VkPhysicalDeviceFeatures2.calloc(stack).sType$Default().pNext(ycbcrFeatures));
+            final VkPhysicalDeviceVulkan12Features vulkan12 = VkPhysicalDeviceVulkan12Features.calloc(stack).sType$Default();
+            final VkPhysicalDeviceVulkan13Features vulkan13 = VkPhysicalDeviceVulkan13Features.calloc(stack).sType$Default();
+            if (api >= VK_API_VERSION_1_2) ycbcrFeatures.pNext(vulkan12.address());
+            if (api >= VK_API_VERSION_1_3) vulkan12.pNext(vulkan13.address());
+            // RAW ADDRESSES: LWJGL'S TYPED pNext PREPENDS AND WOULD CUT THE CHAIN BEHIND THE STRUCT
+            vkGetPhysicalDeviceFeatures2(physical, VkPhysicalDeviceFeatures2.calloc(stack).sType$Default().pNext(ycbcrFeatures.address()));
             ycbcr = ycbcrFeatures.samplerYcbcrConversion();
             final VkFormatProperties planar = VkFormatProperties.malloc(stack);
             vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM, planar);
@@ -190,29 +232,84 @@ public class VKEngineTest {
             check(vkEnumerateDeviceExtensionProperties(physical, (ByteBuffer) null, count, null), "count device extensions");
             final VkExtensionProperties.Buffer deviceExtensions = VkExtensionProperties.create(count.get(0));
             check(vkEnumerateDeviceExtensionProperties(physical, (ByteBuffer) null, count, deviceExtensions), "enumerate device extensions");
-            boolean subset = false;
+            boolean subset = false, videoQueue = false, decodeQueue = false;
+            final List<String> codecs = new ArrayList<>();
             for (final VkExtensionProperties extension: deviceExtensions) {
-                hostImport |= VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME.equals(extension.extensionNameString());
-                subset |= VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME.equals(extension.extensionNameString());
+                final String name = extension.extensionNameString();
+                hostImport |= VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME.equals(name);
+                subset |= VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME.equals(name);
+                videoQueue |= VK_KHR_VIDEO_QUEUE_EXTENSION_NAME.equals(name);
+                decodeQueue |= VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME.equals(name);
+                if (VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME.equals(name) || VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME.equals(name)
+                        || VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME.equals(name)) codecs.add(name);
             }
             if (hostImport) {
                 final VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = VkPhysicalDeviceExternalMemoryHostPropertiesEXT.calloc(stack).sType$Default();
                 vkGetPhysicalDeviceProperties2(physical, VkPhysicalDeviceProperties2.calloc(stack).sType$Default().pNext(host.address()));
                 alignment = host.minImportedHostPointerAlignment();
             }
-            final VkDeviceQueueCreateInfo.Buffer queues = VkDeviceQueueCreateInfo.calloc(1, stack);
-            queues.get(0).sType$Default().queueFamilyIndex(family).pQueuePriorities(stack.floats(1.0f));
-            final PointerBuffer deviceEnabled = stack.mallocPointer(2);
-            if (hostImport) deviceEnabled.put(stack.UTF8(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME));
-            if (subset) deviceEnabled.put(stack.UTF8(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME));
+            final List<String> enabled = new ArrayList<>();
+            if (hostImport) enabled.add(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+            if (subset) enabled.add(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+            // FFMPEG'S QUEUES: A DECODE FAMILY AND COMPUTE/TRANSFER QUEUES THAT ARE NOT THE RENDER QUEUE, WHICH STAYS THE LAST OF ITS FAMILY
+            vkGetPhysicalDeviceQueueFamilyProperties(physical, count, null);
+            final VkQueueFamilyProperties.Buffer families = VkQueueFamilyProperties.malloc(count.get(0), stack);
+            vkGetPhysicalDeviceQueueFamilyProperties(physical, count, families);
+            final int[] counts = new int[families.capacity()];
+            counts[family] = 1;
+            if (api >= VK_API_VERSION_1_3 && videoQueue && decodeQueue && !codecs.isEmpty() && vulkan12.timelineSemaphore() && vulkan13.synchronization2()) {
+                int decode = -1, compute = -1, transfer = -1;
+                for (int f = 0; f < families.capacity(); f++) {
+                    final int flags = families.get(f).queueFlags();
+                    if (decode < 0 && (flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0) decode = f;
+                    if (compute < 0 && (flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0) compute = f;
+                    if (transfer < 0 && (flags & VK_QUEUE_TRANSFER_BIT) != 0 && (flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_VIDEO_DECODE_BIT_KHR)) == 0) transfer = f;
+                }
+                if (compute < 0 && families.get(family).queueCount() >= 2) compute = family;
+                if (decode >= 0 && compute >= 0) {
+                    counts[decode] = 1;
+                    counts[compute] = compute == family ? 2 : 1;
+                    if (transfer >= 0) counts[transfer] = 1;
+                    enabled.add(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
+                    enabled.add(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
+                    enabled.addAll(codecs);
+                    decoding = true;
+                }
+            }
+            int used = 0;
+            for (final int queues: counts) if (queues > 0) used++;
+            final VkDeviceQueueCreateInfo.Buffer queues = VkDeviceQueueCreateInfo.calloc(used, stack);
+            for (int f = 0, j = 0; f < counts.length; f++) {
+                if (counts[f] <= 0) continue;
+                final FloatBuffer priorities = stack.mallocFloat(counts[f]);
+                for (int k = 0; k < counts[f]; k++) priorities.put(k, 1.0f);
+                queues.get(j++).sType$Default().queueFamilyIndex(f).pQueuePriorities(priorities);
+            }
+            final PointerBuffer deviceEnabled = stack.mallocPointer(enabled.size());
+            for (final String name: enabled) deviceEnabled.put(stack.UTF8(name));
             deviceEnabled.flip();
+            // THE FEATURE CHAIN OUTLIVES THE DEVICE: FFMPEG READS IT THROUGH VKContext#deviceInfo
+            features = VkPhysicalDeviceFeatures2.calloc().sType$Default();
+            ycbcrEnabled = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc().sType$Default().samplerYcbcrConversion(ycbcr);
+            features.pNext(ycbcrEnabled.address());
+            if (api >= VK_API_VERSION_1_2) {
+                vulkan12Enabled = VkPhysicalDeviceVulkan12Features.calloc().sType$Default().timelineSemaphore(vulkan12.timelineSemaphore());
+                ycbcrEnabled.pNext(vulkan12Enabled.address());
+            }
+            if (api >= VK_API_VERSION_1_3) {
+                vulkan13Enabled = VkPhysicalDeviceVulkan13Features.calloc().sType$Default().synchronization2(vulkan13.synchronization2());
+                vulkan12Enabled.pNext(vulkan13Enabled.address());
+            }
             final VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(stack).sType$Default()
-                    .pNext(VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc(stack).sType$Default().samplerYcbcrConversion(ycbcr))
-                    .pQueueCreateInfos(queues).ppEnabledExtensionNames(deviceEnabled);
+                    .pNext(features.address()).pQueueCreateInfos(queues).ppEnabledExtensionNames(deviceEnabled);
             check(vkCreateDevice(physical, dci, null, handle), "create device");
             device = new VkDevice(handle.get(0), physical, dci);
-            vkGetDeviceQueue(device, family, 0, handle);
+            vkGetDeviceQueue(device, family, counts[family] - 1, handle);
             queue = new VkQueue(handle.get(0), device);
+            final List<String> instanceNames = new ArrayList<>();
+            if (debug) instanceNames.add(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            if (portability) instanceNames.add(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+            info = new VKContext.DeviceInfo(features, instanceNames, enabled, counts);
             memory = VkPhysicalDeviceMemoryProperties.malloc();
             vkGetPhysicalDeviceMemoryProperties(physical, memory);
 
@@ -278,7 +375,7 @@ public class VKEngineTest {
             throw new AssertionError("Vulkan is present but the LWJGL stack cannot list its extensions; raise org.lwjgl.system.stackSize", e);
         }
         System.out.println("[VKEngineTest] " + name + ": samplerYcbcrConversion=" + ycbcr + " (4:2:0 " + ycbcr420 + "), hostImport=" + hostImport
-                + " (alignment " + alignment + "), validation layer " + (validation ? "on" : "not installed"));
+                + " (alignment " + alignment + "), videoDecode=" + decoding + ", validation layer " + (validation ? "on" : "not installed"));
     }
 
     // UNWINDS WHATEVER open() BUILT, NEWEST FIRST; THE DEVICE DRAINS AND RUNS THE RETIRED CALLBACKS BEFORE IT DIES
@@ -296,6 +393,15 @@ public class VKEngineTest {
             vkDestroyDevice(device, null);
             device = null;
         }
+        if (vulkan13Enabled != null) vulkan13Enabled.free();
+        if (vulkan12Enabled != null) vulkan12Enabled.free();
+        if (ycbcrEnabled != null) ycbcrEnabled.free();
+        if (features != null) features.free();
+        vulkan13Enabled = null;
+        vulkan12Enabled = null;
+        ycbcrEnabled = null;
+        features = null;
+        info = null;
         if (memory != null) memory.free();
         memory = null;
         if (messenger != VK_NULL_HANDLE) vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
@@ -329,6 +435,7 @@ public class VKEngineTest {
         @Override public long minImportedHostPointerAlignment() { return this.hostImportSupported() ? alignment : 0L; }
         @Override public boolean ycbcrSampler() { return this == DEVICE && ycbcr; }
         @Override public void retire(final Runnable destroy) { RETIRED.add(destroy); }
+        @Override public DeviceInfo deviceInfo() { return this == DEVICE ? info : null; }
     }
 
     @Nested
@@ -576,7 +683,113 @@ public class VKEngineTest {
         }
     }
 
+    @Nested
+    @DisplayName("Decoded frames")
+    class Decoded {
+
+        @Test
+        @DisplayName("A frame of an FFmpeg pool on the device is sampled in place, cropped to its visible size and scaled to the layout")
+        void poolFrameSamplesInPlace() {
+            assumeTrue(MediaBootstrap.ffmpegAvailable() && MediaAPI.vulkanDecode(), "FFmpeg with the Vulkan bindings");
+            final VKEngine engine = MediaAPI.vkEngine(Features.DEVICE);
+            AVBufferRef deviceRef = null, framesRef = null;
+            AVFrame hw = null, sw = null;
+            try {
+                deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
+                assumeTrue(deviceRef != null, "the test device cannot decode H.264 (" + name + ")");
+                // A 64x32 POOL WHOSE FRAMES HOLD A 60x30 PICTURE, FILLED THE WAY FFMPEG UPLOADS SOFTWARE FRAMES INTO IT: Y 120, Cb 90, Cr 200
+                // INSIDE THE PICTURE AND BLACK PADDING BEYOND IT, SO A CROP THAT SAMPLED THE PADDING WOULD SHOW
+                final int w = 64, h = 32, visibleW = 60, visibleH = 30;
+                framesRef = av_hwframe_ctx_alloc(deviceRef);
+                final AVHWFramesContext fc = new AVHWFramesContext(framesRef.data());
+                fc.format(AV_PIX_FMT_VULKAN).sw_format(AV_PIX_FMT_NV12).width(w).height(h).initial_pool_size(2);
+                assertTrue(av_hwframe_ctx_init(framesRef) >= 0, "the device allocates NV12 pools");
+                hw = av_frame_alloc();
+                assertTrue(av_hwframe_get_buffer(framesRef, hw, 0) >= 0, "a pool frame");
+                sw = av_frame_alloc();
+                sw.format(AV_PIX_FMT_NV12).width(w).height(h);
+                assertTrue(av_frame_get_buffer(sw, 0) >= 0, "a software frame");
+                for (int row = 0; row < h; row++)
+                    for (int col = 0; col < w; col++) {
+                        final boolean inside = row < visibleH && col < visibleW;
+                        sw.data(0).put((long) row * sw.linesize(0) + col, (byte) (inside ? 120 : 16));
+                    }
+                for (int row = 0; row < h / 2; row++)
+                    for (int col = 0; col < w / 2; col++) {
+                        final boolean inside = row < visibleH / 2 && col < visibleW / 2;
+                        sw.data(1).put((long) row * sw.linesize(1) + col * 2L, (byte) (inside ? 90 : 128));
+                        sw.data(1).put((long) row * sw.linesize(1) + col * 2L + 1, (byte) (inside ? 200 : 128));
+                    }
+                assertTrue(av_hwframe_transfer_data(hw, sw, 0) >= 0, "the upload into the pool frame");
+                hw.width(visibleW).height(visibleH);
+
+                // THE LAST COLUMN AND ROW BLEND THEIR CHROMA WITH THE PADDING, AS AN ENCODER'S EDGE EXTENSION WOULD HIDE; EVERY
+                // OTHER PIXEL IS THE PICTURE, WHICH WITHOUT THE CROP WOULD ALREADY SAMPLE THE PADDING FROM COLUMN 56 ON
+                final int[] bt601 = YuvFrames.rgb(KR_601, KB_601, false, 8, 120, 90, 200);
+                for (final int divisor: new int[] { 1, 2 }) {
+                    final int outW = visibleW / divisor, outH = visibleH / divisor;
+                    assertTrue(engine.format(PixelFormat.NV12, outW, outH, 8, BT601_LIMITED));
+                    final ByteBuffer rgba = decoded(engine, hw);
+                    for (int y = 0; y < outH - 1; y++)
+                        for (int x = 0; x < outW - 1; x++)
+                            for (int c = 0; c < 3; c++) {
+                                final int shown = rgba.get((y * outW + x) * 4 + c) & 0xFF;
+                                assertTrue(Math.abs(shown - bt601[c]) <= 3, "1/" + divisor + " size: pixel " + x + "," + y + " channel " + c + " shows " + shown + " instead of " + bt601[c]);
+                            }
+                }
+                assertEquals(2L, (long) field(engine, "decodedFrames"));
+            } finally {
+                release(engine);
+                if (hw != null) av_frame_free(hw);
+                if (sw != null) av_frame_free(sw);
+                if (framesRef != null) av_buffer_unref(framesRef);
+                if (deviceRef != null) av_buffer_unref(deviceRef);
+            }
+        }
+
+        @Test
+        @DisplayName("A player decodes H.264 on the device and the engine shows its frames without a download")
+        void playerDecodesOnTheDevice() {
+            assumeTrue(MediaBootstrap.ffmpegAvailable() && MediaAPI.vulkanDecode(), "FFmpeg with the Vulkan bindings");
+            // THE KHRONOS VALIDATION LAYER (SDK 1.4.363) CRASHES THE PROCESS INSIDE FFMPEG'S VIDEO SESSION COMMANDS, WHILE THE SAME
+            // DECODE RUNS CLEAN WITHOUT IT: SET VK_LOADER_LAYERS_DISABLE=~all~ TO RUN THIS CASE ON A MACHINE WITH THE SDK
+            assumeTrue(!validation, "the Khronos validation layer crashes on Vulkan Video decoding; run with VK_LOADER_LAYERS_DISABLE=~all~");
+            final VKEngine engine = MediaAPI.vkEngine(Features.DEVICE);
+            final AVBufferRef deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
+            if (deviceRef != null) av_buffer_unref(deviceRef);
+            else release(engine);
+            assumeTrue(deviceRef != null, "the test device cannot decode H.264 (" + name + ")");
+            final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
+            assertTrue(mrl.await(10_000L));
+            final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, engine, null);
+            try {
+                assertTrue(player.start());
+                assertTrue(PlayerWait.awaitStatus(player, 15_000L, MediaPlayer.Status.PLAYING, MediaPlayer.Status.BUFFERING, MediaPlayer.Status.PAUSED));
+                assertTrue(PlayerWait.awaitCondition(() -> (long) field(engine, "decodedFrames") >= 3L, 10_000L), "frames decoded on the device reach the engine");
+                assertTrue(player.hwAccel(), "the player decodes in hardware");
+                assertEquals(PixelFormat.NV12, engine.format(), "the pool's layout is what the engine samples");
+                final ByteBuffer rgba = readback(engine.texture(), engine.width(), engine.height());
+                int lit = 0;
+                for (int i = 0; i < rgba.capacity(); i += 4) if ((rgba.get(i) & 0xFF) > 32 || (rgba.get(i + 1) & 0xFF) > 32 || (rgba.get(i + 2) & 0xFF) > 32) lit++;
+                assertTrue(lit > 0, "the published frame carries the picture, not a blank image");
+            } finally {
+                player.release();
+                release(engine);
+            }
+        }
+    }
+
     // UTILITY
+
+    // HANDS A POOL FRAME TO THE ENGINE AS THE PLAYER DOES, WAITS FOR texture() TO PUBLISH IT AND READS THE VIEW BACK AS RGBA BYTES
+    private static ByteBuffer decoded(final VKEngine engine, final AVFrame frame) {
+        final long before = engine.texture();
+        engine.upload(frame);
+        assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
+                "the decoded frame was published within the timeout");
+        System.out.println("[VKEngineTest] decoded frame " + engine.width() + "x" + engine.height() + " -> " + ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute"));
+        return readback(engine.texture(), engine.width(), engine.height());
+    }
 
     // UPLOADS ONE FRAME AS A PRODUCER DOES (ALIGNED COPIES WHEN THE ENGINE CAN IMPORT THEM), WAITS FOR texture() TO PUBLISH
     // IT AND READS THE PUBLISHED VIEW BACK AS RGBA BYTES, ROW 0 FIRST

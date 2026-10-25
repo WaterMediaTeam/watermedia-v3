@@ -9,7 +9,6 @@ import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.bytedeco.ffmpeg.avutil.AVBufferRef;
 // import org.bytedeco.ffmpeg.avutil.LogCallback; // NATIVE LOG ROUTING, DISABLED IN startFFmpeg
 import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.ffmpeg.global.avformat;
@@ -36,7 +35,7 @@ public final class MediaAPI {
     private static volatile boolean ffmpegLoaded;
     private static volatile Throwable ffmpegFailure;
     // private static LogCallback nativeLog; // KEEPS THE NATIVE LOG THUNK REACHABLE WHILE FFMPEG MAY CALL IT
-    private static volatile boolean vulkanHwDecode; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT BOOT)
+    private static volatile boolean vulkanHwDecode; // THE BUILD DECODES WITH VULKAN VIDEO AND ITS BINDINGS LINK (PROBED AT BOOT)
 
     /**
      * Gets or creates an MRL for the given URI string.
@@ -277,11 +276,12 @@ public final class MediaAPI {
     }
 
     /**
-     * Whether this FFmpeg build and the GPU/driver can create a Vulkan hardware-decode device (probed
-     * once at boot). Even when {@code true}, frames are still decoded in software and host-imported,
-     * because the shipped FFmpeg JNI does not expose {@code AVVkFrame}/{@code AVVulkanDeviceContext}
-     * for a true GPU-to-GPU import — so Vulkan decode would only add a GPU-to-RAM download here.
-     * @return {@code true} when Vulkan hardware decode is supported and available on this system
+     * Whether this FFmpeg build decodes with Vulkan Video and its natives expose the
+     * {@code hwcontext_vulkan} bindings (probed once at boot). When {@code true}, a player drawing
+     * through a {@link VKEngine} decodes on the engine's own device and samples the decoded images in
+     * place, provided the {@link VKContext#deviceInfo()} of that device describes one created for
+     * decoding; every other engine keeps decoding in software or through the host's accelerators.
+     * @return {@code true} when Vulkan decoding is available to Vulkan engines on this system
      */
     public static boolean vulkanDecode() {
         return vulkanHwDecode;
@@ -401,23 +401,11 @@ public final class MediaAPI {
                 LOGGER.info(IT, "  (none available)");
             }
 
-            // PROBE DEVICE AVAILABILITY FOR DIAGNOSTICS; ZERO-COPY GPU IMPORT REQUIRES MISSING JNI TYPES.
-            boolean vulkanDecode = false;
-            if (vulkanInBuild) {
-                try {
-                    final AVBufferRef ref = new AVBufferRef();
-                    if (avutil.av_hwdevice_ctx_create(ref, avutil.AV_HWDEVICE_TYPE_VULKAN, (String) null, null, 0) >= 0) {
-                        avutil.av_buffer_unref(ref);
-                        vulkanDecode = true;
-                    }
-                } catch (final Exception | LinkageError e) {
-                    LOGGER.debug(IT, "Vulkan hardware decoding unavailable", e); // NO VULKAN DEVICE: THE PROBE STAYS NEGATIVE
-                }
-            }
+            // THE hwcontext_vulkan BINDINGS MUST LINK: A jniavutil BUILT WITHOUT THEM (SEE binaries/tools/NATIVE_REBUILD.md) HAS NO
+            // av_vk_frame_alloc SYMBOL, SO PLAYERS KEEP DECODING OFF THE ENGINE'S DEVICE
+            final boolean vulkanDecode = vulkanInBuild && FFTool.vulkanBindings();
             vulkanHwDecode = vulkanDecode;
-            LOGGER.info(IT, "Vulkan hardware decode: {}", vulkanDecode
-                    ? "available (zero-copy GPU import needs AVVkFrame JNI, absent here — software decode + host-import is used)"
-                    : "unavailable");
+            LOGGER.info(IT, "Vulkan decoding: {}", vulkanDecode ? "available to Vulkan engines whose device supports video decoding" : "unavailable in these natives");
 
             FFMediaPlayer.startTLS();
             final BytePointer license = avformat.avformat_license();
