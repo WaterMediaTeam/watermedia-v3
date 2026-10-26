@@ -11,6 +11,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -37,10 +38,18 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_H264;
+import static org.bytedeco.ffmpeg.global.avutil.AVCOL_PRI_BT709;
+import static org.bytedeco.ffmpeg.global.avutil.AVCOL_RANGE_MPEG;
+import static org.bytedeco.ffmpeg.global.avutil.AVCOL_SPC_BT709;
+import static org.bytedeco.ffmpeg.global.avutil.AVCOL_TRC_BT709;
 import static org.bytedeco.ffmpeg.global.avutil.AV_PIX_FMT_NV12;
+import static org.bytedeco.ffmpeg.global.avutil.AV_PIX_FMT_RGBA;
 import static org.bytedeco.ffmpeg.global.avutil.AV_PIX_FMT_VULKAN;
 import static org.bytedeco.ffmpeg.global.avutil.av_buffer_unref;
 import static org.bytedeco.ffmpeg.global.avutil.av_frame_alloc;
+import static org.bytedeco.ffmpeg.global.avutil.av_frame_clone;
+import static org.bytedeco.ffmpeg.global.avutil.av_frame_unref;
+import static org.bytedeco.ffmpeg.global.avutil.av_make_q;
 import static org.bytedeco.ffmpeg.global.avutil.av_frame_free;
 import static org.bytedeco.ffmpeg.global.avutil.av_frame_get_buffer;
 import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_ctx_alloc;
@@ -48,6 +57,7 @@ import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_ctx_init;
 import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_get_buffer;
 import static org.bytedeco.ffmpeg.global.avutil.av_hwframe_transfer_data;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -88,8 +98,9 @@ import static org.watermedia.test.support.YuvFrames.assertUniform;
  * each read back through the RGBA view {@link VKEngine#texture()} publishes, the device objects engines share
  * until the last one is released, and the frames FFmpeg decodes when the GPU can decode video (a 1.3 device
  * with the video extensions): on the device itself, or on a twin of a second device that lends FFmpeg no
- * queues. Validation-layer errors fail the test when the Khronos layer is installed. Skipped without a Vulkan
- * loader or a 1.1 device.
+ * queues, sampled as they are or after libplacebo turned them into RGBA, which needs its device features and a
+ * graphics queue of FFmpeg's own. Validation-layer errors fail the test when the Khronos layer is installed.
+ * Skipped without a Vulkan loader or a 1.1 device.
  */
 @DisplayName("VKEngine")
 public class VKEngineTest {
@@ -103,6 +114,7 @@ public class VKEngineTest {
     // STANDARD LUMA WEIGHTS, WRITTEN OUT SO A WRONG MATRIX CONSTANT CANNOT HIDE BEHIND THE SAME CONSTANT HERE
     private static final double KR_601 = 0.299, KB_601 = 0.114, KR_709 = 0.2126, KB_709 = 0.0722;
     private static final Colorimetry BT601_LIMITED = new Colorimetry(Colorimetry.Matrix.BT601, false, true, false, Colorimetry.Transfer.SDR, false);
+    private static final int AV_FRAME_FLAG_INTERLACED = 1 << 3; // libavutil/frame.h; A MACRO THE BINDINGS LEAVE OUT
 
     // SAMPLES THE PUBLISHED VIEW THE WAY A RENDERER DOES AND PACKS EACH TEXEL INTO A HOST-VISIBLE BUFFER; A COPY WOULD NEED
     // TRANSFER_SRC USAGE, WHICH THE ENGINE'S MANAGED IMAGES DO NOT CARRY
@@ -138,13 +150,13 @@ public class VKEngineTest {
     private static boolean ycbcr420;
     private static long alignment;
     private static String name;
-    // THE FEATURE CHAIN THE DEVICES ARE CREATED WITH (SEE VKContext#deviceInfo), WHETHER THE SUITE'S CAN DECODE VIDEO FOR FFMPEG AND
-    // WHETHER THE GPU OFFERS THE EXTERNAL EXTENSIONS A TWIN NEEDS
+    // THE FEATURE CHAIN THE DEVICES ARE CREATED WITH (SEE VKContext#deviceInfo), WHETHER THE SUITE'S CAN DECODE VIDEO FOR FFMPEG, WHETHER THE
+    // GPU OFFERS THE EXTERNAL EXTENSIONS A TWIN NEEDS AND THE FEATURES LIBPLACEBO AND FFMPEG'S FILTER SHADERS NEED
     private static VkPhysicalDeviceFeatures2 features;
     private static VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrEnabled;
     private static VkPhysicalDeviceVulkan12Features vulkan12Enabled;
     private static VkPhysicalDeviceVulkan13Features vulkan13Enabled;
-    private static boolean decoding, shareable;
+    private static boolean decoding, shareable, filters;
 
     @BeforeAll
     static void open() {
@@ -273,10 +285,13 @@ public class VKEngineTest {
                     if (compute < 0 && (flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0) compute = f;
                     if (transfer < 0 && (flags & VK_QUEUE_TRANSFER_BIT) != 0 && (flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_VIDEO_DECODE_BIT_KHR)) == 0) transfer = f;
                 }
-                if (compute < 0 && families.get(family).queueCount() >= 2) compute = family;
+                // LIBPLACEBO ALSO TAKES A GRAPHICS QUEUE, THE FIRST OF THE RENDER FAMILY WHEN IT HAS TWO, LIKE THE APP'S DEVICE
+                final boolean spare = families.get(family).queueCount() >= 2;
+                if (compute < 0 && spare) compute = family;
                 if (decode >= 0 && compute >= 0) {
                     counts[decode] = 1;
-                    counts[compute] = compute == family ? 2 : 1;
+                    if (compute != family) counts[compute] = 1;
+                    if (spare) counts[family] = 2;
                     if (transfer >= 0) counts[transfer] = 1;
                     enabled.add(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
                     enabled.add(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
@@ -288,12 +303,18 @@ public class VKEngineTest {
             features = VkPhysicalDeviceFeatures2.calloc().sType$Default();
             ycbcrEnabled = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc().sType$Default().samplerYcbcrConversion(ycbcr);
             features.pNext(ycbcrEnabled.address());
+            // PLUS WHAT LIBPLACEBO AND FFMPEG'S FILTER SHADERS NEED, AS THE APP'S DEVICE ENABLES IT
+            filters = api >= VK_API_VERSION_1_3 && vulkan12.hostQueryReset() && vulkan12.runtimeDescriptorArray()
+                    && vulkan12.shaderStorageImageArrayNonUniformIndexing() && vulkan13.maintenance4();
             if (api >= VK_API_VERSION_1_2) {
-                vulkan12Enabled = VkPhysicalDeviceVulkan12Features.calloc().sType$Default().timelineSemaphore(vulkan12.timelineSemaphore());
+                vulkan12Enabled = VkPhysicalDeviceVulkan12Features.calloc().sType$Default().timelineSemaphore(vulkan12.timelineSemaphore())
+                        .hostQueryReset(vulkan12.hostQueryReset()).runtimeDescriptorArray(vulkan12.runtimeDescriptorArray())
+                        .shaderStorageImageArrayNonUniformIndexing(vulkan12.shaderStorageImageArrayNonUniformIndexing());
                 ycbcrEnabled.pNext(vulkan12Enabled.address());
             }
             if (api >= VK_API_VERSION_1_3) {
-                vulkan13Enabled = VkPhysicalDeviceVulkan13Features.calloc().sType$Default().synchronization2(vulkan13.synchronization2());
+                vulkan13Enabled = VkPhysicalDeviceVulkan13Features.calloc().sType$Default().synchronization2(vulkan13.synchronization2())
+                        .maintenance4(vulkan13.maintenance4());
                 vulkan12Enabled.pNext(vulkan13Enabled.address());
             }
             final List<String> instanceNames = new ArrayList<>();
@@ -312,7 +333,7 @@ public class VKEngineTest {
             throw new AssertionError("Vulkan is present but the LWJGL stack cannot list its extensions; raise org.lwjgl.system.stackSize", e);
         }
         System.out.println("[VKEngineTest] " + name + ": samplerYcbcrConversion=" + ycbcr + " (4:2:0 " + ycbcr420 + "), hostImport=" + hostImport
-                + " (alignment " + alignment + "), videoDecode=" + decoding + ", external handles=" + shareable
+                + " (alignment " + alignment + "), videoDecode=" + decoding + ", external handles=" + shareable + ", filter features=" + filters
                 + ", validation layer " + (validation ? "on" : "not installed"));
     }
 
@@ -869,7 +890,7 @@ public class VKEngineTest {
                 assertTrue(PlayerWait.awaitStatus(player, 15_000L, MediaPlayer.Status.PLAYING, MediaPlayer.Status.BUFFERING, MediaPlayer.Status.PAUSED));
                 assertTrue(PlayerWait.awaitCondition(() -> (long) field(engine, "decodedFrames") >= 3L, 10_000L), "frames decoded on the device reach the engine");
                 assertTrue(player.hwAccel(), "the player decodes in hardware");
-                assertEquals(PixelFormat.NV12, engine.format(), "the pool's layout is what the engine samples");
+                assertEquals(engine.placebo() ? PixelFormat.RGBA : PixelFormat.NV12, engine.format(), "libplacebo's RGBA, or the pool's layout the engine samples itself");
                 final ByteBuffer rgba = renderer.readback(engine.texture(), engine.width(), engine.height());
                 int lit = 0;
                 for (int i = 0; i < rgba.capacity(); i += 4) if ((rgba.get(i) & 0xFF) > 32 || (rgba.get(i + 1) & 0xFF) > 32 || (rgba.get(i + 2) & 0xFF) > 32) lit++;
@@ -908,7 +929,7 @@ public class VKEngineTest {
                         assertTrue(PlayerWait.awaitStatus(player, 15_000L, MediaPlayer.Status.PLAYING, MediaPlayer.Status.BUFFERING, MediaPlayer.Status.PAUSED));
                         assertTrue(PlayerWait.awaitCondition(() -> (long) field(engine, "importedFrames") >= 3L, 10_000L), "frames decoded on the twin are imported into the device");
                         assertTrue(player.hwAccel(), "the player decodes in hardware");
-                        assertEquals(PixelFormat.NV12, engine.format(), "the pool's layout is what the engine samples");
+                        assertEquals(engine.placebo() ? PixelFormat.RGBA : PixelFormat.NV12, engine.format(), "libplacebo's RGBA, or the pool's layout the engine samples itself");
                         final ByteBuffer rgba = bare.readback(engine.texture(), engine.width(), engine.height());
                         int lit = 0;
                         for (int i = 0; i < rgba.capacity(); i += 4) if ((rgba.get(i) & 0xFF) > 32 || (rgba.get(i + 1) & 0xFF) > 32 || (rgba.get(i + 2) & 0xFF) > 32) lit++;
@@ -925,6 +946,113 @@ public class VKEngineTest {
         }
     }
 
+    // A STALLED GRAPH SPINS INSIDE av_buffersink_get_frame: THE TIMEOUT FAILS THE TEST INSTEAD OF HANGING THE RUN
+    @Nested
+    @DisplayName("Filtered frames")
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    class Filtered {
+
+        @Test
+        @DisplayName("libplacebo turns a pool frame marked interlaced into RGBA on the device, which the engine shows in place at full and half size")
+        void placeboOnTheDevice() {
+            assumeTrue(MediaBootstrap.ffmpegAvailable() && MediaAPI.vulkanDecode(), "FFmpeg with the Vulkan bindings");
+            final VKEngine engine = MediaAPI.vkEngine(Features.DEVICE);
+            final AVBufferRef deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
+            try {
+                assumeTrue(deviceRef != null, "the test device cannot decode H.264 (" + name + ")");
+                assumeTrue(filters, "the GPU lacks the features libplacebo and FFmpeg's filter shaders need (" + name + ")");
+                assertTrue(engine.placebo(), "a device with those features and a graphics queue of FFmpeg's own runs libplacebo");
+                placeboFrame(renderer, engine, deviceRef);
+                assertEquals(0L, (long) field(engine, "importedFrames"), "the RGBA frames were sampled in place");
+            } finally {
+                release(engine);
+                if (deviceRef != null) av_buffer_unref(deviceRef);
+            }
+        }
+
+        @Test
+        @DisplayName("A device created without those features decodes on a twin that enables them, and the engine imports libplacebo's RGBA")
+        void placeboOnATwinThatAddsTheFeatures() {
+            assumeTrue(MediaBootstrap.ffmpegAvailable() && MediaAPI.vulkanDecode(), "FFmpeg with the Vulkan bindings");
+            // NO VIDEO SESSION OPENS HERE, SO THE VALIDATION LAYER CHECKS THE TWIN'S FEATURES, LIBPLACEBO AND THE IMPORTS
+            assumeTrue(decoding && renderer.deviceInfo().deviceExtensions().contains(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME),
+                    "the test device cannot decode H.264 (" + name + ")");
+            assumeTrue(shareable && filters, "the GPU cannot share memory with a twin or lacks the filter features (" + name + ")");
+            // THE SUITE'S CHAIN WITHOUT THE FILTER FEATURES, AS A RENDERER THAT NEVER HEARD OF LIBPLACEBO CREATES ITS DEVICE
+            final VkPhysicalDeviceVulkan13Features plain13 = VkPhysicalDeviceVulkan13Features.calloc().sType$Default().synchronization2(true);
+            final VkPhysicalDeviceVulkan12Features plain12 = VkPhysicalDeviceVulkan12Features.calloc().sType$Default().timelineSemaphore(true).pNext(plain13.address());
+            final VkPhysicalDeviceSamplerYcbcrConversionFeatures plainYcbcr = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc().sType$Default()
+                    .samplerYcbcrConversion(ycbcr).pNext(plain12.address());
+            final VkPhysicalDeviceFeatures2 plain = VkPhysicalDeviceFeatures2.calloc().sType$Default().pNext(plainYcbcr.address());
+            try {
+                final List<String> extensions = new ArrayList<>(renderer.deviceInfo().deviceExtensions());
+                extensions.addAll(EXTERNAL);
+                final int[] counts = new int[renderer.deviceInfo().queueCounts().length];
+                counts[family] = 1;
+                final Renderer host = new Renderer(new VKContext.DeviceInfo(plain, renderer.deviceInfo().instanceExtensions(), extensions, counts));
+                // TORN DOWN INSIDE OUT: THE ENGINE, THE LAST REFERENCE TO THE TWIN, THE DEVICE AND ITS FEATURE CHAIN LAST
+                try {
+                    final VKEngine engine = MediaAPI.vkEngine(host);
+                    final AVBufferRef deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
+                    try {
+                        assertNotNull(deviceRef, "the GPU decodes H.264, so FFmpeg gets a device to decode on");
+                        final long decoder = new AVVulkanDeviceContext(new AVHWDeviceContext(deviceRef.data()).hwctx()).act_dev();
+                        assertNotEquals(host.vkDevice().address(), decoder, "FFmpeg decodes on a twin, not on the device that lends it no queue");
+                        assertTrue(engine.placebo(), "the twin enables what the device left out, so libplacebo runs there");
+                        placeboFrame(host, engine, deviceRef);
+                        assertEquals(2L, (long) field(engine, "importedFrames"), "both RGBA frames came from the twin");
+                    } finally {
+                        release(engine);
+                        if (deviceRef != null) av_buffer_unref(deviceRef);
+                    }
+                } finally {
+                    host.close();
+                }
+            } finally {
+                plain.free();
+                plainYcbcr.free();
+                plain12.free();
+                plain13.free();
+            }
+        }
+
+        @Test
+        @DisplayName("A lent device whose render queue is alone in its family keeps the engine's own conversion, as libplacebo would submit to that queue")
+        void placeboNeedsAGraphicsQueueOfItsOwn() {
+            assumeTrue(MediaBootstrap.ffmpegAvailable() && MediaAPI.vulkanDecode(), "FFmpeg with the Vulkan bindings");
+            assumeTrue(decoding && filters, "the test device cannot decode or lacks the filter features (" + name + ")");
+            // A LONE RENDER QUEUE STILL DECODES WHEN A COMPUTE-ONLY FAMILY GIVES FFMPEG ITS COMPUTE QUEUE
+            final int[] counts = renderer.deviceInfo().queueCounts().clone();
+            try (final MemoryStack stack = stackPush()) {
+                final IntBuffer count = stack.mallocInt(1);
+                vkGetPhysicalDeviceQueueFamilyProperties(physical, count, null);
+                final VkQueueFamilyProperties.Buffer properties = VkQueueFamilyProperties.malloc(count.get(0), stack);
+                vkGetPhysicalDeviceQueueFamilyProperties(physical, count, properties);
+                boolean compute = false;
+                for (int f = 0; f < properties.capacity(); f++)
+                    compute |= f != family && counts[f] > 0 && (properties.get(f).queueFlags() & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) == VK_QUEUE_COMPUTE_BIT;
+                assumeTrue(compute, "only a compute-only family lets FFmpeg decode next to a lone render queue (" + name + ")");
+            }
+            counts[family] = 1;
+            final Renderer lone = new Renderer(new VKContext.DeviceInfo(features, renderer.deviceInfo().instanceExtensions(), renderer.deviceInfo().deviceExtensions(), counts));
+            try {
+                final VKEngine engine = MediaAPI.vkEngine(lone);
+                final AVBufferRef deviceRef = engine.hwDevice(AV_CODEC_ID_H264);
+                try {
+                    assertNotNull(deviceRef, "FFmpeg still decodes on the device with its compute, transfer and decode queues");
+                    assertEquals(lone.vkDevice().address(), new AVVulkanDeviceContext(new AVHWDeviceContext(deviceRef.data()).hwctx()).act_dev(),
+                            "FFmpeg decodes on the device itself");
+                    assertFalse(engine.placebo(), "the render queue is the device's only graphics queue, which libplacebo must not take");
+                } finally {
+                    release(engine);
+                    if (deviceRef != null) av_buffer_unref(deviceRef);
+                }
+            } finally {
+                lone.close();
+            }
+        }
+    }
+
     // UTILITY
 
     // A DEVICE ON THE SUITE'S GPU THAT LENDS FFMPEG NO QUEUE: THE SUITE'S FEATURE CHAIN AND EXTENSIONS PLUS THE EXTERNAL ONES, BUT ONLY THE
@@ -937,32 +1065,40 @@ public class VKEngineTest {
         return new Renderer(new VKContext.DeviceInfo(features, renderer.deviceInfo().instanceExtensions(), extensions, counts));
     }
 
-    // A 64x32 NV12 POOL ON deviceRef WHOSE FRAMES HOLD A 60x30 PICTURE, FILLED THE WAY FFMPEG UPLOADS SOFTWARE FRAMES INTO IT: Y 120, Cb 90,
-    // Cr 200 INSIDE THE PICTURE AND BLACK PADDING BEYOND IT. THE ENGINE SAMPLES ONE FRAME AT FULL AND HALF SIZE, READ BACK THROUGH on
-    private static void poolFrame(final Renderer on, final VKEngine engine, final AVBufferRef deviceRef) {
+    // A 64x32 NV12 POOL ON deviceRef AND ITS FIRST FRAME, HOLDING A 60x30 PICTURE FILLED THE WAY FFMPEG UPLOADS SOFTWARE FRAMES INTO IT: Y 120,
+    // Cb 90, Cr 200 INSIDE THE PICTURE AND BLACK PADDING BEYOND IT, OR THE PICTURE'S COLOR AS AN ENCODER'S EDGE EXTENSION WHEN NOT black.
+    // THE CALLER UNREFERENCES THE POOL AND FREES BOTH FRAMES
+    private static AVBufferRef picture(final AVBufferRef deviceRef, final AVFrame hw, final AVFrame sw, final boolean black) {
         final int w = 64, h = 32, visibleW = 60, visibleH = 30;
         final AVBufferRef framesRef = av_hwframe_ctx_alloc(deviceRef);
+        final AVHWFramesContext fc = new AVHWFramesContext(framesRef.data());
+        fc.format(AV_PIX_FMT_VULKAN).sw_format(AV_PIX_FMT_NV12).width(w).height(h).initial_pool_size(2);
+        assertTrue(av_hwframe_ctx_init(framesRef) >= 0, "the device allocates NV12 pools");
+        assertTrue(av_hwframe_get_buffer(framesRef, hw, 0) >= 0, "a pool frame");
+        sw.format(AV_PIX_FMT_NV12).width(w).height(h);
+        assertTrue(av_frame_get_buffer(sw, 0) >= 0, "a software frame");
+        for (int row = 0; row < h; row++)
+            for (int col = 0; col < w; col++) {
+                final boolean inside = !black || row < visibleH && col < visibleW;
+                sw.data(0).put((long) row * sw.linesize(0) + col, (byte) (inside ? 120 : 16));
+            }
+        for (int row = 0; row < h / 2; row++)
+            for (int col = 0; col < w / 2; col++) {
+                final boolean inside = !black || row < visibleH / 2 && col < visibleW / 2;
+                sw.data(1).put((long) row * sw.linesize(1) + col * 2L, (byte) (inside ? 90 : 128));
+                sw.data(1).put((long) row * sw.linesize(1) + col * 2L + 1, (byte) (inside ? 200 : 128));
+            }
+        assertTrue(av_hwframe_transfer_data(hw, sw, 0) >= 0, "the upload into the pool frame");
+        hw.width(visibleW).height(visibleH);
+        return framesRef;
+    }
+
+    // THE ENGINE SAMPLES THE FRAME OF picture AT FULL AND HALF SIZE, READ BACK THROUGH on
+    private static void poolFrame(final Renderer on, final VKEngine engine, final AVBufferRef deviceRef) {
+        final int visibleW = 60, visibleH = 30;
         final AVFrame hw = av_frame_alloc(), sw = av_frame_alloc();
+        final AVBufferRef framesRef = picture(deviceRef, hw, sw, true);
         try {
-            final AVHWFramesContext fc = new AVHWFramesContext(framesRef.data());
-            fc.format(AV_PIX_FMT_VULKAN).sw_format(AV_PIX_FMT_NV12).width(w).height(h).initial_pool_size(2);
-            assertTrue(av_hwframe_ctx_init(framesRef) >= 0, "the device allocates NV12 pools");
-            assertTrue(av_hwframe_get_buffer(framesRef, hw, 0) >= 0, "a pool frame");
-            sw.format(AV_PIX_FMT_NV12).width(w).height(h);
-            assertTrue(av_frame_get_buffer(sw, 0) >= 0, "a software frame");
-            for (int row = 0; row < h; row++)
-                for (int col = 0; col < w; col++) {
-                    final boolean inside = row < visibleH && col < visibleW;
-                    sw.data(0).put((long) row * sw.linesize(0) + col, (byte) (inside ? 120 : 16));
-                }
-            for (int row = 0; row < h / 2; row++)
-                for (int col = 0; col < w / 2; col++) {
-                    final boolean inside = row < visibleH / 2 && col < visibleW / 2;
-                    sw.data(1).put((long) row * sw.linesize(1) + col * 2L, (byte) (inside ? 90 : 128));
-                    sw.data(1).put((long) row * sw.linesize(1) + col * 2L + 1, (byte) (inside ? 200 : 128));
-                }
-            assertTrue(av_hwframe_transfer_data(hw, sw, 0) >= 0, "the upload into the pool frame");
-            hw.width(visibleW).height(visibleH);
             assertTrue(engine.samples(hw), "the engine samples the pool's frames instead of bringing them down to RAM");
 
             // THE LAST COLUMN AND ROW BLEND THEIR CHROMA WITH THE PADDING, AS AN ENCODER'S EDGE EXTENSION WOULD HIDE; EVERY
@@ -991,6 +1127,62 @@ public class VKEngineTest {
             av_frame_free(hw);
             av_frame_free(sw);
             if (framesRef != null) av_buffer_unref(framesRef);
+        }
+    }
+
+    // THE EDGE-EXTENDED FRAME OF picture, TAGGED BT.709 LIMITED AND MARKED INTERLACED (WHICH MUST NOT STALL THE GRAPH), THROUGH THE PLAYER'S LIBPLACEBO
+    // GRAPH: THE RGBA IT SENDS HAS THE PICTURE'S SIZE, AND THE ENGINE SHOWS IT AT FULL AND HALF SIZE WITH THE PICTURE'S BT.709 COLOR, READ BACK THROUGH on
+    private static void placeboFrame(final Renderer on, final VKEngine engine, final AVBufferRef deviceRef) {
+        final int visibleW = 60, visibleH = 30;
+        final AVFrame hw = av_frame_alloc(), sw = av_frame_alloc(), out = av_frame_alloc();
+        final AVBufferRef framesRef = picture(deviceRef, hw, sw, false);
+        FFMediaPlayer.Placebo placebo = null;
+        try {
+            hw.colorspace(AVCOL_SPC_BT709).color_range(AVCOL_RANGE_MPEG).color_primaries(AVCOL_PRI_BT709).color_trc(AVCOL_TRC_BT709)
+                    .flags(hw.flags() | AV_FRAME_FLAG_INTERLACED);
+            placebo = FFMediaPlayer.Placebo.open(hw, deviceRef, av_make_q(1, 25));
+            // ONE FRAME COMES OUT ONCE THE NEXT ONE GOES IN, THE LAST ONE ON THE FLUSH (IT NEEDS ITS DURATION); THE GRAPH TAKES EACH PUSHED REFERENCE
+            for (int pts = 0; pts < 2; pts++) {
+                final AVFrame copy = av_frame_clone(hw);
+                copy.pts(pts).duration(1);
+                assertTrue(placebo.push(copy) >= 0, "libplacebo takes the decoded frame");
+                av_frame_free(copy);
+            }
+            assertTrue(placebo.pull(out) >= 0, "libplacebo sends the first frame once the second arrives");
+            av_frame_unref(out);
+            assertTrue(placebo.push(null) >= 0, "libplacebo takes the flush");
+            assertTrue(placebo.pull(out) >= 0, "libplacebo sends the last frame on the flush");
+            assertEquals(AV_PIX_FMT_VULKAN, out.format(), "the frame stays on the GPU");
+            assertEquals(AV_PIX_FMT_RGBA, new AVHWFramesContext(out.hw_frames_ctx().data()).sw_format(), "libplacebo sends RGBA");
+            assertEquals(visibleW, out.width(), "the picture's width, without the pool's padding");
+            assertEquals(visibleH, out.height(), "the picture's height, without the pool's padding");
+            assertTrue(engine.samples(out), "the engine samples libplacebo's frames instead of bringing them down to RAM");
+
+            // LIBPLACEBO DITHERS ITS 8-BIT OUTPUT, SO EACH CHANNEL MAY SIT A CODE OR TWO OFF THE EXACT CONVERSION
+            final int[] bt709 = YuvFrames.rgb(KR_709, KB_709, false, 8, 120, 90, 200);
+            for (final int divisor: new int[] { 1, 2 }) {
+                final int outW = visibleW / divisor, outH = visibleH / divisor;
+                assertTrue(engine.format(PixelFormat.RGBA, outW, outH, 8, Colorimetry.guess(PixelFormat.RGBA, outW, outH)));
+                final long before = engine.texture();
+                engine.upload(out);
+                assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
+                        "the filtered frame was published within the timeout");
+                final ByteBuffer rgba = on.readback(engine.texture(), outW, outH);
+                for (int y = 0; y < outH; y++)
+                    for (int x = 0; x < outW; x++)
+                        for (int c = 0; c < 3; c++) {
+                            final int shown = rgba.get((y * outW + x) * 4 + c) & 0xFF;
+                            assertTrue(Math.abs(shown - bt709[c]) <= 3, "1/" + divisor + " size: pixel " + x + "," + y + " channel " + c + " shows " + shown + " instead of " + bt709[c]);
+                        }
+            }
+            assertEquals(2L, (long) field(engine, "decodedFrames"));
+        } finally {
+            // THE ENGINE KEEPS ITS OWN REFERENCES TO THE FRAME AND ITS POOL UNTIL IT IS RELEASED
+            if (placebo != null) placebo.close();
+            av_frame_free(out);
+            av_frame_free(hw);
+            av_frame_free(sw);
+            av_buffer_unref(framesRef);
         }
     }
 

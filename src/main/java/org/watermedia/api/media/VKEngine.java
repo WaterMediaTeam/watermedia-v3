@@ -41,10 +41,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_AV1;
 import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_H264;
 import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_HEVC;
+import static org.bytedeco.ffmpeg.global.avfilter.avfilter_get_by_name;
 import static org.bytedeco.ffmpeg.global.avutil.*;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.memAddress;
 import static org.lwjgl.system.MemoryUtil.memCopy;
+import static org.lwjgl.system.MemoryUtil.memGetInt;
+import static org.lwjgl.system.MemoryUtil.memPutInt;
 import static org.lwjgl.util.shaderc.Shaderc.*;
 import static org.lwjgl.vulkan.EXTExternalMemoryHost.*;
 import static org.lwjgl.vulkan.KHRExternalMemoryFd.VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
@@ -67,10 +70,14 @@ import static org.lwjgl.vulkan.KHRVideoDecodeQueue.VK_QUEUE_VIDEO_DECODE_BIT_KHR
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.*;
 import static org.lwjgl.vulkan.VK12.VK_SEMAPHORE_TYPE_TIMELINE;
+import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES;
 import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
 import static org.lwjgl.vulkan.VK12.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 import static org.lwjgl.vulkan.VK13.VK_ACCESS_2_SHADER_READ_BIT;
 import static org.lwjgl.vulkan.VK13.VK_API_VERSION_1_3;
+import static org.lwjgl.vulkan.VK13.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES;
 import static org.lwjgl.vulkan.VK13.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
 import static org.lwjgl.vulkan.VK13.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 import static org.watermedia.WaterMedia.LOGGER;
@@ -122,7 +129,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  * extensions gets a twin: a second device on the same GPU with its feature chain and extensions and
  * queues of its own, which FFmpeg decodes on. The engine creates each pool image again on the consumer's
  * device, bound to the twin's exported memory, with its timeline semaphore imported as well, and moves
- * the image between the two devices through the external queue family.
+ * the image between the two devices through the external queue family. When that device runs libplacebo
+ * ({@link VKContext#deviceInfo()}), the player hands over libplacebo's RGBA frames instead, which the
+ * engine only scales, sampled or imported the same way.
  * <p>
  * <b>Threading.</b> {@code upload} and {@code format(PixelFormat, int, int, int)} are called from the producer/decode
  * thread; {@link #texture()} from the render thread. {@code texture()} is cheap: it returns the view
@@ -160,6 +169,18 @@ public final class VKEngine extends GFXEngine {
     private static final int MODE_YUVA = 4;
     private static final int MODE_YUYV = 5; // PACKED [Y0,U,Y1,V]
     private static final int MODE_UYVY = 6; // PACKED [U,Y0,V,Y1]
+    private static final int MODE_RGBA = 7; // DECODED RGBA/BGRA FRAMES, ONLY CROPPED AND SCALED
+
+    // DEVICE FEATURES FFMPEG USES (SEE Kit#features): DECODING NEEDS TIMELINE SEMAPHORES AND synchronization2; LIBPLACEBO REQUIRES hostQueryReset
+    // AND FFMPEG'S FILTER SHADERS DECLARE RUNTIME DESCRIPTOR ARRAYS, NON-UNIFORM STORAGE IMAGE INDEXING AND LocalSizeId (maintenance4)
+    private static final int FEATURE_TIMELINE = 1;
+    private static final int FEATURE_SYNC2 = 1 << 1;
+    private static final int FEATURE_HOST_QUERY_RESET = 1 << 2;
+    private static final int FEATURE_RUNTIME_ARRAY = 1 << 3;
+    private static final int FEATURE_STORAGE_NON_UNIFORM = 1 << 4;
+    private static final int FEATURE_MAINTENANCE_4 = 1 << 5;
+    private static final int DECODE_FEATURES = FEATURE_TIMELINE | FEATURE_SYNC2;
+    private static final int FILTER_FEATURES = FEATURE_HOST_QUERY_RESET | FEATURE_RUNTIME_ARRAY | FEATURE_STORAGE_NON_UNIFORM | FEATURE_MAINTENANCE_4;
 
     // THE COMPUTE SHADERS BUNDLED UNDER assets/watermedia/shaders: ONE CONVERSION FOR EVERY NON-PASSTHROUGH FORMAT, MIRRORING
     // GLEngine'S FRAGMENTS THROUGH colorimetry.glsl, AND THE SINGLE-SAMPLE PASS BEHIND THE HARDWARE YCBCR SAMPLER
@@ -399,9 +420,10 @@ public final class VKEngine extends GFXEngine {
         this.convert = true;
         this.planeCount = format.planes();
         this.ycbcrFmt = 0;
+        // UPLOADED BGRA/RGBA IS COPIED INTO THE MANAGED IMAGE; DECODED ONES (SEE upload(AVFrame)) PASS THROUGH THE COMPUTE PASS IN MODE_RGBA
         switch (format) {
-            case BGRA -> { this.convert = false; this.outFormat = VK_FORMAT_B8G8R8A8_UNORM; this.plane(0, this.outFormat); }
-            case RGBA -> { this.convert = false; this.outFormat = VK_FORMAT_R8G8B8A8_UNORM; this.plane(0, this.outFormat); }
+            case BGRA -> { this.convert = false; this.mode = MODE_RGBA; this.outFormat = VK_FORMAT_B8G8R8A8_UNORM; this.plane(0, this.outFormat); }
+            case RGBA -> { this.convert = false; this.mode = MODE_RGBA; this.outFormat = VK_FORMAT_R8G8B8A8_UNORM; this.plane(0, this.outFormat); }
             case GRAY -> {
                 // GRAY IS NOT A YCBCR FORMAT AT ALL — THE SINGLE-PLANE COMPUTE BROADCAST STAYS.
                 this.mode = MODE_GRAY;
@@ -492,6 +514,11 @@ public final class VKEngine extends GFXEngine {
     // A NEW REFERENCE TO THE FFMPEG DEVICE CONTEXT PLAYERS DECODE ON (SEE Kit#hwDevice), OR NULL WHEN THE DEVICE CANNOT DECODE codecId
     AVBufferRef hwDevice(final int codecId) {
         return this.released ? null : this.kit.hwDevice(this.ctx, codecId);
+    }
+
+    // WHETHER THE DEVICE CONTEXT hwDevice HANDS OUT RUNS LIBPLACEBO, SO PLAYERS TURN THEIR DECODED FRAMES INTO RGBA THERE (FALSE UNTIL IT IS BUILT)
+    boolean placebo() {
+        return !this.released && this.kit.placebo;
     }
 
     // HOST IMPORTS DIE NOW: THE PRODUCER FREES THEIR MEMORY RIGHT AFTER release() AND AN IMPORT OUTLIVING ITS HOST POINTER
@@ -691,9 +718,9 @@ public final class VKEngine extends GFXEngine {
     }
 
     // WHETHER THE ENGINE SAMPLES A FRAME DECODED FOR IT (SEE hwDevice): ALWAYS ON ITS OWN DEVICE, AND ON THE KIT'S TWIN ONCE THE FRAME'S
-    // IMAGE IMPORTS HERE. WHEN FALSE THE PLAYER BRINGS THE FRAME DOWN TO RAM, AND A REFUSED POOL STAYS REFUSED
+    // IMAGE IMPORTS HERE, BUT NEVER WITHOUT ITS SHADERS. WHEN FALSE THE PLAYER BRINGS THE FRAME DOWN TO RAM, AND A REFUSED POOL STAYS REFUSED
     synchronized boolean samples(final AVFrame frame) {
-        if (this.released || frame == null || frame.format() != AV_PIX_FMT_VULKAN || FFTool.isNull(frame.hw_frames_ctx())) return false;
+        if (this.released || convertBroken || frame == null || frame.format() != AV_PIX_FMT_VULKAN || FFTool.isNull(frame.hw_frames_ctx())) return false;
         final AVVkFrame f = new AVVkFrame(frame.data(0));
         try (final MemoryStack stack = stackPush()) {
             return this.picture(stack, frame, new AVHWFramesContext(frame.hw_frames_ctx().data()), f, images(f)) != null;
@@ -713,7 +740,7 @@ public final class VKEngine extends GFXEngine {
         final AVVkFrame f = new AVVkFrame(frame.data(0));
         final int images = images(f);
         final FFTool.Pixels pixels = FFTool.pixels(fc.sw_format());
-        if (!this.convert || pixels == null || pixels.format() != this.format || pixels.bits() != this.bits
+        if (pixels == null || pixels.format() != this.format || pixels.bits() != this.bits
                 || images == 0 || images != 1 && images != this.planeCount) {
             if (!this.frameWarned) LOGGER.warn(IT, "Decoded frames of layout {} ({} images) do not match the engine's {} {}-bit layout; frames are dropped",
                     FFTool.string(av_get_pix_fmt_name(fc.sw_format()), fc.sw_format()), images, this.format, this.bits);
@@ -1050,10 +1077,12 @@ public final class VKEngine extends GFXEngine {
         if (this.ycbcrFmt != 0) {
             views[MAX_PLANES] = this.view(stack, picture.image(), this.ycbcrFmt, VK_IMAGE_ASPECT_COLOR_BIT, this.ycbcr.conv, VK_IMAGE_USAGE_SAMPLED_BIT);
         } else {
+            // ONE IMAGE (THE ONLY KIND A TWIN IMPORTS) IS VIEWED THROUGH ITS PICTURE: A PLANE OF A MULTIPLANAR IMAGE, OR THE COLOR OF A FILTER'S RGBA
             for (int i = 0; i < this.planeCount; i++)
-                views[i] = images == 1
-                        ? this.view(stack, picture.image(), this.planeSpecs[i].format, VK_IMAGE_ASPECT_PLANE_0_BIT << i, 0L, VK_IMAGE_USAGE_SAMPLED_BIT)
-                        : this.view(stack, f.img(i), this.planeSpecs[i].format, VK_IMAGE_ASPECT_COLOR_BIT, 0L, VK_IMAGE_USAGE_SAMPLED_BIT);
+                views[i] = images > 1
+                        ? this.view(stack, f.img(i), this.planeSpecs[i].format, VK_IMAGE_ASPECT_COLOR_BIT, 0L, VK_IMAGE_USAGE_SAMPLED_BIT)
+                        : this.view(stack, picture.image(), this.planeSpecs[i].format, this.planeCount > 1 ? VK_IMAGE_ASPECT_PLANE_0_BIT << i : VK_IMAGE_ASPECT_COLOR_BIT,
+                                0L, VK_IMAGE_USAGE_SAMPLED_BIT);
         }
         return views;
     }
@@ -1294,8 +1323,12 @@ public final class VKEngine extends GFXEngine {
         if (slot.gen == this.formatGen && slot.external == external) return;
         this.retireOutput(slot);
         this.destroySlotFormatRes(slot);
+        // DECODED FRAMES ALWAYS GO THROUGH THE COMPUTE PASS, PASSTHROUGH LAYOUTS INCLUDED, SO THE OUTPUT IS ITS RGBA STORAGE IMAGE
+        final boolean compute = this.convert || external;
         try (final MemoryStack stack = stackPush()) {
-            final Img out = this.image(stack, this.outFormat, this.width, this.height, this.outUsage, 0L);
+            final Img out = compute
+                    ? this.image(stack, VK_FORMAT_R8G8B8A8_UNORM, this.width, this.height, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0L)
+                    : this.image(stack, this.outFormat, this.width, this.height, this.outUsage, 0L);
             slot.outImg = out.image();
             slot.outMem = out.memory();
             slot.view = out.view();
@@ -1314,7 +1347,7 @@ public final class VKEngine extends GFXEngine {
                 }
                 write(writes.get(0), stack, slot.ycbcrSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0L, out.view(), VK_IMAGE_LAYOUT_GENERAL);
                 vkUpdateDescriptorSets(this.device, writes, null);
-            } else if (this.convert) {
+            } else if (compute) {
                 // REWRITE THE SLOT'S DESCRIPTOR SET: BINDINGS 0..3 = PLANE VIEWS, BINDING 4 = OUTPUT
                 final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(external ? 1 : 1 + MAX_PLANES, stack);
                 if (!external) {
@@ -1670,6 +1703,7 @@ public final class VKEngine extends GFXEngine {
         private AVBufferRef hwDevice;
         private boolean hwDeviceTried;
         private int decodeOps;
+        volatile boolean placebo; // THE DEVICE CONTEXT RUNS LIBPLACEBO (SEE context)
         // THE TWIN FFMPEG DECODES ON WHEN THIS DEVICE GIVES IT NO QUEUES (SEE buildHwDevice), NULL OTHERWISE; READ BY THE ENGINES
         volatile Twin twin;
 
@@ -1776,18 +1810,10 @@ public final class VKEngine extends GFXEngine {
                 return null;
             }
             // FFMPEG WAITS ON TIMELINE SEMAPHORES AND SUBMITS WITH synchronization2 WITHOUT READING THE CHAIN, SO BOTH MUST BE ENABLED
-            boolean timeline = false, sync2 = false;
-            for (VkBaseInStructure next = VkBaseInStructure.createSafe(info.features().pNext()); next != null; next = next.pNext()) {
-                switch (next.sType()) {
-                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES -> timeline |= VkPhysicalDeviceVulkan12Features.create(next.address()).timelineSemaphore();
-                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES -> timeline |= VkPhysicalDeviceTimelineSemaphoreFeatures.create(next.address()).timelineSemaphore();
-                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES -> sync2 |= VkPhysicalDeviceVulkan13Features.create(next.address()).synchronization2();
-                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES -> sync2 |= VkPhysicalDeviceSynchronization2Features.create(next.address()).synchronization2();
-                    default -> { }
-                }
-            }
-            if (!timeline || !sync2) {
-                LOGGER.debug(IT, "Vulkan decoding off: the device was created without timeline semaphores or synchronization2 (timeline={}, synchronization2={})", timeline, sync2);
+            final int enabledFeatures = features(info.features());
+            if ((enabledFeatures & DECODE_FEATURES) != DECODE_FEATURES) {
+                LOGGER.debug(IT, "Vulkan decoding off: the device was created without timeline semaphores or synchronization2 (timeline={}, synchronization2={})",
+                        (enabledFeatures & FEATURE_TIMELINE) != 0, (enabledFeatures & FEATURE_SYNC2) != 0);
                 return null;
             }
             // THE CODEC EXTENSIONS ENABLED ON THE DEVICE BOUND WHAT ITS DECODE FAMILIES ADVERTISE
@@ -1852,8 +1878,10 @@ public final class VKEngine extends GFXEngine {
                 }
                 final PointerBuffer names = stack.mallocPointer(info.deviceExtensions().size());
                 for (final String name: info.deviceExtensions()) names.put(stack.UTF8(name));
-                // THE CONSUMER'S CHAIN STARTS WITH ITS VkPhysicalDeviceFeatures2, SO IT GOES IN pNext AND pEnabledFeatures STAYS NULL
-                final VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(stack).sType$Default().pNext(info.features().address())
+                // THE CHAIN STARTS WITH A VkPhysicalDeviceFeatures2, SO IT GOES IN pNext AND pEnabledFeatures STAYS NULL
+                final VKContext.DeviceInfo twinInfo = new VKContext.DeviceInfo(this.twinFeatures(info.features(), enabledFeatures),
+                        info.instanceExtensions(), info.deviceExtensions(), info.queueCounts());
+                final VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(stack).sType$Default().pNext(twinInfo.features().address())
                         .pQueueCreateInfos(created).ppEnabledExtensionNames(names.flip());
                 final PointerBuffer handle = stack.mallocPointer(1);
                 final int result = vkCreateDevice(this.physical, dci, null, handle);
@@ -1866,7 +1894,7 @@ public final class VKEngine extends GFXEngine {
                 HW_NATIVES.add(free);
                 final AVBufferRef ref;
                 try {
-                    ref = this.context(ctx, info, twin, spare, props, free);
+                    ref = this.context(ctx, twinInfo, twin, spare, props, free);
                 } catch (final RuntimeException | LinkageError e) {
                     free.call(null);
                     throw e;
@@ -1889,7 +1917,7 @@ public final class VKEngine extends GFXEngine {
         private static Queues queues(final int[] counts, final int own, final VkQueueFamilyProperties2.Buffer properties,
                                      final VkQueueFamilyVideoPropertiesKHR.Buffer video, final int enabled) {
             final List<int[]> entries = new ArrayList<>();
-            boolean compute = false, transfer = false;
+            boolean compute = false, transfer = false, graphics = false;
             int operations = 0;
             for (int i = 0; i < counts.length; i++) {
                 if (counts[i] <= 0) continue;
@@ -1897,11 +1925,11 @@ public final class VKEngine extends GFXEngine {
                 if ((flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0) flags |= VK_QUEUE_TRANSFER_BIT; // IMPLIED BY THE SPEC
                 int num = i == own ? counts[i] - 1 : counts[i];
                 // THE RENDER QUEUE ALONE IN ITS FAMILY: A GRAPHICS-ONLY ENTRY FFMPEG NEVER SUBMITS TO, LISTED SO THE DECODED
-                // IMAGES ARE SHARED WITH THE QUEUE THAT SAMPLES THEM
+                // IMAGES ARE SHARED WITH THE QUEUE THAT SAMPLES THEM; LIBPLACEBO WOULD SUBMIT TO IT, SO IT IS NO GRAPHICS QUEUE OF FFMPEG'S
                 if (num == 0) {
                     num = 1;
                     flags = VK_QUEUE_GRAPHICS_BIT;
-                }
+                } else graphics |= (flags & VK_QUEUE_GRAPHICS_BIT) != 0;
                 final int caps = video.get(i).videoCodecOperations();
                 compute |= (flags & VK_QUEUE_COMPUTE_BIT) != 0;
                 transfer |= (flags & VK_QUEUE_TRANSFER_BIT) != 0;
@@ -1912,7 +1940,7 @@ public final class VKEngine extends GFXEngine {
             }
             entries.sort(Comparator.comparingInt(entry -> entry[4]));
             // ONE ENTRY PER FAMILY, SO THE LIST ORDER IS THE ORDER FFMPEG SHARES ITS IMAGES IN (img_qfs)
-            return new Queues(entries, compute, transfer, operations, entries.stream().mapToInt(entry -> entry[0]).toArray());
+            return new Queues(entries, compute, transfer, graphics, operations, entries.stream().mapToInt(entry -> entry[0]).toArray());
         }
 
         // HANDS FFMPEG A DEVICE AS hwcontext_vulkan.h DESCRIBES IT: THE HANDLES, THE LOADER ENTRY POINT, THE CONSUMER'S FEATURE CHAIN AND
@@ -1942,12 +1970,90 @@ public final class VKEngine extends GFXEngine {
                 return null;
             }
             this.decodeOps = queues.operations();
+            // LIBPLACEBO REQUIRES hostQueryReset, FFMPEG'S FILTER SHADERS THE REST OF FILTER_FEATURES, AND LIBPLACEBO SUBMITS TO A GRAPHICS QUEUE
+            // THAT MUST NOT BE THE CONSUMER'S RENDER QUEUE
+            this.placebo = (features(info.features()) & FILTER_FEATURES) == FILTER_FEATURES && queues.graphics() && !FFTool.isNull(avfilter_get_by_name("libplacebo"));
             final StringBuilder families = new StringBuilder();
             for (final int[] entry: queues.entries())
                 families.append(families.isEmpty() ? "" : ", ").append(entry[0]).append('x').append(entry[1]).append(" flags=0x").append(Integer.toHexString(entry[2]));
-            LOGGER.info(IT, "FFmpeg decodes on {} {} (decode operations 0x{}, queue families {})", free == null ? "the Vulkan device" : "a twin of the Vulkan device",
-                    props.deviceNameString(), Integer.toHexString(queues.operations()), families);
+            LOGGER.info(IT, "FFmpeg decodes on {} {} (decode operations 0x{}, queue families {}, libplacebo {})", free == null ? "the Vulkan device" : "a twin of the Vulkan device",
+                    props.deviceNameString(), Integer.toHexString(queues.operations()), families, this.placebo ? "on" : "off");
             return ref;
+        }
+
+        // THE DECODE_FEATURES AND FILTER_FEATURES A CREATE-INFO CHAIN ENABLES, IN ITS VULKAN 1.2/1.3 STRUCTURES OR THE ONES THOSE PROMOTED
+        private static int features(final VkPhysicalDeviceFeatures2 chain) {
+            int found = 0;
+            for (VkBaseInStructure next = VkBaseInStructure.createSafe(chain.pNext()); next != null; next = next.pNext()) {
+                final long at = next.address();
+                found |= switch (next.sType()) {
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES -> {
+                        final VkPhysicalDeviceVulkan12Features f = VkPhysicalDeviceVulkan12Features.create(at);
+                        yield (f.timelineSemaphore() ? FEATURE_TIMELINE : 0) | (f.hostQueryReset() ? FEATURE_HOST_QUERY_RESET : 0)
+                                | (f.runtimeDescriptorArray() ? FEATURE_RUNTIME_ARRAY : 0) | (f.shaderStorageImageArrayNonUniformIndexing() ? FEATURE_STORAGE_NON_UNIFORM : 0);
+                    }
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES -> {
+                        final VkPhysicalDeviceVulkan13Features f = VkPhysicalDeviceVulkan13Features.create(at);
+                        yield (f.synchronization2() ? FEATURE_SYNC2 : 0) | (f.maintenance4() ? FEATURE_MAINTENANCE_4 : 0);
+                    }
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES -> {
+                        final VkPhysicalDeviceDescriptorIndexingFeatures f = VkPhysicalDeviceDescriptorIndexingFeatures.create(at);
+                        yield (f.runtimeDescriptorArray() ? FEATURE_RUNTIME_ARRAY : 0) | (f.shaderStorageImageArrayNonUniformIndexing() ? FEATURE_STORAGE_NON_UNIFORM : 0);
+                    }
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES -> VkPhysicalDeviceTimelineSemaphoreFeatures.create(at).timelineSemaphore() ? FEATURE_TIMELINE : 0;
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES -> VkPhysicalDeviceSynchronization2Features.create(at).synchronization2() ? FEATURE_SYNC2 : 0;
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES -> VkPhysicalDeviceHostQueryResetFeatures.create(at).hostQueryReset() ? FEATURE_HOST_QUERY_RESET : 0;
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES -> VkPhysicalDeviceMaintenance4Features.create(at).maintenance4() ? FEATURE_MAINTENANCE_4 : 0;
+                    default -> 0;
+                };
+            }
+            return found;
+        }
+
+        // THE CONSUMER'S CHAIN, OR WHEN IT LACKS FILTER_FEATURES THE GPU HAS, A COPY WITH THEM: FEATURES NEVER CHANGE HOW IMAGES ARE CREATED, SO POOLS STAY
+        // IMPORTABLE. THE COPY KEEPS THE CORE AND VULKAN 1.1-1.3 FEATURES, AND FFMPEG READS IT WHILE THE TWIN LIVES, SO IT IS NEVER FREED
+        private VkPhysicalDeviceFeatures2 twinFeatures(final VkPhysicalDeviceFeatures2 host, final int enabled) {
+            if ((enabled & FILTER_FEATURES) == FILTER_FEATURES) return host;
+            try (final MemoryStack stack = stackPush()) {
+                final VkPhysicalDeviceVulkan13Features offered13 = VkPhysicalDeviceVulkan13Features.calloc(stack).sType$Default();
+                final VkPhysicalDeviceVulkan12Features offered12 = VkPhysicalDeviceVulkan12Features.calloc(stack).sType$Default().pNext(offered13.address());
+                vkGetPhysicalDeviceFeatures2(this.physical, VkPhysicalDeviceFeatures2.calloc(stack).sType$Default().pNext(offered12.address()));
+                if (!offered12.hostQueryReset() || !offered12.runtimeDescriptorArray() || !offered12.shaderStorageImageArrayNonUniformIndexing() || !offered13.maintenance4())
+                    return host;
+            }
+            final VkPhysicalDeviceVulkan13Features v13 = VkPhysicalDeviceVulkan13Features.calloc().sType$Default();
+            final VkPhysicalDeviceVulkan12Features v12 = VkPhysicalDeviceVulkan12Features.calloc().sType$Default().pNext(v13.address());
+            final VkPhysicalDeviceVulkan11Features v11 = VkPhysicalDeviceVulkan11Features.calloc().sType$Default().pNext(v12.address());
+            final VkPhysicalDeviceFeatures2 copy = VkPhysicalDeviceFeatures2.calloc().sType$Default().pNext(v11.address());
+            memCopy(host.features().address(), copy.features().address(), VkPhysicalDeviceFeatures.SIZEOF);
+            // THE 1.1-1.3 STRUCTURES FOLD IN AS THEY ARE AND THE PROMOTED ONES DECODING NEEDS FIELD BY FIELD (THOSE MAY NOT SIT NEXT TO THEM);
+            // A STRUCTURE OF ANY OTHER TYPE HAS NO SIZE KNOWN HERE AND CANNOT BE COPIED
+            final List<Integer> dropped = new ArrayList<>();
+            for (VkBaseInStructure next = VkBaseInStructure.createSafe(host.pNext()); next != null; next = next.pNext()) {
+                final long at = next.address();
+                switch (next.sType()) {
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES -> merge(at, v11.address(), VkPhysicalDeviceVulkan11Features.SIZEOF);
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES -> merge(at, v12.address(), VkPhysicalDeviceVulkan12Features.SIZEOF);
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES -> merge(at, v13.address(), VkPhysicalDeviceVulkan13Features.SIZEOF);
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES ->
+                            v11.samplerYcbcrConversion(v11.samplerYcbcrConversion() || VkPhysicalDeviceSamplerYcbcrConversionFeatures.create(at).samplerYcbcrConversion());
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES ->
+                            v12.timelineSemaphore(v12.timelineSemaphore() || VkPhysicalDeviceTimelineSemaphoreFeatures.create(at).timelineSemaphore());
+                    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES ->
+                            v13.synchronization2(v13.synchronization2() || VkPhysicalDeviceSynchronization2Features.create(at).synchronization2());
+                    default -> dropped.add(next.sType());
+                }
+            }
+            v12.hostQueryReset(true).runtimeDescriptorArray(true).shaderStorageImageArrayNonUniformIndexing(true);
+            v13.maintenance4(true);
+            LOGGER.debug(IT, "The twin enables hostQueryReset, runtimeDescriptorArray, shaderStorageImageArrayNonUniformIndexing and maintenance4 for libplacebo{}",
+                    dropped.isEmpty() ? "" : " and leaves out the consumer's feature structures of sType " + dropped);
+            return copy;
+        }
+
+        // ORS THE VkBool32 FIELDS OF A FEATURE STRUCTURE INTO ANOTHER OF THE SAME TYPE, PAST THEIR sType AND pNext
+        private static void merge(final long from, final long into, final int size) {
+            for (int at = VkBaseInStructure.SIZEOF; at < size; at += Integer.BYTES) memPutInt(into + at, memGetInt(into + at) | memGetInt(from + at));
         }
 
         // A C STRING ARRAY FOR THE DEVICE CONTEXT, OR NULL FOR NO ENTRIES. FFMPEG RE-READS THE EXTENSION NAMES ON EVERY DECODER INIT AND
@@ -2199,9 +2305,9 @@ public final class VKEngine extends GFXEngine {
     // LOCK, THE FAMILIES FFMPEG SHARES ITS IMAGES WITH IN ITS OWN ORDER, AND WHETHER ITS OPAQUE HANDLES ARE WIN32 HANDLES OR FILE DESCRIPTORS
     private record Twin(VkDevice device, AVHWDeviceContext context, AVVulkanDeviceContext vk, VkQueue queue, int family, int[] families, boolean win32) {}
 
-    // THE QUEUE FAMILIES FFMPEG MAY USE ON A DEVICE ({ idx, num, flags, video_caps, rank } IN ITS ORDER), THE ROLES THEY COVER, THE DECODE
-    // OPERATIONS THEIR VIDEO FAMILIES OFFER AND THE FAMILIES THEY LIST, ONCE EACH
-    private record Queues(List<int[]> entries, boolean compute, boolean transfer, int operations, int[] families) {
+    // THE QUEUE FAMILIES FFMPEG MAY USE ON A DEVICE ({ idx, num, flags, video_caps, rank } IN ITS ORDER), THE ROLES THEY COVER (graphics ONLY
+    // WITH A QUEUE OF ITS OWN), THE DECODE OPERATIONS THEIR VIDEO FAMILIES OFFER AND THE FAMILIES THEY LIST, ONCE EACH
+    private record Queues(List<int[]> entries, boolean compute, boolean transfer, boolean graphics, int operations, int[] families) {
         boolean decodes() { return this.compute && this.transfer && this.operations != 0; }
     }
 

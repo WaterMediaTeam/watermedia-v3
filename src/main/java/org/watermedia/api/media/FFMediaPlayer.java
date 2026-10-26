@@ -3,12 +3,14 @@ package org.watermedia.api.media;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avcodec.*;
+import org.bytedeco.ffmpeg.avfilter.*;
 import org.bytedeco.ffmpeg.avformat.*;
 import org.bytedeco.ffmpeg.avformat.AVIOInterruptCB.Callback_Pointer;
 import org.bytedeco.ffmpeg.avutil.*;
 import org.bytedeco.ffmpeg.swresample.*;
 import org.bytedeco.ffmpeg.swscale.*;
 import org.bytedeco.ffmpeg.global.avcodec;
+import org.bytedeco.ffmpeg.global.avfilter;
 import org.bytedeco.ffmpeg.global.avformat;
 import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swresample;
@@ -59,6 +61,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  * are downscaled with sws_scale before upload — in the native pixel format when
  * supported as sws output, otherwise as BGRA. The target is resolved per frame, so
  * LOD changes apply on the fly without disturbing playback.
+ * <p>With a {@link VKEngine} whose device decodes video, frames stay on the GPU: libplacebo
+ * turns them into SDR RGBA there when the device runs it, and the engine scales them.
  */
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
@@ -276,6 +280,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private boolean rateWarned;
     private boolean refusedWarned;
     private boolean decodedWarned;
+    private boolean placeboWarned;
     private boolean starvationWarned;
     private boolean slotWarned;
     private boolean audioUnusableWarned;
@@ -1554,6 +1559,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVFrame tempFrame = avutil.av_frame_alloc();
         // FRAMES DECODED ON THE ENGINE'S VULKAN DEVICE ARE QUEUED AS THEY ARE; EVERY OTHER ACCELERATOR'S COME DOWN TO RAM
         final AVFrame hwTransfer = this.hwDeviceCtx != null && !this.vulkanFrames ? avutil.av_frame_alloc() : null;
+        // THEY BECOME RGBA THROUGH LIBPLACEBO WHEN THE ENGINE'S DEVICE RUNS IT: ONE GRAPH PER DECODER POOL, REBUILT AFTER A SEEK SO NO FRAME OF
+        // THE PREVIOUS SEGMENT LEAVES IT; A GRAPH FFMPEG REFUSES LEAVES THE FRAMES TO THE ENGINE'S OWN CONVERSION UNTIL THE NEXT START
+        boolean filtering = this.vulkanFrames && this.gfx instanceof final VKEngine vk && vk.placebo();
+        final AVFrame filtered = filtering ? avutil.av_frame_alloc() : null;
+        Placebo placebo = null;
         final int again = avutil.AVERROR_EAGAIN();
         final int[] serialOut = new int[1];
         int lastSerial = -1;
@@ -1586,6 +1596,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                 try {
                     if (!eof && packetSerial != lastSerial) {
                         if (lastSerial >= 0) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+                        if (placebo != null) placebo.close();
+                        placebo = null;
                         lastSerial = packetSerial;
                         this.lastRawVideoPts = Double.NaN;
                         this.videoPtsOffset = 0;
@@ -1643,47 +1655,53 @@ public final class FFMediaPlayer extends MediaPlayer {
                             }
                         }
 
-                        // PREFER BEST-EFFORT TIMESTAMPS; SYNTHESIZE FROM THE PREVIOUS FRAME
-                        // WHEN MISSING. A RAW AV_NOPTS_VALUE WOULD PRODUCE AN ASTRONOMICAL
-                        // PTS THAT LATCHES A GARBAGE DISCONTINUITY OFFSET AND WRECKS THE CLOCK.
-                        long rawPts = tempFrame.best_effort_timestamp();
-                        if (rawPts == avutil.AV_NOPTS_VALUE) rawPts = tempFrame.pts();
-                        final double rawPtsSec;
-                        if (rawPts == avutil.AV_NOPTS_VALUE) {
-                            rawPtsSec = Double.isNaN(this.lastRawVideoPts)
-                                    ? 0.0 : this.lastRawVideoPts + this.clock.frameDurationSec();
-                        } else {
-                            rawPtsSec = rawPts * this.videoTimeBase;
-                        }
-
-                        // PTS DISCONTINUITY DETECTION (HLS AD STITCHING)
-                        if (!Double.isNaN(this.lastRawVideoPts)) {
-                            final double jump = rawPtsSec - this.lastRawVideoPts;
-                            if (Math.abs(jump) > PTS_DISCONTINUITY_SEC) {
-                                final double expected = this.lastRawVideoPts + this.videoPtsOffset + this.clock.frameDurationSec();
-                                this.videoPtsOffset = expected - rawPtsSec;
-                                LOGGER.debug(IT, "Video PTS discontinuity: jump={}s, new offset={}s", String.format("%.1f", jump), String.format("%.1f", this.videoPtsOffset));
+                        if (filtering && tempFrame.format() == AV_PIX_FMT_VULKAN && (placebo == null || placebo.pool != tempFrame.hw_frames_ctx().data().address())) {
+                            if (placebo != null) placebo.close();
+                            placebo = null;
+                            try {
+                                placebo = Placebo.open(tempFrame, this.hwDeviceCtx, this.formatContext.streams(this.videoStreamIndex).time_base());
+                            } catch (final IllegalStateException e) {
+                                if (!this.placeboWarned) LOGGER.warn(IT, "Decoded frames keep the engine's own conversion: libplacebo is unavailable on this device", e);
+                                this.placeboWarned = true;
+                                filtering = false;
                             }
                         }
-                        this.lastRawVideoPts = rawPtsSec;
+                        // A FRAME WITHOUT ANY TIMESTAMP STAYS OUT OF THE GRAPH, WHICH ORDERS FRAMES BY pts; THE ENGINE CONVERTS IT ITSELF
+                        final long bestPts = tempFrame.best_effort_timestamp() != avutil.AV_NOPTS_VALUE ? tempFrame.best_effort_timestamp() : tempFrame.pts();
+                        if (placebo != null && tempFrame.format() == AV_PIX_FMT_VULKAN && bestPts != avutil.AV_NOPTS_VALUE) {
+                            tempFrame.pts(bestPts);
+                            final int pushed = placebo.push(tempFrame);
+                            int pulled = again;
+                            boolean accepted = true;
+                            while (pushed >= 0 && accepted && (pulled = placebo.pull(filtered)) >= 0) {
+                                // THE GRAPH RETIMES pts IN ITS OWN TIME BASE; THE BEST-EFFORT TIMESTAMP IT COPIES IS STILL THE DECODER'S
+                                filtered.best_effort_timestamp(avutil.AV_NOPTS_VALUE);
+                                accepted = this.queueVideo(filtered, filtered, packetSerial, placebo.timeBase);
+                                if (accepted) framesProduced++;
+                            }
+                            if (!accepted) break;
+                            if (pushed >= 0 && (pulled == again || pulled == AVERROR_EOF)) continue;
+                            // A GRAPH THAT FAILS MID-STREAM WOULD SWALLOW EVERY LATER FRAME: IT GOES, AND THIS FRAME (UNTOUCHED WHEN REFUSED) QUEUES AS IT IS
+                            if (!this.placeboWarned) LOGGER.warn(IT, "libplacebo failed on a decoded frame ({}); frames keep the engine's own conversion",
+                                    FFTool.error(pushed < 0 ? pushed : pulled));
+                            this.placeboWarned = true;
+                            placebo.close();
+                            placebo = null;
+                            filtering = false;
+                            if (pushed >= 0) continue;
+                        }
 
-                        final double ptsSec = rawPtsSec + this.videoPtsOffset;
-                        final long ptsMs = (long) (ptsSec * 1000.0);
-
-                        final FrameQueue.Slot slot = this.videoFrameQueue.peekWritable();
-                        if (slot == null) break;
-
-                        av_frame_unref(slot.frame);
-                        av_frame_move_ref(slot.frame, frameToQueue);
-                        slot.ptsMs = ptsMs;
-                        slot.durationMs = this.clock.frameDurationMs();
-                        slot.serial = packetSerial;
-                        slot.width = slot.frame.width();
-                        slot.height = slot.frame.height();
-                        slot.format = slot.frame.format();
-
-                        this.videoFrameQueue.push();
+                        if (!this.queueVideo(frameToQueue, tempFrame, packetSerial, this.videoTimeBase)) break;
                         framesProduced++;
+                    }
+
+                    // THE DRAINED DECODER LEAVES THE FRAMES LIBPLACEBO STILL HOLDS TO TIME THEM
+                    if (eof && placebo != null && placebo.push(null) >= 0) {
+                        while (placebo.pull(filtered) >= 0) {
+                            filtered.best_effort_timestamp(avutil.AV_NOPTS_VALUE);
+                            if (!this.queueVideo(filtered, filtered, packetSerial, placebo.timeBase)) break;
+                            framesProduced++;
+                        }
                     }
 
                     packetsProcessed++;
@@ -1705,9 +1723,50 @@ public final class FFMediaPlayer extends MediaPlayer {
             // WITHOUT FLUSHING HERE THE DECODER WOULD STAY DRAINED AND EMIT ZERO FRAMES ON REPEAT,
             // TRIPPING THE ZERO-FRAME → ERROR CHECK AND FREEZING VIDEO.
             if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+            if (placebo != null) placebo.close();
             avutil.av_frame_free(tempFrame);
             if (hwTransfer != null) avutil.av_frame_free(hwTransfer);
+            if (filtered != null) avutil.av_frame_free(filtered);
         }
+    }
+
+    // QUEUES frame AT THE PRESENTATION TIME OF timing (OFTEN THE SAME FRAME): ITS BEST-EFFORT TIMESTAMP OR pts IN timeBase SECONDS PER TICK,
+    // SYNTHESIZED WHEN MISSING AND KEPT CONTINUOUS ACROSS HLS DISCONTINUITIES. MOVES THE FRAME'S REFERENCE; FALSE WHEN THE QUEUE TAKES NO MORE
+    private boolean queueVideo(final AVFrame frame, final AVFrame timing, final int serial, final double timeBase) {
+        // A RAW AV_NOPTS_VALUE WOULD PRODUCE AN ASTRONOMICAL PTS THAT LATCHES A GARBAGE DISCONTINUITY OFFSET AND WRECKS THE CLOCK
+        long rawPts = timing.best_effort_timestamp();
+        if (rawPts == avutil.AV_NOPTS_VALUE) rawPts = timing.pts();
+        final double rawPtsSec;
+        if (rawPts == avutil.AV_NOPTS_VALUE) {
+            rawPtsSec = Double.isNaN(this.lastRawVideoPts) ? 0.0 : this.lastRawVideoPts + this.clock.frameDurationSec();
+        } else {
+            rawPtsSec = rawPts * timeBase;
+        }
+
+        // PTS DISCONTINUITY DETECTION (HLS AD STITCHING)
+        if (!Double.isNaN(this.lastRawVideoPts)) {
+            final double jump = rawPtsSec - this.lastRawVideoPts;
+            if (Math.abs(jump) > PTS_DISCONTINUITY_SEC) {
+                final double expected = this.lastRawVideoPts + this.videoPtsOffset + this.clock.frameDurationSec();
+                this.videoPtsOffset = expected - rawPtsSec;
+                LOGGER.debug(IT, "Video PTS discontinuity: jump={}s, new offset={}s", String.format("%.1f", jump), String.format("%.1f", this.videoPtsOffset));
+            }
+        }
+        this.lastRawVideoPts = rawPtsSec;
+
+        final FrameQueue.Slot slot = this.videoFrameQueue.peekWritable();
+        if (slot == null) return false;
+
+        av_frame_unref(slot.frame);
+        av_frame_move_ref(slot.frame, frame);
+        slot.ptsMs = (long) ((rawPtsSec + this.videoPtsOffset) * 1000.0);
+        slot.durationMs = this.clock.frameDurationMs();
+        slot.serial = serial;
+        slot.width = slot.frame.width();
+        slot.height = slot.frame.height();
+        slot.format = slot.frame.format();
+        this.videoFrameQueue.push();
+        return true;
     }
 
     // AUDIO DECODE THREAD
@@ -2527,7 +2586,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.opened = true;
             this.playable = true;
             LOGGER.info(IT, "FFMediaPlayer started - video: {} (hw: {}{}), audio: {}", videoInit, this.hwAccel(),
-                    this.vulkanFrames ? ", frames stay on the GPU" : "", audioInit);
+                    !this.vulkanFrames ? "" : this.gfx instanceof final VKEngine vk && vk.placebo() ? ", frames stay on the GPU through libplacebo" : ", frames stay on the GPU", audioInit);
             return true;
         } catch (final Exception e) {
             // A SETUP CUT SHORT BY stop()/RESTART IS NOT A FAILURE WORTH RECORDING
@@ -2707,13 +2766,15 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private boolean initHwDecoder(final AVCodec decoder, final AVStream videoStream) {
-        // THE ENGINE'S VULKAN DEVICE (OR ITS TWIN) FIRST: ITS FRAMES ARE SAMPLED ON THE GPU, EVERY OTHER ACCELERATOR DOWNLOADS THEM TO
-        // RAM. ONLY 4:2:0 STREAMS OF A CODEC THE GPU DECODES QUALIFY, WHOSE VULKAN POOLS (NV12, P010) THE ENGINE SAMPLES
+        // THE ENGINE'S VULKAN DEVICE (OR ITS TWIN) FIRST: ITS FRAMES STAY ON THE GPU, EVERY OTHER ACCELERATOR DOWNLOADS THEM TO RAM. LIBPLACEBO
+        // TURNS ANY POOL INTO RGBA THERE; WITHOUT IT ONLY 4:2:0 STREAMS QUALIFY, WHOSE POOLS (NV12, P010) THE ENGINE SAMPLES ITSELF
         final int streamFormat = videoStream.codecpar().format();
-        if (this.gfx instanceof final VKEngine vk && (streamFormat == AV_PIX_FMT_YUV420P || streamFormat == AV_PIX_FMT_YUVJ420P || streamFormat == AV_PIX_FMT_YUV420P10LE)) {
+        if (this.gfx instanceof final VKEngine vk) {
             final AVCodecHWConfig config = hwConfig(decoder, AV_HWDEVICE_TYPE_VULKAN);
             final AVBufferRef device = config == null ? null : vk.hwDevice(videoStream.codecpar().codec_id());
-            if (device != null && this.openHw(decoder, videoStream, config, device)) {
+            final boolean sampled = vk.placebo() || streamFormat == AV_PIX_FMT_YUV420P || streamFormat == AV_PIX_FMT_YUVJ420P || streamFormat == AV_PIX_FMT_YUV420P10LE;
+            if (device != null && !sampled) av_buffer_unref(device);
+            else if (device != null && this.openHw(decoder, videoStream, config, device)) {
                 this.vulkanFrames = true;
                 return true;
             }
@@ -3126,6 +3187,79 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.audioInputChannels = 0;
 
         LOGGER.debug(IT, "Cleanup completed");
+    }
+
+    // ==========================================================================
+    // LIBPLACEBO
+    // ==========================================================================
+    // buffer -> libplacebo -> buffersink OVER ONE DECODER POOL ON THE VULKAN ENGINE'S DEVICE: FRAMES LEAVE CROPPED, AS RGBA IN SDR BT.709 (HDR
+    // TONE-MAPPED, OTHER PRIMARIES GAMUT-MAPPED), FOR THE ENGINE TO SCALE. DECODE THREAD ONLY
+    static final class Placebo {
+        // NO deinterlace: WITH IT, av_buffersink_get_frame NEVER RETURNS ONCE AN INTERLACED FRAME ENTERS (FFMPEG 9.0.2, LIBPLACEBO 7.387)
+        private static final String OPTIONS = "format=rgba:color_primaries=bt709:color_trc=bt709";
+
+        private final AVFilterGraph graph;
+        private final AVFilterContext source;
+        private final AVFilterContext sink;
+        final long pool;       // THE DECODER POOL THE GRAPH TAKES FRAMES FROM
+        final double timeBase; // SECONDS PER pts TICK OF THE FRAMES IT SENDS (LIBPLACEBO MAY REFINE THE INPUT'S)
+
+        private Placebo(final AVFilterGraph graph, final AVFilterContext source, final AVFilterContext sink, final long pool) {
+            this.graph = graph;
+            this.source = source;
+            this.sink = sink;
+            this.pool = pool;
+            this.timeBase = av_q2d(avfilter.av_buffersink_get_time_base(sink));
+        }
+
+        // THE GRAPH FOR THE POOL OF frame, TIMED IN timeBase AND RUN ON device; THROWS WITH THE STEP FFMPEG REFUSED
+        static Placebo open(final AVFrame frame, final AVBufferRef device, final AVRational timeBase) {
+            final AVFilterGraph graph = avfilter.avfilter_graph_alloc();
+            final AVFilterContext source = avfilter.avfilter_graph_alloc_filter(graph, avfilter.avfilter_get_by_name("buffer"), "in");
+            final AVFilterContext placebo = avfilter.avfilter_graph_alloc_filter(graph, avfilter.avfilter_get_by_name("libplacebo"), "placebo");
+            final AVFilterContext sink = avfilter.avfilter_graph_alloc_filter(graph, avfilter.avfilter_get_by_name("buffersink"), "out");
+            placebo.hw_device_ctx(av_buffer_ref(device)); // THE FILTER OWNS THIS REFERENCE AND FREES IT WITH THE GRAPH
+            // THE PARAMETERS TAKE THEIR OWN REFERENCE TO THE POOL
+            final AVBufferSrcParameters parameters = avfilter.av_buffersrc_parameters_alloc();
+            parameters.format(AV_PIX_FMT_VULKAN).width(frame.width()).height(frame.height()).time_base(timeBase)
+                    .sample_aspect_ratio(frame.sample_aspect_ratio()).hw_frames_ctx(frame.hw_frames_ctx())
+                    .color_space(frame.colorspace()).color_range(frame.color_range());
+            int result = avfilter.av_buffersrc_parameters_set(source, parameters);
+            av_free(parameters);
+            String step = "buffer";
+            if (result >= 0) result = avfilter.avfilter_init_str(source, (String) null);
+            if (result >= 0) {
+                step = "libplacebo";
+                result = avfilter.avfilter_init_str(placebo, OPTIONS);
+            }
+            if (result >= 0) {
+                step = "buffersink";
+                result = avfilter.avfilter_init_str(sink, (String) null);
+            }
+            if (result >= 0) result = avfilter.avfilter_link(source, 0, placebo, 0);
+            if (result >= 0) result = avfilter.avfilter_link(placebo, 0, sink, 0);
+            if (result >= 0) {
+                step = "graph";
+                result = avfilter.avfilter_graph_config(graph, null);
+            }
+            if (result >= 0) return new Placebo(graph, source, sink, frame.hw_frames_ctx().data().address());
+            avfilter.avfilter_graph_free(graph);
+            throw new IllegalStateException("The libplacebo " + step + " failed: " + FFTool.error(result));
+        }
+
+        // HANDS A DECODED FRAME TO THE GRAPH, TAKING ITS REFERENCE (THE FRAME STAYS UNTOUCHED ON FAILURE); NULL FLUSHES WHAT THE GRAPH HOLDS
+        int push(final AVFrame frame) {
+            return avfilter.av_buffersrc_add_frame_flags(this.source, frame, 0);
+        }
+
+        // THE NEXT RGBA FRAME, OR EAGAIN WHILE THE GRAPH WAITS FOR MORE INPUT AND EOF ONCE FLUSHED
+        int pull(final AVFrame into) {
+            return avfilter.av_buffersink_get_frame(this.sink, into);
+        }
+
+        void close() {
+            avfilter.avfilter_graph_free(this.graph);
+        }
     }
 
     // UTILITY

@@ -118,19 +118,24 @@ Optional device features the engine uses when you enable them at device creation
   queue counts you created the device with, and the player decodes H.264, H.265 and AV1 on the GPU
   with nothing passing through RAM. It needs a 1.3 instance and device with ``timelineSemaphore`` and
   ``synchronization2``, ``VK_KHR_video_queue``, ``VK_KHR_video_decode_queue`` and the
-  ``VK_KHR_video_decode_*`` codec extensions. Only 4:2:0 streams decode this way (their NV12 and P010
-  pools are what the engine samples), and without ``deviceInfo()`` the engine keeps the host-import
-  path above. FFmpeg decodes in one of two places:
+  ``VK_KHR_video_decode_*`` codec extensions. Where FFmpeg decodes it also runs libplacebo, which turns
+  every decoded layout into SDR RGBA (tone-mapping HDR) before the engine draws it; that takes
+  ``hostQueryReset``, ``runtimeDescriptorArray``, ``shaderStorageImageArrayNonUniformIndexing`` and
+  ``maintenance4``. Without libplacebo only 4:2:0 streams decode this way (their NV12 and P010 pools are
+  what the engine samples itself), and without ``deviceInfo()`` the engine keeps the host-import path
+  above. FFmpeg decodes in one of two places:
   - **Your device**, when you also create queues FFmpeg can own: a compute-capable and a
     transfer-capable queue other than ``queue()`` and a video decode queue, with ``queue()`` the last
     queue created in its family. The engine samples the decoded images in place. FFmpeg submits to
     those queues from its own threads, so never call ``vkDeviceWaitIdle`` while players exist: wait on
-    your own queue.
+    your own queue. libplacebo runs here only with the features above and a second queue in the family
+    of ``queue()``, as it needs a graphics queue that is not yours.
   - **A twin**, when you create no extra queues but enable ``VK_KHR_external_memory_win32`` and
     ``VK_KHR_external_semaphore_win32`` on Windows, or ``VK_KHR_external_memory_fd`` and
     ``VK_KHR_external_semaphore_fd`` elsewhere. The engine creates a second device on the same GPU with
-    your feature chain and extensions, FFmpeg decodes there and the engine imports every decoded image
-    into your device; your queues stay yours. If an image cannot be imported (natives built without
+    your feature chain and extensions, plus libplacebo's features when your chain lacks them and the GPU
+    has them; FFmpeg decodes there and the engine imports every decoded image into your device; your
+    queues stay yours. If an image cannot be imported (natives built without
     FFmpeg's export fix, for instance), its frames come down to RAM instead and playback goes on.
 
   Either way, release every player before you destroy the device or its instance: FFmpeg keeps using

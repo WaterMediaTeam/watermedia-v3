@@ -108,6 +108,13 @@ public interface VKContext {
      * </ul>
      * Either way, every player must be released before the consumer destroys this device or its
      * instance: FFmpeg uses them, the twin included, until its last decoder is gone.
+     * <p>
+     * The decoded frames then go through libplacebo, which turns any decoded layout into RGBA and maps HDR
+     * to SDR, when the device FFmpeg decodes on enables {@code hostQueryReset}, {@code runtimeDescriptorArray},
+     * {@code shaderStorageImageArrayNonUniformIndexing} and {@code maintenance4}. On this device libplacebo
+     * also needs a graphics queue other than {@link #queue()}, so {@link #queueFamily()} must hold a second
+     * queue; a twin enables those features itself when the GPU offers them. Without them the engine
+     * converts the decoded frames with its own shaders.
      */
     default DeviceInfo deviceInfo() { return null; }
 

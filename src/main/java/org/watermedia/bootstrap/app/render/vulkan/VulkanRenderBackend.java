@@ -312,8 +312,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                 if (supported.contains(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME)) codecs.add(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME);
             }
 
-            // FFMPEG NEEDS QUEUES OF ITS OWN: A VIDEO DECODE FAMILY PLUS COMPUTE AND TRANSFER QUEUES OTHER THAN THE RENDER QUEUE. WITHOUT
-            // A SEPARATE COMPUTE FAMILY IT TAKES THE FIRST QUEUE OF THE RENDER FAMILY AND THE APP RENDERS ON THE SECOND, THE LAST ONE
+            // FFMPEG NEEDS QUEUES OF ITS OWN: A VIDEO DECODE FAMILY PLUS COMPUTE AND TRANSFER QUEUES OTHER THAN THE RENDER QUEUE, AND LIBPLACEBO A
+            // GRAPHICS ONE: IT TAKES THE FIRST QUEUE OF THE RENDER FAMILY (ALSO ITS COMPUTE ONE WITHOUT A COMPUTE FAMILY) AND THE APP RENDERS ON THE LAST
             vkGetPhysicalDeviceQueueFamilyProperties(this.physicalDevice, count, null);
             final VkQueueFamilyProperties.Buffer families = VkQueueFamilyProperties.malloc(count.get(0), stack);
             vkGetPhysicalDeviceQueueFamilyProperties(this.physicalDevice, count, families);
@@ -327,10 +327,12 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                     if (compute < 0 && (flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0) compute = i;
                     if (transfer < 0 && (flags & VK_QUEUE_TRANSFER_BIT) != 0 && (flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_VIDEO_DECODE_BIT_KHR)) == 0) transfer = i;
                 }
-                if (compute < 0 && families.get(this.queueFamily).queueCount() >= 2) compute = this.queueFamily;
+                final boolean spare = families.get(this.queueFamily).queueCount() >= 2;
+                if (compute < 0 && spare) compute = this.queueFamily;
                 if (decode >= 0 && compute >= 0) {
                     this.queueCounts[decode] = 1;
-                    this.queueCounts[compute] = compute == this.queueFamily ? 2 : 1;
+                    if (compute != this.queueFamily) this.queueCounts[compute] = 1;
+                    if (spare) this.queueCounts[this.queueFamily] = 2;
                     if (transfer >= 0) this.queueCounts[transfer] = 1;
                     this.deviceExtensions.add(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
                     this.deviceExtensions.add(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
@@ -351,8 +353,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             for (final String extension: this.deviceExtensions) exts.put(stack.UTF8(extension));
             exts.flip();
 
-            // THE FEATURES, KEPT AS FFMPEG READS THEM: wideLines FOR lineWidth, THE YCBCR SAMPLER THE VKEngine CONVERTS WITH (OPTIONAL
-            // 1.1 FEATURE) AND THE TIMELINE SEMAPHORES AND synchronization2 DECODING RUNS ON, EACH ONLY WHEN THE DEVICE OFFERS IT
+            // THE FEATURES, KEPT AS FFMPEG READS THEM: wideLines FOR lineWidth, THE YCBCR SAMPLER THE VKEngine CONVERTS WITH (OPTIONAL 1.1 FEATURE),
+            // THE TIMELINE SEMAPHORES AND synchronization2 DECODING RUNS ON AND WHAT LIBPLACEBO AND FFMPEG'S FILTER SHADERS NEED, EACH WHEN OFFERED
             this.features = VkPhysicalDeviceFeatures2.calloc().sType$Default();
             this.features.features().wideLines(this.wideLines);
             if (api >= VK_API_VERSION_1_1) {
@@ -368,11 +370,14 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                 this.ycbcrFeatures = VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc().sType$Default().samplerYcbcrConversion(this.ycbcrSampler);
                 this.features.pNext(this.ycbcrFeatures.address());
                 if (api >= VK_API_VERSION_1_2) {
-                    this.features12 = VkPhysicalDeviceVulkan12Features.calloc().sType$Default().timelineSemaphore(vulkan12.timelineSemaphore());
+                    this.features12 = VkPhysicalDeviceVulkan12Features.calloc().sType$Default().timelineSemaphore(vulkan12.timelineSemaphore())
+                            .hostQueryReset(vulkan12.hostQueryReset()).runtimeDescriptorArray(vulkan12.runtimeDescriptorArray())
+                            .shaderStorageImageArrayNonUniformIndexing(vulkan12.shaderStorageImageArrayNonUniformIndexing());
                     this.ycbcrFeatures.pNext(this.features12.address());
                 }
                 if (api >= VK_API_VERSION_1_3) {
-                    this.features13 = VkPhysicalDeviceVulkan13Features.calloc().sType$Default().synchronization2(vulkan13.synchronization2());
+                    this.features13 = VkPhysicalDeviceVulkan13Features.calloc().sType$Default().synchronization2(vulkan13.synchronization2())
+                            .maintenance4(vulkan13.maintenance4());
                     this.features12.pNext(this.features13.address());
                 }
             }

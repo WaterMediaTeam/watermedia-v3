@@ -26,6 +26,7 @@ const int MODE_YUV3 = 3;
 const int MODE_YUVA = 4;
 const int MODE_YUYV = 5;
 const int MODE_UYVY = 6;
+const int MODE_RGBA = 7;
 
 #include "colorimetry.glsl"
 
@@ -33,6 +34,11 @@ void main() {
     ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
     if (gid.x >= pc.width || gid.y >= pc.height) return;
     vec2 uv = pc.origin + (vec2(gid) + 0.5) / vec2(float(pc.width), float(pc.height)) * pc.crop;
+    // A DECODED FRAME AN FFMPEG FILTER ALREADY TURNED INTO DISPLAY RGBA IS ONLY CROPPED AND SCALED
+    if (pc.mode == MODE_RGBA) {
+        imageStore(outImg, gid, textureLod(plane0, uv, 0.0));
+        return;
+    }
     vec2 chroma = uv * pc.colorimetry[2].xy + pc.colorimetry[2].zw;
     float bs = pc.bitScale;
     float alpha = 1.0;
