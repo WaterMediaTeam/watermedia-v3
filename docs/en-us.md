@@ -13,13 +13,13 @@ WaterMedia.start("My application", temporaryDirectory, workingDirectory, true);
 boolean ready = WaterMedia.loaded();
 ```
 
-`start` loads the modules once for the life of the process and nothing is ever unloaded: there is no stop, and a second `start` throws. The last argument selects the client environment; the modules only clients need (Binaries, media) do nothing on a dedicated server. `WaterMedia.loaded()` is the only readiness check. While loading, `WaterMedia.loading()` names the module being started and `step()`/`steps()` count the modules, which is all a loading screen needs. A part a module can live without (the file server, FFmpeg) logs its failure and stays unavailable while the load completes, so check the capability you need, such as `MediaAPI.ffmpegLoaded()`; any other module failure (the configuration, an installed Binaries module) makes `start` throw `IllegalStateException` with that failure as its cause, and `loaded()` stays false. Pure Java image decoding through `CodecsAPI` needs no bootstrap.
+`start` loads the modules once for the life of the process and nothing is ever unloaded: there is no stop, and a second `start` throws. The last argument selects the client environment; the modules only clients need (Binaries, codecs, player) do nothing on a dedicated server. `WaterMedia.loaded()` is the only readiness check. While loading, `WaterMedia.loading()` names the module being started and `step()`/`steps()` count the modules (configuration, Binaries when installed, network, codecs and player, so `steps()` is 5 with Binaries and 4 without), which is all a loading screen needs. A part a module can live without (the file server, FFmpeg) logs its failure and stays unavailable while the load completes, so check the capability you need, such as `CodecsAPI.ffmpegLoaded()`; any other module failure (the configuration, an installed Binaries module) makes `start` throw `IllegalStateException` with that failure as its cause, and `loaded()` stays false. Pure Java image decoding through `CodecsAPI` needs no bootstrap.
 
-`MediaAPI.mrl`, the media players and `NetworkAPI.upload` throw `IllegalStateException` until `loaded()` is true, and the media ones also on dedicated servers. `PlatformAPI` needs no bootstrap at all: its registry is static, `register`, `fetch` and `search` work at any time, and the handlers that need Binaries (YouTube, yt-dlp) fail with their own `PlatformException` until it loads, and always on dedicated servers, which never load Binaries. `NetworkAPI.upload` also rejects anything that is not an existing file up front; an unreachable or misconfigured remote server fails the returned status instead.
+`PlayerAPI.mrl`, the media players and `NetworkAPI.upload` throw `IllegalStateException` until `loaded()` is true, and the media ones also on dedicated servers. `PlatformAPI` needs no bootstrap at all: its registry is static, `register`, `fetch` and `search` work at any time, and the handlers that need Binaries (YouTube, yt-dlp) fail with their own `PlatformException` until it loads, and always on dedicated servers, which never load Binaries. `NetworkAPI.upload` also rejects anything that is not an existing file up front; an unreachable or misconfigured remote server fails the returned status instead.
 
 The binaries module requires WaterMedia and loads with it. Minecraft clients require Binaries;
 dedicated servers can omit it. After configuration loads, it provisions the natives before the
-network and media modules; an installed module that fails ends the load.
+network, codecs and player modules; an installed module that fails ends the load.
 Applications embedding the Java API can omit the module and retain image decoding and native-free
 platform resolvers. Disabling FFmpeg skips extraction. The native paths stay published for the life
 of the process. There is no separate binaries initialization or shutdown API.
@@ -40,14 +40,14 @@ Configuration loads before native provisioning. Check the generated configuratio
 
 | Setting | Default and related limits |
 | --- | --- |
-| `media.ffmpeg.disable` | `false`; enabling it skips FFmpeg provisioning and initialization. Startup settings take effect on the next launch. Images remain independent of FFmpeg. |
-| `media.ffmpeg.customPath` | Empty; an explicit directory must contain compatible native libraries, not an `ffmpeg.exe` command-line program. Patched TLS/origin capabilities remain required, and decoding on a twin Vulkan device needs FFmpeg's export fix (upstream commit `63d0237033`), which the bundled natives carry. |
-| `media.ffmpeg.hardwareAccel` | `true`; actual use also depends on native/driver capabilities, codec and output engine. Software decoding remains available. On a `VKEngine` whose `VKContext.deviceInfo()` describes a device created for decoding, H.264, H.265 and AV1 streams decode on the GPU without passing through RAM: on that device when it has queues to spare for FFmpeg, otherwise on a twin device the engine creates on the same GPU, importing every frame. Where libplacebo runs (see `MediaAPI.vkEngine`) it converts every decoded layout to SDR RGBA there; without it only 4:2:0 streams decode on the GPU. Frames that cannot be imported, and those of every other accelerator, are downloaded to RAM. |
-| `media.ffmpeg.analyzeDuration` / `probeSize` | 7,000 ms / 10 MiB; both main and separate-audio inputs use them. Zero analysis duration leaves FFmpeg's default. Larger values can increase startup time. |
-| `decoders.maxImageSourceSize` | 128 MiB of encoded image data. This is separate from the image reader's 512 MiB decoded-data limit. |
-| `media.watertx.texturesBudget` | 32 MiB; preloading also requires a capable engine, a valid frame count, and both decoded source frames and output textures fitting the budget. Zero forces animation streaming. |
-| `media.ffmpeg.cache` / `cacheMaxResponse` | Enabled / 10 MiB per eligible response; this does not cache every stream or HLS/DASH input. |
-| `media.watertx.cache` / `media.cacheBudget` | Image cache enabled / 8,192 MiB shared disk budget; older entries are evicted after writes. Disk, encoded-image, decoded-image and texture limits are independent. |
+| `codecs.ffmpeg.disable` | `false`; enabling it skips FFmpeg provisioning and initialization. Startup settings take effect on the next launch. Images remain independent of FFmpeg. |
+| `codecs.ffmpeg.customPath` | Empty; an explicit directory must contain compatible native libraries, not an `ffmpeg.exe` command-line program. Patched TLS/origin capabilities remain required, and decoding on a twin Vulkan device needs FFmpeg's export fix (upstream commit `63d0237033`), which the bundled natives carry. |
+| `codecs.ffmpeg.hardwareAccel` | `true`; actual use also depends on native/driver capabilities, codec and output engine. Software decoding remains available. On a `VKEngine` whose `VKContext.deviceInfo()` describes a device created for decoding, H.264, H.265 and AV1 streams decode on the GPU without passing through RAM: on that device when it has queues to spare for FFmpeg, otherwise on a twin device the engine creates on the same GPU, importing every frame. Where libplacebo runs (see `PlayerAPI.vkEngine`) it converts every decoded layout to SDR RGBA there; without it only 4:2:0 streams decode on the GPU. Frames that cannot be imported, and those of every other accelerator, are downloaded to RAM. |
+| `codecs.ffmpeg.analyzeDuration` / `probeSize` | 7,000 ms / 10 MiB; both main and separate-audio inputs use them. Zero analysis duration leaves FFmpeg's default. Larger values can increase startup time. |
+| `codecs.maxImageSourceSize` | 128 MiB of encoded image data. This is separate from the image reader's 512 MiB decoded-data limit. |
+| `player.watertx.texturesBudget` | 32 MiB; preloading also requires a capable engine, a valid frame count, and both decoded source frames and output textures fitting the budget. Zero forces animation streaming. |
+| `codecs.ffmpeg.cache` / `cacheMaxResponse` | Enabled / 10 MiB per eligible response; this does not cache every stream or HLS/DASH input. |
+| `player.watertx.cache` / `player.cacheBudget` | Image cache enabled / 8,192 MiB shared disk budget; older entries are evicted after writes. Disk, encoded-image, decoded-image and texture limits are independent. |
 | `platforms.allowMatureContent` | `false`; supported platform adapters can mark a resource `BLOCKED` instead of handing it to playback. |
 | `platforms.searchCleanupInterval` | 15 minutes; zero clears cached searches on every search. |
 | `platforms.searchLimit` | 2 results per platform; a search asking for more is capped here. |
@@ -58,15 +58,15 @@ The defaults allow eight simultaneous requests, a 30-second idle timeout per req
 
 ## Public and internal packages
 
-The JAR is the explicit module `org.watermedia`. Its public API is the set of exported packages: `org.watermedia`, `api.codecs`, `api.media`, `api.network`, `api.platform` and `api.util`. Everything else is internal: codec readers, writers and chunk structures, player queues and caches, the built-in platforms, the bootstrap and the bundled FFmpeg bindings. `org.watermedia.tools` and `org.watermedia.bootstrap` are exported only to the Binaries module: `tools` shares its download, digest and JSON utilities, and `bootstrap` holds the module lifecycle Binaries implements.
+The JAR is the explicit module `org.watermedia`. Its public API is the set of exported packages: `org.watermedia`, `api.codecs`, `api.network`, `api.platform`, `api.player` and `api.util`. Everything else is internal: codec readers, writers and chunk structures, player queues and caches, the built-in platforms, the bootstrap and the bundled FFmpeg bindings. `org.watermedia.tools` and `org.watermedia.bootstrap` are exported only to the Binaries module: `tools` shares its download, digest and JSON utilities, and `bootstrap` holds the module lifecycle Binaries implements.
 
 Forge 1.21.1 and newer enforce the descriptor, so code outside the module fails with `IllegalAccessError` or `IllegalAccessException` when it touches an internal package. NeoForge, Fabric, older Forge versions and classpath builds ignore it; treat the same boundary as the contract there too. Reach internal features through their entry points, such as `CodecsAPI.reader`, `CodecsAPI.writer` and `PlatformAPI.fetch`. `gradle javadocInventory` checks only the exported packages, read from `src/main/module/org.watermedia/module-info.java`.
 
 ## Resolving addresses
 
 ```java
-MRL mrl = MediaAPI.mrl("https://example.com/movie.mp4");
-MRL[] playlist = MediaAPI.preload(firstUri, secondUri);
+MRL mrl = PlayerAPI.mrl("https://example.com/movie.mp4");
+MRL[] playlist = PlayerAPI.preload(firstUri, secondUri);
 ```
 
 An MRL is a cached media-resource locator. One URI can resolve to multiple media sources, and each source can contain quality variants and separate audio tracks. Resolution is asynchronous. Poll `mrl.status()` from a game tick; the terminal states include `LOADED`, `ERROR` and `BLOCKED`. Inspect `mrl.exception()` on failure. `mrl.await(timeoutMillis)` is intended for background/application code: `true` means resolution finished, including a failure, rather than guaranteeing playable media.
@@ -85,9 +85,9 @@ if (mrl.status() == MRL.Status.LOADED) {
 
 `source(index)` returns null when the source is unavailable. `sources()` and `sourcesByType(...)` return lists. `MediaType` belongs to `org.watermedia.api.util`, not to `MRL`. Reload with `mrl = mrl.reload()`: a forgotten cache entry returns a replacement handle, while the old handle remains forgotten.
 
-`MediaAPI.mrl(String)` treats a string naming an existing file as a path relative to the working directory WaterMedia started with; any other string is parsed as a URI. Malformed, relative or empty inputs return an uncached MRL born in `ERROR` whose `reload()` returns itself. A direct link is rejected only when the server answers with a document type (HTML, CSS, JavaScript, JSON, XHTML); any other content type passes whatever its casing or parameters, and ambiguous ones are classified by sniffing the first bytes. Each source keeps one URL per quality bucket — the widest rendition, then the tallest, then the highest frame rate, then the first the platform listed — and its headers are frozen.
+`PlayerAPI.mrl(String)` treats a string naming an existing file as a path relative to the working directory WaterMedia started with; any other string is parsed as a URI. Malformed, relative or empty inputs return an uncached MRL born in `ERROR` whose `reload()` returns itself. A direct link is rejected only when the server answers with a document type (HTML, CSS, JavaScript, JSON, XHTML); any other content type passes whatever its casing or parameters, and ambiguous ones are classified by sniffing the first bytes. Each source keeps one URL per quality bucket — the widest rendition, then the tallest, then the highest frame rate, then the first the platform listed — and its headers are frozen.
 
-Indices start at zero: a gallery can have an image at index 0, a video at index 1 and an animation at index 2. Pass index 1 to `MediaAPI.player` to play that gallery's video. Omitting the index selects the first source.
+Indices start at zero: a gallery can have an image at index 0, a video at index 1 and an animation at index 2. Pass index 1 to `PlayerAPI.player` to play that gallery's video. Omitting the index selects the first source.
 
 Platform handlers follow one contract. `Platform.resolve` returns `null` only for a foreign host or scheme; a URL of its own host whose shape it cannot play (a profile, a folder, a bare host) fails with `PlatformException` ("Unsupported URL") without touching the network, and every other failure, an interrupted wait included, is a `PlatformException` too, so `MRL` reports the handler's own message. Mature content blocks with `MatureContentException` wherever the platform exposes a flag or label (Imgur, Kick, Twitch, Bluesky, PornHub, yt-dlp, Twitter's age gate and YouTube's), which `MRL` turns into `BLOCKED`. An album or playlist skips a bad item with a warning and only fails when nothing remains. Handlers registered with `PlatformAPI.register` are probed before the built-in ones, newest first, and need no bootstrap: register once, before or after `WaterMedia.start`, and the override holds until `unregister`, which also drops a built-in handler for the rest of the process. `PlatformAPI.search(query)` returns at once the read-only list its results land in, up to `platforms.searchLimit` per platform in answer order or fewer with `search(query, limit, reSearch)`, and `PlatformAPI.searching(query)` turns false once every platform answered; poll both from the UI thread. One search runs at a time on four worker threads, and every built-in search request gives up after 5 seconds: a new query discards the one in flight, and a query one keystroke away from the previous one (a letter more, less or fixed, the user still typing) waits 300 ms for the next keystroke before touching the network, while any other query probes at once. A query already searched with the same limit is served the same list instance from the cache, finished or still filling, unless `search(query, true)` asks the platforms again. Registration drops cached searches, and a blank search returns an empty list and leaves a running search alone.
 
@@ -96,9 +96,9 @@ Platform handlers follow one contract. `Platform.resolve` returns `null` only fo
 ## Creating and controlling a player
 
 ```java
-MediaPlayer player = MediaAPI.player(mrl, 0,
-        () -> MediaAPI.glEngine(renderThread, renderExecutor),
-        MediaAPI::jsEngine);
+MediaPlayer player = PlayerAPI.player(mrl, 0,
+        () -> PlayerAPI.glEngine(renderThread, renderExecutor),
+        PlayerAPI::jsEngine);
 if (player == null) {
     throw new IllegalStateException("Source is unavailable or its backend failed");
 }
@@ -154,9 +154,9 @@ are needed. An empty or invalid truststore prevents FFmpeg initialization; verif
 silently disabled. Empty `customPath` settings do not add the working directory to native discovery.
 
 The exported authorities also reach nested HLS/DASH requests. This shares trust anchors with Java;
-it does not replace FFmpeg's OpenSSL transport. `FFMediaPlayer` creates and owns the temporary PEM
-when FFmpeg starts, checks that the required native options exist and applies them to the main and
-separate-audio inputs of every player it opens; nothing in the public API touches that configuration.
+it does not replace FFmpeg's OpenSSL transport. When the codecs module starts FFmpeg it checks that
+the required native options exist and creates the temporary PEM; `FFMediaPlayer` applies them to the
+main and separate-audio inputs of every player it opens; nothing in the public API touches that configuration.
 Custom JSSE socket factories, hostname-verifier callbacks and revocation policies are not transferred
 to OpenSSL. Protocol whitelists remain unchanged. The temporary CA bundle lives for the whole process
 and is deleted when the JVM exits.
@@ -191,14 +191,14 @@ Vulkan development takes priority; OpenGL remains supported as the secondary bac
 
 | Factory | Host obligation |
 | --- | --- |
-| `MediaAPI.glEngine(renderThread, executor)` | Executor dispatches to the thread owning the OpenGL context and is pumped while playback/release can wait for it. |
-| `MediaAPI.vkEngine(context)` | Supply a `VKContext`; its Vulkan objects and retirement mechanism outlive the engine. Override `deviceInfo()` with the feature chain, extensions and queue counts of the device to decode video on the GPU (see the README). FFmpeg decodes on that device when it has spare queues for FFmpeg (the host then never touches them nor calls `vkDeviceWaitIdle` while players exist), or else on a twin device when it enables the external memory and semaphore extensions (`win32` on Windows, `fd` elsewhere); release every player before destroying the device or its instance. `MediaAPI.vulkanDecode()` tells whether the natives support that. libplacebo converts the decoded frames (HDR tone-mapped to SDR) when that device enables `hostQueryReset`, `runtimeDescriptorArray`, `shaderStorageImageArrayNonUniformIndexing` and `maintenance4` and, on your own device, the family of `queue()` holds a second queue; a twin enables those features by itself when the GPU has them. |
-| `MediaAPI.awtEngine(onFrame)` | Paint the published image from the AWT/Swing UI; marshal the optional callback to the UI thread as needed. |
-| `MediaAPI.jfxEngine(onFrame)` | Supply a JavaFX 13 or newer runtime and bind the engine's image to the host UI; without it the factory throws `IllegalStateException` instead of a linkage error. |
-| `MediaAPI.headlessEngine()` / `headlessEngine(preload)` | Captures uploaded frames without a graphics context; useful for tests and image processing. Like every engine and media player it only exists on a client; a dedicated server can only create `ServerMediaPlayer` clocks. |
-| `MediaAPI.alEngine()` | OpenAL context is already current and remains valid on the threads performing audio operations. |
-| `MediaAPI.alEngine(true)` | Same OpenAL contract; advertises mono output for positional sound. |
-| `MediaAPI.jsEngine()` | Java Sound device/line is available; positional audio is unsupported. |
+| `PlayerAPI.glEngine(renderThread, executor)` | Executor dispatches to the thread owning the OpenGL context and is pumped while playback/release can wait for it. |
+| `PlayerAPI.vkEngine(context)` | Supply a `VKContext`; its Vulkan objects and retirement mechanism outlive the engine. Override `deviceInfo()` with the feature chain, extensions and queue counts of the device to decode video on the GPU (see the README). FFmpeg decodes on that device when it has spare queues for FFmpeg (the host then never touches them nor calls `vkDeviceWaitIdle` while players exist), or else on a twin device when it enables the external memory and semaphore extensions (`win32` on Windows, `fd` elsewhere); release every player before destroying the device or its instance. `CodecsAPI.vulkanDecode()` tells whether the natives support that. libplacebo converts the decoded frames (HDR tone-mapped to SDR) when that device enables `hostQueryReset`, `runtimeDescriptorArray`, `shaderStorageImageArrayNonUniformIndexing` and `maintenance4` and, on your own device, the family of `queue()` holds a second queue; a twin enables those features by itself when the GPU has them. |
+| `PlayerAPI.awtEngine(onFrame)` | Paint the published image from the AWT/Swing UI; marshal the optional callback to the UI thread as needed. |
+| `PlayerAPI.jfxEngine(onFrame)` | Supply a JavaFX 13 or newer runtime and bind the engine's image to the host UI; without it the factory throws `IllegalStateException` instead of a linkage error. |
+| `PlayerAPI.headlessEngine()` / `headlessEngine(preload)` | Captures uploaded frames without a graphics context; useful for tests and image processing. Like every engine and media player it only exists on a client; a dedicated server can only create `ServerMediaPlayer` clocks. |
+| `PlayerAPI.alEngine()` | OpenAL context is already current and remains valid on the threads performing audio operations. |
+| `PlayerAPI.alEngine(true)` | Same OpenAL contract; advertises mono output for positional sound. |
+| `PlayerAPI.jsEngine()` | Java Sound device/line is available; positional audio is unsupported. |
 
 Spatial audio uses `SpatialAudio` and an optional environment processor. See [spatial audio and Sound Physics Remastered](#spatial-audio-and-sound-physics-remastered) for the adapter, source/context ownership, update cadence and feature gates. Spatial state is local to a listener and never travels in a clock snapshot.
 
@@ -208,14 +208,14 @@ Every engine follows one lifecycle. `release()` is idempotent, must never run co
 
 ## Spatial audio and Sound Physics Remastered
 
-Create an OpenAL engine with `MediaAPI.alEngine(true)` before constructing the player. Spatial mode is fixed for the engine's lifetime: its channel table advertises mono, so FFmpeg's existing resampler downmixes stereo and surround sources before upload. The ordinary `alEngine()` factory uses normal channel negotiation without forcing mono; layouts unsupported by the device may still be converted to the closest available channel count. Java Sound returns `false` from spatial updates and does not expose a native source.
+Create an OpenAL engine with `PlayerAPI.alEngine(true)` before constructing the player. Spatial mode is fixed for the engine's lifetime: its channel table advertises mono, so FFmpeg's existing resampler downmixes stereo and surround sources before upload. The ordinary `alEngine()` factory uses normal channel negotiation without forcing mono; layouts unsupported by the device may still be converted to the closest available channel count. Java Sound returns `false` from spatial updates and does not expose a native source.
 
 The engine starts with dry, listener-relative mono audio. Supply a `SpatialAudio` state to place it in the world. Passing `null` restores dry, listener-relative playback while retaining mono decoding. Volume, mute, speed, pause and synchronization remain independent of spatial settings.
 
 ```java
-import org.watermedia.api.media.SFXEngine.SpatialAudio;
+import org.watermedia.api.player.SFXEngine.SpatialAudio;
 
-final ALEngine audio = MediaAPI.alEngine(true);
+final ALEngine audio = PlayerAPI.alEngine(true);
 final SpatialAudio position = new SpatialAudio(
         blockX + 0.5, blockY + 0.5, blockZ + 0.5,
         8.0f, 64.0f, 1.0f, false, null);
@@ -257,7 +257,7 @@ final MRL.Source media = mrl.source(0);
 if (media == null || (media.type() != MediaType.AUDIO && media.type() != MediaType.VIDEO)) {
     throw new IllegalStateException("A resolved audio or video source is required");
 }
-final MediaPlayer player = MediaAPI.player(mrl, () -> null, () -> MediaAPI.alEngine(true));
+final MediaPlayer player = PlayerAPI.player(mrl, () -> null, () -> PlayerAPI.alEngine(true));
 if (player == null) throw new IllegalStateException("The media backend could not create a player");
 try {
     player.spatialAudio(new SpatialAudio(sourceX, sourceY, sourceZ, 8.0f, 64.0f, 1.0f, false, environment));
@@ -305,7 +305,7 @@ An in-game check is still needed for audibility of occlusion and reflections, ho
 
 ## Image and DDS access
 
-`CodecsAPI.reader` picks an internal reader from the leading bytes and returns it as an `ImageReader`. The PNG and GIF chunk structures in `api.codecs.common` are internal and keep their serializers for future animation writers. Run `gradle javadocInventory` from the project root to list missing public-method documentation with file names and line numbers; the task only reports findings.
+`CodecsAPI.reader` picks an internal reader from the leading bytes and returns it as an `ImageReader`. The PNG and GIF chunk structures in `api.codecs.common` are internal; the PNG and GIF encoders serialize through them. Run `gradle javadocInventory` from the project root to list missing public-method documentation with file names and line numbers; the task only reports findings.
 
 ```java
 try (ImageReader reader = CodecsAPI.reader(encodedBuffer)) {
@@ -319,20 +319,37 @@ try (ImageReader reader = CodecsAPI.reader(encodedBuffer)) {
 
 Every decoder delivers one tightly packed BGRA buffer per frame, except grayscale JPEGs, which deliver one luma byte per pixel (`GRAY`); `CodecsAPI.reader(buffer, format)` asks for `BGRA`, `RGBA` or `GRAY` and the reader converts when that is not its own layout, so `pixelFormat()` and `ImageData.format()` always name what the bytes hold, and any other layout is rejected with `IllegalArgumentException`. `hasNext()` and `next()` follow iterator rules: `next()` past the last frame throws `NoSuchElementException`, `hasNext()`, `next()`, `reset()` and `readAll()` on a closed reader throw `IllegalStateException` while the descriptors stay readable, and `close()` is idempotent and the only method safe to call from another thread. `delay()` is the delay of the frame `next()` just returned, `repeat()` counts total plays (`ImageData.REPEAT_FOREVER`, 0, loops forever), `variableFrameRate()` is false for a single frame, and `metadata()` returns a frozen snapshot that never changes under the consumer. JPEG and WebP frames come out already rotated into their EXIF orientation, with `width()` and `height()` swapped when it calls for it. Metadata uses plain Java values under shared keys (`CodecsAPI.METAKEY_ICC_PROFILE`, `METAKEY_EXIF`, `METAKEY_XMP`, `METAKEY_ORIENTATION`, `METAKEY_LOOP_COUNT`) plus per-format keys such as `PNG_METAKEY_*`; a malformed or oversized ancillary chunk is skipped and logged once, never fatal. A valid feature this decoder lacks (an unknown critical PNG chunk, a lossless or CMYK JPEG, an unknown PAM tuple type) throws `UnsupportedFormatException`, a `CodecException` subtype, so a host can tell "fall back" from "broken file". Netpbm covers the plain `P1`..`P3` and binary `P4`..`P7` variants. `readAll()` retains copies and enforces an aggregate decoded-byte limit for one image; `CodecsAPI.decode` also accepts a `ByteBuffer` or an `InputStream`, and `sniff` a `ByteBuffer`. The source buffer is shared with the reader, not copied, so it must not change until the reader closes, and when a reader refuses its body the buffer position is left where it was. Concurrent readers still consume independent memory: media players coordinate their decoding and reuse decoded images through their caches, while code that drives the decoders directly owns its concurrency.
 
-`CodecsAPI.writer(...)` returns an experimental `ImageWriter` that encodes VP9 inside WebM; it requires FFmpeg, flattens alpha and tags the video BT.709 limited range (RGB input is converted with that matrix, YUV input is taken as already using it).
+`BcReader` reads already compressed BC1/BC3/BC7 blocks in a DX10 DDS texture array, and `pixelFormat()` names their layout as `PixelFormat.BC1`, `BC3` or `BC7` (`PixelFormat.blockBytes()` gives the block size). Instantiate `org.watermedia.api.codecs.BcReader` directly for block access; `CodecsAPI.reader` does not dispatch DDS files. No native encoder is needed, but built-in OpenGL, Vulkan and software engines do not accept BC textures, so DDS block reading does not establish end-to-end player support. A WaterMedia animation footer supplies delays when present; bytes after the texture that do not start with the footer magic (the ASCII bytes `WMTC`) are ignored, and ordinary DDS slices have zero delay. A footer that starts with the magic but is truncated or inconsistent is malformed. Mip chains, volumes and cube maps are rejected. There is no BC encoder or codec-cache option.
 
-`BcReader` reads already compressed BC1/BC3/BC7 blocks in a DX10 DDS texture array, and `pixelFormat()` names their layout as `PixelFormat.BC1`, `BC3` or `BC7` (`PixelFormat.blockBytes()` gives the block size). Instantiate `org.watermedia.api.codecs.BcReader` directly for block access; `CodecsAPI.reader` does not dispatch DDS files. No native encoder is needed, but built-in OpenGL, Vulkan and software engines do not accept BC textures, so DDS block reading does not establish end-to-end player support. A WaterMedia animation footer supplies delays when present; bytes after the texture that do not start with the footer magic (the ASCII bytes `WMTC`) are ignored, and ordinary DDS slices have zero delay. A footer that starts with the magic but is truncated or inconsistent is malformed. Mip chains, volumes and cube maps are rejected. There is no BC encoder or codec-cache option. `CodecsAPI.available(...)` reports software pixel-decoder support, not GPU texture-format support.
+## Encoding
+
+`CodecsAPI.encoder(container, target, video, audio)` opens an `Encoder` for one `Container`. `Container.video()` and `Container.audio()` list the codecs each track accepts; a track that does not fit, or a decode-only container (WebP, JPEG, Netpbm, SVG), is refused with `IllegalArgumentException` before the target is touched. PNG (APNG when more than one frame arrives) and GIF are pure Java and need no FFmpeg; MP4, MOV, MKV, WebM and Ogg go through FFmpeg and throw `IOException` without it.
+
+```java
+Encoder.Video video = new Encoder.Video(VideoCodec.H264, 1280, 720, PixelFormat.BGRA, 60);
+Encoder.Audio audio = new Encoder.Audio(AudioCodec.AAC, 48_000, 2, SampleType.S16);
+try (Encoder encoder = CodecsAPI.encoder(Container.MP4, Path.of("clip.mp4"), video, audio)) {
+    encoder.video(frame, ptsUs); // ONE CALL PER FRAME, TIMESTAMPS IN MICROSECONDS THAT KEEP INCREASING
+    encoder.audio(pcm);          // INTERLEAVED SAMPLES, CONTINUOUS FROM TIME ZERO
+}
+```
+
+- **Frames:** exactly `Video.frameBytes()` bytes in `Video.format()`. A frame lasts until the next timestamp and the last one for `1 / fps`; an animation starts with its first frame whatever its timestamp. PNG and GIF take RGBA, BGRA, RGB or GRAY; FFmpeg codecs take any raw `PixelFormat`, converted to the codec's layout and tagged BT.709 limited range (RGB through that matrix, YUV taken as already in it), with alpha dropped and an odd side grown by one pixel for 4:2:0 codecs.
+- **Quality:** `quality` goes from 0 (smallest) to 100 (best) and maps onto each codec's constant-quality scale; PNG ignores it and GIF dithers its palette from 50 up. `repeat` counts the plays of an animation, 0 for forever.
+- **Codecs:** H.264 uses OpenH264 (libx264 in the GPL natives), H.265 Kvazaar (libx265 in the GPL natives), AV1 SVT-AV1 or libaom, VP8 and VP9 libvpx, and ProRes `prores_ks`. Opus takes 8, 12, 16, 24 or 48 kHz and resamples any other rate to the next one up, MP3 takes mono or stereo, and every codec gets its own frame size with the last frame padded or shortened.
+- **Audio:** the sound timeline starts at the video's time zero and advances with every sample, so a late start is padded with silence by the caller.
+- **Targets:** the FFmpeg containers encode into `<file>.part` next to a `Path` target and rename it over the target once `close()` finishes it (MP4 and MOV also move their index to the front), or into a private temporary file copied into an `OutputStream`; PNG writes the whole file on `close()` and GIF streams it frame by frame. Closing an encoder that got no frame and no sample throws `IllegalStateException` and writes nothing. The stream belongs to the encoder once it opens and stays with the caller when the open is refused. An encoder is not thread-safe: feed it from one thread.
 
 ## Synchronized playback
 
-`MediaAPI.serverPlayer()` builds a `ServerMediaPlayer`, a clock without media or engines that runs on either side. It owns the time math: start, pause, seek, speed, repeat and the loop wrap or `ENDED` transition happen on the system clock, and every successful mutation bumps `revision()`. The host owns everything else: who may drive the clock, how its snapshots reach the clients and where its position is persisted. Engines and players have no public constructors: every instance comes from `MediaAPI`.
+`PlayerAPI.serverPlayer()` builds a `ServerMediaPlayer`, a clock without media or engines that runs on either side. It owns the time math: start, pause, seek, speed, repeat and the loop wrap or `ENDED` transition happen on the system clock, and every successful mutation bumps `revision()`. The host owns everything else: who may drive the clock, how its snapshots reach the clients and where its position is persisted. Engines and players have no public constructors: every instance comes from `PlayerAPI`.
 
 ```java
-ServerMediaPlayer clock = MediaAPI.serverPlayer();
+ServerMediaPlayer clock = PlayerAPI.serverPlayer();
 clock.syncDuration(durationMs);
 clock.start();
 // ON EVERY SERVER TICK: SEND clock.snapshot() WITH YOUR OWN PACKET WHEN clock.revision() MOVED
-MediaPlayer player = MediaAPI.player(mrl, gfxSupplier, sfxSupplier);
+MediaPlayer player = PlayerAPI.player(mrl, gfxSupplier, sfxSupplier);
 player.sync(snapshot); // ON THE CLIENT, FOR EVERY SNAPSHOT RECEIVED
 ```
 

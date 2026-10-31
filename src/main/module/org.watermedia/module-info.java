@@ -22,9 +22,9 @@ module org.watermedia {
 
     exports org.watermedia;
     exports org.watermedia.api.codecs;
-    exports org.watermedia.api.media;
     exports org.watermedia.api.network;
     exports org.watermedia.api.platform;
+    exports org.watermedia.api.player;
     exports org.watermedia.api.util;
     exports org.watermedia.tools to watermedia_binaries;
     exports org.watermedia.bootstrap to watermedia_binaries;

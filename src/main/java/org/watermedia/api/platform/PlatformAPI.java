@@ -3,7 +3,7 @@ package org.watermedia.api.platform;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.player.MRL;
 import org.watermedia.api.platform.internal.WaterPlatform;
 import org.watermedia.api.platform.web.*;
 import org.watermedia.api.util.MathUtil;

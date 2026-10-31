@@ -46,7 +46,7 @@ public final class VP8LossyDecoder {
 
         // PARTITION 0 - COMPRESSED HEADER. p0Sz COMES FROM THE FRAME TAG AND CAN OVERRUN THE CHUNK
         if (frm.hdrSz + frm.p0Sz > buf.limit()) {
-            if (!WaterMediaConfig.decoders.vp8.brokenTokens)
+            if (!WaterMediaConfig.codecs.vp8.brokenTokens)
                 throw new CodecException("Broken VP8 partition 0: declared " + frm.p0Sz + " bytes, chunk has " + (buf.limit() - frm.hdrSz));
             repaired(warned, "Broken VP8 partition 0: declared {} bytes, only {} available; clamping", frm.p0Sz, buf.limit() - frm.hdrSz);
             frm.p0Sz = buf.limit() - frm.hdrSz;
@@ -102,11 +102,11 @@ public final class VP8LossyDecoder {
     // RFC6386 SECTION 9.5 - READ THE TOKEN PARTITION SIZE TABLE AND BUILD ONE BOOL DECODER PER
     // PARTITION. SIZES COME STRAIGHT FROM THE FILE AND CAN BE BROKEN (DECLARING MORE BYTES THAN
     // AVAILABLE, TRUNCATED TABLE, OR EMPTY PARTITIONS). STRICT MODE FAILS THE DECODE; WITH
-    // decoders.vp8.brokenTokens ENABLED THE SIZES ARE CLAMPED TO THE BYTES ACTUALLY AVAILABLE AND
+    // codecs.vp8.brokenTokens ENABLED THE SIZES ARE CLAMPED TO THE BYTES ACTUALLY AVAILABLE AND
     // UNUSABLE PARTITIONS ARE REPLACED WITH A DUPLICATE OF THE PREVIOUS ONE OR WITH FAKE ZEROED
     // DATA SO THE MACROBLOCK LOOP CAN STILL RUN BEST-EFFORT.
     private static VP8BoolDecoder[] readTokenParts(final ByteBuffer buf, final int numParts, final boolean[] warned) throws CodecException {
-        final boolean repair = WaterMediaConfig.decoders.vp8.brokenTokens;
+        final boolean repair = WaterMediaConfig.codecs.vp8.brokenTokens;
 
         // SIZE TABLE: 3 BYTES PER PARTITION EXCEPT THE LAST ONE (IMPLICIT REMAINDER)
         final int tableLen = (numParts - 1) * 3;

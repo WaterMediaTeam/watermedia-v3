@@ -1,6 +1,9 @@
 package org.watermedia.test.support;
 
-import org.watermedia.api.codecs.writers.WebMWriter;
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.Container;
+import org.watermedia.api.codecs.Encoder;
+import org.watermedia.api.codecs.VideoCodec;
 import org.watermedia.api.util.PixelFormat;
 
 import javax.sound.sampled.AudioFileFormat;
@@ -62,7 +65,7 @@ public final class Fixtures {
         }
     }
 
-    /** Returns a {@code file://} URI for a fixture, suitable for {@code MRL}/MediaAPI. */
+    /** Returns a {@code file://} URI for a fixture, suitable for {@code MRL}/PlayerAPI. */
     public static URI fileUri(final Path path) {
         return path.toAbsolutePath().toUri();
     }
@@ -75,10 +78,10 @@ public final class Fixtures {
         }
     }
 
-    /** Encodes a moving BGRA gradient into a VP9 WebM through {@link WebMWriter}; needs the FFmpeg natives. */
-    public static byte[] webm(final int width, final int height, final int frames, final int fps, final int crf) throws IOException {
+    /** Encodes a moving BGRA gradient into a VP9 WebM through {@link CodecsAPI#encoder}; needs the FFmpeg natives. */
+    public static byte[] webm(final int width, final int height, final int frames, final int fps) throws IOException {
         final ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (final WebMWriter writer = new WebMWriter(out, width, height, PixelFormat.BGRA, fps, crf)) {
+        try (final Encoder writer = CodecsAPI.encoder(Container.WEBM, out, new Encoder.Video(VideoCodec.VP9, width, height, PixelFormat.BGRA, fps), null)) {
             final ByteBuffer frame = ByteBuffer.allocateDirect(width * height * 4);
             // CONSECUTIVE FRAMES DIFFER SO VP9 HAS REAL CONTENT TO CODE
             for (int f = 0; f < frames; f++) {
@@ -90,7 +93,7 @@ public final class Fixtures {
                     frame.put((byte) 0xFF);                       // A
                 }
                 frame.flip();
-                writer.writeFrame(frame);
+                writer.video(frame, f * 1_000_000L / fps);
             }
         }
         return out.toByteArray();

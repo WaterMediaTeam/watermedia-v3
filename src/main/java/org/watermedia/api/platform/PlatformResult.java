@@ -1,6 +1,6 @@
 package org.watermedia.api.platform;
 
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.player.MRL;
 
 import java.net.URI;
 

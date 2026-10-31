@@ -264,7 +264,7 @@ public final class PngReader extends ImageReader {
                 this.done = true;
                 break;
             }
-            if (WaterMediaConfig.decoders.png.failOnCorruptedData && c.corrupted())
+            if (WaterMediaConfig.codecs.png.failOnCorruptedData && c.corrupted())
                 throw new CodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
 
             final int t = c.type();
@@ -364,7 +364,7 @@ public final class PngReader extends ImageReader {
                 this.pendingChunk = null;
                 return;
             }
-            if (WaterMediaConfig.decoders.png.failOnCorruptedData && c.corrupted())
+            if (WaterMediaConfig.codecs.png.failOnCorruptedData && c.corrupted())
                 throw new CodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
             final int t = c.type();
             if (t == FCTL.SIGNATURE) {
@@ -389,7 +389,7 @@ public final class PngReader extends ImageReader {
                 this.done = true;
                 return;
             }
-            if (WaterMediaConfig.decoders.png.failOnCorruptedData && c.corrupted())
+            if (WaterMediaConfig.codecs.png.failOnCorruptedData && c.corrupted())
                 throw new CodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
 
             final int t = c.type();
@@ -431,7 +431,7 @@ public final class PngReader extends ImageReader {
         if (t == TRNS.SIGNATURE) {
             this.trns = TRNS.convert(c, this.ihdr.colorType());
         } else if (t == BKGD.SIGNATURE) {
-            if (WaterMediaConfig.decoders.png.useBKGDChunk) this.bkgd = BKGD.convert(c, this.ihdr.colorType());
+            if (WaterMediaConfig.codecs.png.useBKGDChunk) this.bkgd = BKGD.convert(c, this.ihdr.colorType());
         } else if (t == ACTL.SIGNATURE) {
             ACTL.convert(c);
         } else if (t == GAMA.SIGNATURE) {

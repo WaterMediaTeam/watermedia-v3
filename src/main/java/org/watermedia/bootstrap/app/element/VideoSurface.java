@@ -1,6 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
-import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.player.MediaPlayer;
 
 import java.awt.Color;
 

@@ -8,10 +8,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.media.HeadlessGFXEngine;
-import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.player.HeadlessGFXEngine;
+import org.watermedia.api.player.MRL;
+import org.watermedia.api.player.MediaPlayer;
+import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.LogCapture;
 import org.watermedia.test.support.MediaBootstrap;
@@ -220,18 +220,18 @@ public class NetworkServerTest {
         @DisplayName("a stored MP4 whose index trails its media plays through FFmpeg's own HTTP client")
         void storedVideoPlaysThroughFFmpeg() throws Exception {
             assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
-            final boolean cache = WaterMediaConfig.media.ffmpeg.cache;
+            final boolean cache = WaterMediaConfig.codecs.ffmpeg.cache;
             // FILES BEYOND cacheMaxResponse SKIP THE PLAYER'S DOWNLOAD CACHE; TURNING IT OFF TAKES THAT PATH WITH THE 9 MB FIXTURE
-            WaterMediaConfig.media.ffmpeg.cache = false;
+            WaterMediaConfig.codecs.ffmpeg.cache = false;
             final Path stored = NetworkServerTest.this.directory.resolve("watermedia").resolve("files").resolve("Trailing1");
             Files.createDirectories(stored);
             Files.copy(Fixtures.MP4_H264, stored.resolve("clip.mp4"));
-            final HeadlessGFXEngine gfx = MediaAPI.headlessEngine();
+            final HeadlessGFXEngine gfx = PlayerAPI.headlessEngine();
             MediaPlayer player = null;
             try {
-                final MRL mrl = MediaAPI.mrl(URI.create("http://127.0.0.1:" + port() + "/Trailing1"));
+                final MRL mrl = PlayerAPI.mrl(URI.create("http://127.0.0.1:" + port() + "/Trailing1"));
                 assertTrue(mrl.await(3_000L));
-                player = MediaAPI.player(mrl, () -> gfx, () -> null);
+                player = PlayerAPI.player(mrl, () -> gfx, () -> null);
                 assertTrue(player.start());
                 // THE MOV DEMUXER SEEKS TO THE TRAILING moov AND BACK BEFORE THE FIRST FRAME, EACH SEEK ON A NEW REQUEST
                 final MediaPlayer active = player;
@@ -240,7 +240,7 @@ public class NetworkServerTest {
                 assertTrue(gfx.uploadCount() > 0, "frames must reach the engine");
             } finally {
                 if (player != null) player.release();
-                WaterMediaConfig.media.ffmpeg.cache = cache;
+                WaterMediaConfig.codecs.ffmpeg.cache = cache;
             }
         }
 

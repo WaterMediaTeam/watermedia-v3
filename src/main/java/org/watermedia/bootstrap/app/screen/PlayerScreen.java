@@ -1,9 +1,9 @@
 package org.watermedia.bootstrap.app.screen;
 
-import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.MediaPlayer;
-import org.watermedia.api.media.TxMediaPlayer;
+import org.watermedia.api.player.MRL;
+import org.watermedia.api.player.MediaPlayer;
+import org.watermedia.api.player.PlayerAPI;
+import org.watermedia.api.player.TxMediaPlayer;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
@@ -216,12 +216,12 @@ public final class PlayerScreen extends Screen {
 
         this.ctx.media.releasePlayer();
 
-        this.ctx.media.player = MediaAPI.player(
+        this.ctx.media.player = PlayerAPI.player(
                 this.ctx.media.selectedMRL,
                 this.ctx.media.selectedSourceIndex,
                 // THE ACTIVE RENDER BACKEND PICKS THE ENGINE (GLEngine OR VKEngine)
                 mediaEngineSupplier(Thread.currentThread(), this.ctx),
-                MediaAPI::alEngine
+                PlayerAPI::alEngine
         );
 
         if (this.ctx.media.player == null) {

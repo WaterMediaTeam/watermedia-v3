@@ -57,7 +57,7 @@ public class SvgTest {
     @DisplayName("Decode contract")
     Iterable<DynamicTest> contract() {
         final List<DynamicTest> tests = new ArrayList<>();
-        final int cap = WaterMediaConfig.decoders.svg.maxSize;
+        final int cap = WaterMediaConfig.codecs.svg.maxSize;
         for (final Path svg: svgFiles()) {
             final String name = svg.getFileName().toString();
             tests.add(dynamicTest("SVG contract [" + name + "]", () -> {
@@ -100,13 +100,13 @@ public class SvgTest {
                 final BufferedImage reference = ImageIO.read(png.toFile());
                 final int w = reference.getWidth(), h = reference.getHeight();
                 // THE SIZE CAP SCALES THE RENDER DOWN TO THE REFERENCE'S LARGER SIDE
-                final int previous = WaterMediaConfig.decoders.svg.maxSize;
+                final int previous = WaterMediaConfig.codecs.svg.maxSize;
                 final ImageData img;
                 try {
-                    WaterMediaConfig.decoders.svg.maxSize = Math.max(w, h);
+                    WaterMediaConfig.codecs.svg.maxSize = Math.max(w, h);
                     img = CodecsAPI.decode(Fixtures.readAll(Fixtures.SVG_DIR.resolve(base + ".svg")));
                 } finally {
-                    WaterMediaConfig.decoders.svg.maxSize = previous;
+                    WaterMediaConfig.codecs.svg.maxSize = previous;
                 }
                 assertEquals(w, img.width(), name + " width");
                 assertEquals(h, img.height(), name + " height");

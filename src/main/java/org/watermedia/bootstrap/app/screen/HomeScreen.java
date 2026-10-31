@@ -3,7 +3,7 @@ package org.watermedia.bootstrap.app.screen;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.CacheCleaner;
@@ -443,7 +443,7 @@ public class HomeScreen extends Screen {
         this.ctx.media.selectedGroup = group;
         this.ctx.media.groupMRLs.clear();
         for (final MediaCatalog.TestURI testUri: group.uris()) {
-            this.ctx.media.groupMRLs.put(testUri.name(), MediaAPI.mrl(testUri.uri()));
+            this.ctx.media.groupMRLs.put(testUri.name(), PlayerAPI.mrl(testUri.uri()));
         }
         this.navigator.accept(Action.MRL_SELECTOR);
     }

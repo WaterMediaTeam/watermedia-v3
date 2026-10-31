@@ -1,44 +1,56 @@
 package org.watermedia.api.codecs;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+// import org.bytedeco.ffmpeg.avutil.LogCallback; // NATIVE LOG ROUTING, DISABLED IN startFFmpeg
+import org.bytedeco.ffmpeg.global.avcodec;
+import org.bytedeco.ffmpeg.global.avformat;
+import org.bytedeco.ffmpeg.global.avutil;
+import org.bytedeco.ffmpeg.global.swresample;
+import org.bytedeco.ffmpeg.global.swscale;
+import org.bytedeco.javacpp.BytePointer;
+import org.watermedia.WaterMedia;
+import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.codecs.encoders.FFEncoder;
+import org.watermedia.api.codecs.encoders.GifEncoder;
+import org.watermedia.api.codecs.encoders.PngEncoder;
 import org.watermedia.api.codecs.readers.GifReader;
 import org.watermedia.api.codecs.readers.JpegReader;
 import org.watermedia.api.codecs.readers.NetpbmReader;
 import org.watermedia.api.codecs.readers.PngReader;
 import org.watermedia.api.codecs.readers.WebPReader;
 import org.watermedia.api.codecs.readers.svg.SvgReader;
-import org.watermedia.api.codecs.writers.WebMWriter;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.FFTool;
 import org.watermedia.tools.IOTool;
 
+import java.io.BufferedOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Locale;
 
+import static org.watermedia.WaterMedia.LOGGER;
+
 /**
- * Image codec entry point.
+ * Codec entry point: the house-made image and animation codecs, and the FFmpeg natives that process audio and video.
  *
  * <p>{@link #reader(ByteBuffer)} scans the buffer's leading bytes against the supported
  * format headers, identifies the format, advances the buffer position past the matched header,
  * and returns the matching {@link ImageReader}. Readers parse only the format body.
  */
 public final class CodecsAPI {
+    private static final Marker IT = MarkerManager.getMarker(CodecsAPI.class.getSimpleName());
     private CodecsAPI() {}
-
-    // ==========================================================================
-    // CODEC IDENTIFIERS
-    // ==========================================================================
-    // PURE-JAVA IMAGE CODECS — ALWAYS AVAILABLE (SEE THE readers PACKAGE).
-    public static final String CODEC_PNG = "PNG";
-    public static final String CODEC_JPEG = "JPEG";
-    public static final String CODEC_GIF = "GIF";
-    public static final String CODEC_WEBP = "WEBP";
-    public static final String CODEC_NETPBM = "NETPBM";
-    public static final String CODEC_SVG = "SVG";
 
     // ==========================================================================
     // METADATA KEYS — VALUES ARE JDK TYPES ONLY, SO EVERY HOST CAN READ THEM
@@ -161,6 +173,12 @@ public final class CodecsAPI {
     // BYTES READ FROM THE STREAM FOR SNIFFING; COVERS THE MPEG-TS 188-BYTE SYNC CHECK AND MATCHES
     // THE SVG SNIFF WINDOW SO sniff ACCEPTS THE SAME PROLOG-HEAVY SVGS AS reader
     private static final int PROBE_SIZE = SVG_SNIFF_WINDOW_BYTES;
+
+    // NATIVE STATE IS PUBLISHED ONCE, WHEN THE MODULE LOADS
+    private static volatile boolean ffmpegLoaded;
+    private static volatile Throwable ffmpegFailure;
+    // private static LogCallback nativeLog; // KEEPS THE NATIVE LOG THUNK REACHABLE WHILE FFMPEG MAY CALL IT
+    private static volatile boolean vulkanHwDecode; // THE BUILD DECODES WITH VULKAN VIDEO AND ITS BINDINGS LINK (PROBED AT BOOT)
 
     /**
      * Opens an {@link ImageReader} for the given source. The buffer is left positioned after the
@@ -290,23 +308,48 @@ public final class CodecsAPI {
         return decode(ByteBuffer.wrap(IOTool.readLimited(in, ImageReader.MAX_DECODED_BYTES, -1L, 0L)), requestedFormat);
     }
 
-    /** Opens an experimental VP9 WebM {@link ImageWriter} at 30 fps and CRF 31. */
-    public static ImageWriter writer(final OutputStream out, final int width, final int height, final PixelFormat format) throws IOException {
-        return new WebMWriter(out, width, height, format);
+    /**
+     * Opens an {@link Encoder} that writes {@code container} into {@code file}, replacing it; FFmpeg containers
+     * encode into {@code <file>.part} and rename it over the target once finished.
+     *
+     * @param container the format to write
+     * @param file      the target file
+     * @param video     the video track, or null for an audio-only encode
+     * @param audio     the audio track, or null for none
+     * @throws IllegalArgumentException when a track does not fit the container or its codec refuses the track
+     * @throws IOException              when FFmpeg or the codec is unavailable, or the file cannot be written
+     */
+    public static Encoder encoder(final Container container, final Path file, final Encoder.Video video, final Encoder.Audio audio) throws IOException {
+        if (file == null) throw new IllegalArgumentException("The target file is null");
+        Encoder.check(container, video, audio);
+        return switch (container) {
+            case PNG -> new PngEncoder(new LazyFile(file), video);
+            case GIF -> new GifEncoder(new LazyFile(file), video);
+            default -> new FFEncoder(container, file, null, video, audio);
+        };
     }
 
     /**
-     * Opens an experimental {@link ImageWriter} that encodes frames as VP9 inside a seekable WebM
-     * container through FFmpeg. Alpha is flattened; block-compressed formats are rejected.
+     * Opens an {@link Encoder} that writes {@code container} into {@code out}; once open, the encoder owns the
+     * stream and closes it, while a refused open leaves it with the caller. Audio and video containers encode into
+     * a private temporary file, since MP4 and Matroska patch their header once the last frame is in, and copy it
+     * to {@code out} on {@link Encoder#close()}.
      *
-     * @param fps frame rate used when a frame carries no explicit delay
-     * @param crf VP9 constant-quality factor (0-63, lower is better)
-     * @throws IllegalArgumentException when {@code fps <= 0}, {@code crf} is out of range or the format cannot feed VP9
-     * @throws IOException              when FFmpeg or a VP9 encoder is unavailable, or setup fails
+     * @param container the format to write
+     * @param out       the target stream
+     * @param video     the video track, or null for an audio-only encode
+     * @param audio     the audio track, or null for none
+     * @throws IllegalArgumentException when a track does not fit the container or its codec refuses the track
+     * @throws IOException              when FFmpeg or the codec is unavailable, or setup fails
      */
-    public static ImageWriter writer(final OutputStream out, final int width, final int height, final PixelFormat format,
-                                     final int fps, final int crf) throws IOException {
-        return new WebMWriter(out, width, height, format, fps, crf);
+    public static Encoder encoder(final Container container, final OutputStream out, final Encoder.Video video, final Encoder.Audio audio) throws IOException {
+        if (out == null) throw new IllegalArgumentException("The output stream is null");
+        Encoder.check(container, video, audio);
+        return switch (container) {
+            case PNG -> new PngEncoder(out, video);
+            case GIF -> new GifEncoder(out, video);
+            default -> new FFEncoder(container, null, out, video, audio);
+        };
     }
 
     /**
@@ -494,19 +537,175 @@ public final class CodecsAPI {
     }
 
     // ==========================================================================
-    // CODEC AVAILABILITY
+    // FFMPEG
     // ==========================================================================
+    /** Returns whether the FFmpeg natives initialized successfully at boot. */
+    public static boolean ffmpegLoaded() {
+        return ffmpegLoaded;
+    }
+
+    /** Returns whether the FFmpeg natives failed to initialize at boot. */
+    public static boolean ffmpegError() {
+        return ffmpegFailure != null;
+    }
+
     /**
-     * Reports support for decoding pixels through this API; BC textures are read through {@link BcReader}.
-     * @param codec a pixel codec id, case-insensitive
-     * @return true when its pure Java pixel decoder is available
+     * Whether this FFmpeg build decodes with Vulkan Video and its natives expose the
+     * {@code hwcontext_vulkan} bindings (probed once at boot). When {@code true}, a player drawing
+     * through a {@code VKEngine} decodes on the engine's own device, or on a twin of it whose images
+     * the engine imports, as far as the {@code VKContext.deviceInfo()} of that device allows; every
+     * other engine keeps decoding in software or through the host's accelerators.
+     * @return {@code true} when Vulkan decoding is available to Vulkan engines on this system
      */
-    public static boolean available(final String codec) {
-        if (codec == null) return false;
-        return switch (codec.toUpperCase(Locale.ROOT)) {
-            case CODEC_PNG, CODEC_JPEG, "JPG", CODEC_GIF, CODEC_WEBP,
-                 CODEC_NETPBM, "PNM", "PBM", "PGM", "PPM", "PAM", CODEC_SVG -> true;
-            default -> false;
-        };
+    public static boolean vulkanDecode() {
+        return vulkanHwDecode;
+    }
+
+    /** Internal module: boots the FFmpeg natives that decode and encode audio and video; only clients run it. */
+    public static final class Module extends WaterMediaModule {
+        public Module(final WaterMedia watermedia) { super(watermedia); }
+
+        @Override
+        public void start() {
+            // THE BINARIES MODULE EXTRACTS NOTHING ON A DEDICATED SERVER, SO THERE IS NOTHING TO LOAD
+            if (!this.watermedia.clientSide) return;
+            // THE NATIVES COME FROM THE BINARIES MODULE; WITHOUT ITS JAR THERE IS NOTHING TO LOAD
+            if (CodecsAPI.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") == null) {
+                LOGGER.warn(IT, "FFmpeg is unavailable: WaterMedia Binaries is not installed");
+                return;
+            }
+            startFFmpeg(); // LOGS ITS OWN FAILURE AND LEAVES ffmpegError() SET
+        }
+    }
+
+    // BOOTS THE BUNDLED FFMPEG NATIVES: POINTS JAVACPP AT THE EXTRACTED BINARIES, LOGS THE BUILD
+    // BANNER AND PROBES HARDWARE ACCELERATION. DOES NOTHING WHEN DISABLED BY CONFIG
+    private static void startFFmpeg() {
+        LOGGER.info(IT, "Starting FFMPEG...");
+        if (WaterMediaConfig.codecs.ffmpeg.disable) {
+            LOGGER.warn(IT, "FFMPEG startup was cancelled, user settings disables it");
+            return;
+        }
+
+        try {
+            final Path installed = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID);
+            final var customPath = WaterMediaConfig.codecs.ffmpeg.customPath;
+            final String configPath = customPath != null && !customPath.toString().isBlank() ? customPath.toAbsolutePath().toString() : null;
+            if (installed == null && configPath == null) throw new IllegalStateException("Verified FFmpeg binaries are unavailable");
+            // THE BINARIES GO FIRST ON THE PRELOAD PATH, SO A CUSTOM DIRECTORY ONLY SERVES WHAT THEY LACK
+            final String paths = installed == null ? configPath : configPath == null
+                    ? installed.toString() : installed + File.pathSeparator + configPath;
+            FFTool.bundled(installed != null);
+
+            System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);
+            System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
+
+            final String currentLibPath = System.getProperty("java.library.path");
+            if (currentLibPath == null || currentLibPath.isEmpty()) {
+                System.setProperty("java.library.path", paths);
+            } else if (!currentLibPath.contains(paths)) {
+                System.setProperty("java.library.path", paths + File.pathSeparator + currentLibPath);
+            }
+
+            LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);
+
+            LOGGER.info(IT, "=== FFMPEG Build Info ===");
+            LOGGER.info(IT, "• avformat:   {}", FFTool.parseVersion(avformat.avformat_version()));
+            LOGGER.info(IT, "• avcodec:    {}", FFTool.parseVersion(avcodec.avcodec_version()));
+            LOGGER.info(IT, "• avutil:     {}", FFTool.parseVersion(avutil.avutil_version()));
+            LOGGER.info(IT, "• swscale:    {}", FFTool.parseVersion(swscale.swscale_version()));
+            LOGGER.info(IT, "• swresample: {}", FFTool.parseVersion(swresample.swresample_version()));
+
+            // NATIVE LOG ROUTING, DISABLED: JVM CRASHES WERE REPORTED ON MACOS AND LINUX DEPENDING ON THE CALLBACK
+            // SIGNATURE. VERIFIED ONLY ON WINDOWS; RE-ENABLE WITH FFmpegLogRoutingTest AFTER TESTING THOSE HOSTS
+            // ROUTES NATIVE FFMPEG LOGS THROUGH THE REDACTING PROJECT LOGGER. setLogCallback INSTALLS av_log_set_callback
+            // WITH JavaCPP'S C TRAMPOLINE, WHICH FORMATS THE va_list NATIVELY SO IT NEVER CROSSES INTO JAVA
+            // if (nativeLog == null) nativeLog = new LogCallback() {
+            //     // FFMPEG EMITS A LINE IN FRAGMENTS PER THREAD; IT IS LOGGED ONCE ITS NEWLINE ARRIVES
+            //     private final ThreadLocal<StringBuilder> lines = ThreadLocal.withInitial(StringBuilder::new);
+            //
+            //     @Override
+            //     public void call(final int level, final BytePointer message) {
+            //         // NOTHING MAY THROW BACK INTO THE NATIVE FFMPEG FRAMES THAT CALLED THIS
+            //         try {
+            //             final StringBuilder line = this.lines.get().append(message.getString(StandardCharsets.UTF_8));
+            //             if (line.isEmpty() || line.charAt(line.length() - 1) != '\n') return;
+            //             final String text = line.toString().strip();
+            //             line.setLength(0);
+            //             final int severity = level & 0xFF;
+            //             if (text.isEmpty()) return;
+            //             if (severity <= AV_LOG_ERROR) LOGGER.error(IT, "FFmpeg: {}", text);
+            //             else if (severity <= AV_LOG_WARNING) LOGGER.warn(IT, "FFmpeg: {}", text);
+            //             else LOGGER.debug(IT, "FFmpeg: {}", text);
+            //         } catch (final Throwable ignored) {}
+            //     }
+            // };
+            // setLogCallback(nativeLog);
+
+            try {
+                final BytePointer config = avformat.avformat_configuration();
+                LOGGER.info(IT, "Configuration: {}", FFTool.string(config, "unavailable"));
+            } catch (final Exception e) {
+                LOGGER.warn(IT, "Configuration: unavailable", e);
+            }
+
+            LOGGER.info(IT, "Hardware Acceleration:");
+            int hwType = avutil.AV_HWDEVICE_TYPE_NONE;
+            int hwCount = 0;
+            boolean vulkanInBuild = false;
+            do {
+                hwType = avutil.av_hwdevice_iterate_types(hwType);
+                if (hwType == avutil.AV_HWDEVICE_TYPE_NONE) break;
+
+                final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
+                final String hwNameStr = FFTool.string(hwName, null);
+                if (hwNameStr != null) {
+                    LOGGER.info(IT, "• {}", hwNameStr);
+                    if ("vulkan".equals(hwNameStr)) vulkanInBuild = true;
+                    hwCount++;
+                }
+                IOTool.closeQuietly(hwName);
+            } while (true);
+
+            if (hwCount == 0) LOGGER.info(IT, "  (none available)");
+
+            // THE hwcontext_vulkan BINDINGS MUST LINK: A jniavutil BUILT WITHOUT THEM (SEE binaries/tools/NATIVE_REBUILD.md) HAS NO
+            // av_vk_frame_alloc SYMBOL, SO PLAYERS KEEP DECODING OFF THE ENGINE'S DEVICE
+            final boolean vulkanDecode = vulkanInBuild && FFTool.vulkanBindings();
+            vulkanHwDecode = vulkanDecode;
+            LOGGER.info(IT, "Vulkan decoding: {}", vulkanDecode ? "available to Vulkan engines whose device supports video decoding" : "unavailable in these natives");
+
+            FFTool.startTLS();
+            final BytePointer license = avformat.avformat_license();
+            // av_version_info IS THE FFMPEG RELEASE; THE BUILD INFO ABOVE LISTS THE OWN VERSION OF EACH LIBRARY
+            LOGGER.info(IT, "FFMPEG started, running version {} under {}", FFTool.string(avutil.av_version_info(), "unknown"), FFTool.string(license, "unknown"));
+            IOTool.closeQuietly(license);
+            ffmpegLoaded = true;
+        } catch (final Exception | LinkageError t) {
+            LOGGER.error(IT, "Failed to load FFMPEG", t);
+            vulkanHwDecode = false;
+            ffmpegFailure = t;
+        }
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // OPENS THE FILE ON THE FIRST WRITE, SO AN ENCODER THAT REFUSES ITS TRACKS OR GETS NO FRAMES LEAVES IT UNTOUCHED
+    private static final class LazyFile extends OutputStream {
+        private final Path file;
+        private OutputStream out;
+
+        private LazyFile(final Path file) { this.file = file; }
+
+        @Override public void write(final int b) throws IOException { this.open().write(b); }
+        @Override public void write(final byte[] b, final int off, final int len) throws IOException { this.open().write(b, off, len); }
+        @Override public void flush() throws IOException { if (this.out != null) this.out.flush(); }
+        @Override public void close() throws IOException { if (this.out != null) this.out.close(); }
+
+        private OutputStream open() throws IOException {
+            if (this.out == null) this.out = new BufferedOutputStream(Files.newOutputStream(this.file));
+            return this.out;
+        }
     }
 }

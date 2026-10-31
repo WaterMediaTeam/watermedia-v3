@@ -3,7 +3,7 @@ package org.watermedia.bootstrap.app.render;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.GFXEngine;
+import org.watermedia.api.player.GFXEngine;
 import org.watermedia.bootstrap.app.render.opengl.OpenGLRenderBackend;
 import org.watermedia.bootstrap.app.render.vulkan.VulkanRenderBackend;
 

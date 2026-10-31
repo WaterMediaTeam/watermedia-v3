@@ -2,7 +2,7 @@ package org.watermedia.bootstrap.app.render;
 
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
-import org.watermedia.api.media.GFXEngine;
+import org.watermedia.api.player.GFXEngine;
 import org.watermedia.api.util.MathUtil;
 
 import java.awt.Color;

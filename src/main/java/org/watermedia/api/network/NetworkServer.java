@@ -52,7 +52,8 @@ public final class NetworkServer {
 
     // STARTS THE CONFIGURED LISTENER UNDER cwd; INVALID CONFIGURATION AND BIND FAILURES PROPAGATE TO THE CALLER
     static synchronized void start(final int port, final Path cwd) throws IOException {
-        if (running != null) throw new IllegalStateException("The file server is already running");
+        if (running != null)
+            throw new IllegalStateException("The file server is already running");
         final var config = WaterMediaConfig.network;
         // THE CONFIGURATION IS PROCESS STATE, NOT AN ARGUMENT OF THIS CALL
         if (config.serverBindAddress == null || config.serverBindAddress.isBlank())

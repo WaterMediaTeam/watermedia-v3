@@ -2,8 +2,8 @@ package org.watermedia;
 
 import me.srrapero720.waterconfig.WaterConfig;
 import org.watermedia.api.network.NetworkAPI;
-import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.player.MRL;
+import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformException;
@@ -32,7 +32,7 @@ public final class ServiceLifecycleProbe {
     public static void main(final String[] arguments) throws Exception {
         final Path root = Path.of("").toAbsolutePath();
         WaterConfig.setPath(root.resolve("config"));
-        WaterMediaConfig.media.ffmpeg.disable = true;
+        WaterMediaConfig.codecs.ffmpeg.disable = true;
         WaterMediaConfig.network.server = WaterMediaConfig.Network.Server.OFF;
         WaterMediaConfig.network.timeout = 2000;
         final boolean client = !arguments[0].equals("uploads");
@@ -59,7 +59,7 @@ public final class ServiceLifecycleProbe {
                         List.of(new Quality(uri, 0, 0)), null, null));
             }
         });
-        final MRL old = MediaAPI.mrl(key);
+        final MRL old = PlayerAPI.mrl(key);
         if (!old.await(3_000) || old.status() != MRL.Status.EXPIRED || old.sourceCount() != 1)
             throw new AssertionError("Expiring fixture did not load");
         awaitIdle(old);
@@ -69,12 +69,12 @@ public final class ServiceLifecycleProbe {
         final var cleanupField = owner.getClass().getDeclaredField("nextClean");
         cleanupField.setAccessible(true);
         synchronized (owner) { cleanupField.setLong(owner, 0); }
-        final MRL sweep = MediaAPI.mrl(URI.create("fixture:cleanup"));
+        final MRL sweep = PlayerAPI.mrl(URI.create("fixture:cleanup"));
         if (!sweep.await(3_000) || old.status() != MRL.Status.FORGOTTEN || old.sourceCount() != 0)
             throw new AssertionError("Cleanup did not invalidate the expired handle");
         final MRL replacement = old.reload();
         if (replacement == old || !replacement.await(3_000) || replacement.status() != MRL.Status.LOADED
-                || replacement != MediaAPI.mrl(key) || old.status() != MRL.Status.FORGOTTEN || old.sourceCount() != 0)
+                || replacement != PlayerAPI.mrl(key) || old.status() != MRL.Status.FORGOTTEN || old.sourceCount() != 0)
             throw new AssertionError("Reload did not return the canonical replacement");
     }
 
@@ -145,7 +145,7 @@ public final class ServiceLifecycleProbe {
             if (!PlatformAPI.searchHistory().equals(List.of("fresh", "old")))
                 throw new AssertionError("Search history did not record the queries newest first");
             // A HELD RESOLUTION NEVER GATES THE SEARCH SERVICE: THERE IS NO SESSION TO CLOSE AROUND IT
-            final MRL held = MediaAPI.mrl(URI.create("fixture:held"));
+            final MRL held = PlayerAPI.mrl(URI.create("fixture:held"));
             if (!resolveEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Resolver did not enter");
             final List<PlatformResult> during = PlatformAPI.search("during-resolve");
             if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("during-resolve"), 3000) || during.size() != 1)

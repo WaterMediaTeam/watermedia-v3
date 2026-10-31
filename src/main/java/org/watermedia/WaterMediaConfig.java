@@ -12,7 +12,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
-/** WaterMedia configuration: the TOML-backed settings of the decoders, the network, the media players and the platforms. */
+/** WaterMedia configuration: the TOML-backed settings of the codecs, the network, the media players and the platforms. */
 @Spec(value = WaterMedia.ID, format = WaterConfig.FORMAT_TOML)
 public final class WaterMediaConfig {
     private static final int DEFAULT_NETWORK_SERVER_PORT = 25_572;
@@ -23,23 +23,23 @@ public final class WaterMediaConfig {
 
     @Spec.Field
     @Comment("CodecsAPI settings")
-    public static final Decoders decoders = new Decoders();
+    public static final Codecs codecs = new Codecs();
 
     @Spec.Field
     @Comment("NetworkAPI settings")
     public static final Network network = new Network();
 
     @Spec.Field
-    @Comment("MediaAPI settings")
-    public static final Media media = new Media();
+    @Comment("PlayerAPI settings")
+    public static final Player player = new Player();
 
     @Spec.Field
     @Comment("Platform-specific settings")
     public static final Platforms platforms = new Platforms();
 
-    /** Settings of the house image decoders. */
-    @Spec(value = "decoders", disableStatic = true)
-    public static final class Decoders {
+    /** Settings of the house image codecs and the FFmpeg natives. */
+    @Spec(value = "codecs", disableStatic = true)
+    public static final class Codecs {
         @Spec.Field(suffix = "MB")
         @Comment("Hard cap (in MB) for image downloads consumed by TxMediaPlayer")
         @Comment("Sources above this limit are aborted before full buffering")
@@ -57,6 +57,10 @@ public final class WaterMediaConfig {
         @Spec.Field
         @Comment("Related config for VP8 codec (WEBP lossy)")
         public final Vp8 vp8 = new Vp8();
+
+        @Spec.Field
+        @Comment("FFMPEG general settings")
+        public final Ffmpeg ffmpeg = new Ffmpeg();
 
         /** Settings of the SVG rasterizer. */
         @Spec(value = "svg", disableStatic = true)
@@ -91,36 +95,8 @@ public final class WaterMediaConfig {
             @Comment("Repaired frames decode best-effort and may show visual artifacts")
             public boolean brokenTokens = false;
         }
-    }
 
-    /** Settings of the media players and their caches. */
-    @Spec(value = "media", disableStatic = true)
-    public static final class Media {
-        @Spec.Field(control = Control.DROPDOWN)
-        @Comment("Default quality for streaming media without a specified quality")
-        public MediaQuality defaultQuality = MediaQuality.HIGHER;
-
-        @Spec.Field(suffix = "min")
-        @Comment("Cleanup Interval in Minutes for all expired MRL or with errors (memory saver)")
-        @Comment("MRL manager usually doesn't consume much memory, intervals below 60 minutes will not reduce memory consumption at all")
-        @NumberConditions(minFloat = 1f)
-        public float mrlCleanupInterval = 60.0f;
-
-        @Spec.Field(suffix = "MB")
-        @Comment("Total on-disk budget (in MB) for the shared cache of downloaded media files under %TEMP%")
-        @Comment("Checked after every cache write; once the store grows past this cap the oldest entries are evicted until it fits again")
-        @NumberConditions(minInt = 1, math = true)
-        public int cacheBudget = 1024 * 8;
-
-        @Spec.Field
-        @Comment("FFMPEG general settings")
-        public final Ffmpeg ffmpeg = new Ffmpeg();
-
-        @Spec.Field
-        @Comment("WaterTexture general settings")
-        public final WaterTx tx = new WaterTx();
-
-        /** Settings of the FFmpeg-backed video and music player. */
+        /** Settings of the FFmpeg natives and the inputs they open. */
         @Spec(value = "ffmpeg", disableStatic = true)
         public static final class Ffmpeg {
             @Spec.Field
@@ -165,6 +141,30 @@ public final class WaterMediaConfig {
             @NumberConditions(minInt = 1, math = true)
             public int probeSize = 10;
         }
+    }
+
+    /** Settings of the media players and their caches. */
+    @Spec(value = "player", disableStatic = true)
+    public static final class Player {
+        @Spec.Field(control = Control.DROPDOWN)
+        @Comment("Default quality for streaming media without a specified quality")
+        public MediaQuality defaultQuality = MediaQuality.HIGHER;
+
+        @Spec.Field(suffix = "min")
+        @Comment("Cleanup Interval in Minutes for all expired MRL or with errors (memory saver)")
+        @Comment("MRL manager usually doesn't consume much memory, intervals below 60 minutes will not reduce memory consumption at all")
+        @NumberConditions(minFloat = 1f)
+        public float mrlCleanupInterval = 60.0f;
+
+        @Spec.Field(suffix = "MB")
+        @Comment("Total on-disk budget (in MB) for the shared cache of downloaded media files under %TEMP%")
+        @Comment("Checked after every cache write; once the store grows past this cap the oldest entries are evicted until it fits again")
+        @NumberConditions(minInt = 1, math = true)
+        public int cacheBudget = 1024 * 8;
+
+        @Spec.Field
+        @Comment("WaterTexture general settings")
+        public final WaterTx tx = new WaterTx();
 
         /** Settings of the picture player, publicly known as WaterTX. */
         @Spec(value = "watertx", disableStatic = true)

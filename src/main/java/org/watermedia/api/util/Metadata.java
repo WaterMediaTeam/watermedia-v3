@@ -1,6 +1,6 @@
 package org.watermedia.api.util;
 
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.player.MRL;
 
 import java.time.Instant;
 

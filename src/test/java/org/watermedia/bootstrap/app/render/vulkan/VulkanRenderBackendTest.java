@@ -3,11 +3,12 @@ package org.watermedia.bootstrap.app.render.vulkan;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.MediaPlayer;
-import org.watermedia.api.media.VKContext;
-import org.watermedia.api.media.VKEngine;
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.player.MRL;
+import org.watermedia.api.player.MediaPlayer;
+import org.watermedia.api.player.PlayerAPI;
+import org.watermedia.api.player.VKContext;
+import org.watermedia.api.player.VKEngine;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.LogCapture;
 import org.watermedia.test.support.MediaBootstrap;
@@ -59,16 +60,16 @@ public class VulkanRenderBackendTest {
                 assertEquals(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, info.features().sType());
                 assertTrue(info.deviceExtensions().contains(VK_KHR_SWAPCHAIN_EXTENSION_NAME), "the swapchain extension is enabled");
                 assertTrue(info.queueCounts()[backend.queueFamily()] >= 1, "the render family has its queue");
-                final boolean decodes = MediaAPI.vulkanDecode() && info.deviceExtensions().contains(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
+                final boolean decodes = CodecsAPI.vulkanDecode() && info.deviceExtensions().contains(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
                 System.out.println("[VulkanRenderBackendTest] " + backend.deviceName() + ": extensions " + info.deviceExtensions() + ", queues "
                         + Arrays.toString(info.queueCounts()) + ", decoding on the device " + decodes);
 
                 // A PLAYER ON THE BACKEND'S ENGINE: ITS FRAMES STAY ON THE DEVICE EXACTLY WHEN THE DEVICE WAS CREATED FOR DECODING
-                final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
+                final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
                 assertTrue(mrl.await(10_000L), "the fixture resolves");
                 final VulkanRenderBackend context = backend;
                 final VKEngine[] engine = new VKEngine[1];
-                player = MediaAPI.player(mrl, () -> engine[0] = MediaAPI.vkEngine(context), () -> null);
+                player = PlayerAPI.player(mrl, () -> engine[0] = PlayerAPI.vkEngine(context), () -> null);
                 assertNotNull(player, "a player on the backend's engine");
                 final MediaPlayer started = player;
                 assertTrue(started.start());

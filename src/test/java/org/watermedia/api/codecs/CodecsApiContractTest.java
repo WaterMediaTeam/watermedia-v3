@@ -165,13 +165,12 @@ public class CodecsApiContractTest {
         }
 
         @Test
-        @DisplayName("Every pixel codec and alias is available, case-insensitively, while BC textures and unknown ids are not")
+        @DisplayName("Decode-only containers list no codecs, image containers carry no sound and Ogg carries only sound")
         void availability() {
-            for (final String codec: List.of("PNG", "jpeg", "JPG", "GIF", "WEBP", "NETPBM", "pnm", "PBM", "PGM", "PPM", "PAM", "SVG"))
-                assertTrue(CodecsAPI.available(codec), codec);
-            assertFalse(CodecsAPI.available("BC7"));
-            assertFalse(CodecsAPI.available(null));
-            assertFalse(CodecsAPI.available("unknown"));
+            for (final Container container: List.of(Container.WEBP, Container.JPEG, Container.NETPBM, Container.SVG))
+                assertTrue(container.video().isEmpty() && container.audio().isEmpty(), container.name());
+            assertTrue(Container.PNG.audio().isEmpty() && Container.GIF.audio().isEmpty());
+            assertTrue(Container.OGG.video().isEmpty() && !Container.OGG.audio().isEmpty());
         }
     }
 

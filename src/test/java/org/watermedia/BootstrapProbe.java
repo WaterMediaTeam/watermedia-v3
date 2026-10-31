@@ -1,11 +1,12 @@
 package org.watermedia;
 
 import me.srrapero720.waterconfig.WaterConfig;
-import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.ServerMediaPlayer;
-import org.watermedia.api.media.TLSLifecycleProbe;
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.TLSLifecycleProbe;
 import org.watermedia.api.network.NetworkAPI;
+import org.watermedia.api.player.MRL;
+import org.watermedia.api.player.PlayerAPI;
+import org.watermedia.api.player.ServerMediaPlayer;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.test.support.Origin;
 import org.watermedia.test.support.PlayerWait;
@@ -24,7 +25,7 @@ public final class BootstrapProbe {
         WaterConfig.setPath(root.resolve("config"));
         WaterMediaConfig.network.server = WaterMediaConfig.Network.Server.OFF;
         WaterMediaConfig.network.timeout = 1000;
-        WaterMediaConfig.media.ffmpeg.disable = !scenario.equals("native") && !scenario.equals("native-failure") && !scenario.startsWith("tls");
+        WaterMediaConfig.codecs.ffmpeg.disable = !scenario.equals("native") && !scenario.equals("native-failure") && !scenario.startsWith("tls");
         switch (scenario) {
             case "tls" -> TLSLifecycleProbe.run(root, false);
             case "tls-empty" -> TLSLifecycleProbe.run(root, true);
@@ -49,12 +50,12 @@ public final class BootstrapProbe {
             if (WaterMedia.loaded() || WaterMedia.loading() != null || expected.getCause() == null
                     || !expected.getMessage().contains(WaterMediaBinaries.class.getSimpleName()))
                 throw new AssertionError("The failure did not name the binaries module with its cause", expected);
-            if (WaterMedia.step() != 1 || WaterMedia.steps() != 4)
+            if (WaterMedia.step() != 1 || WaterMedia.steps() != 5)
                 throw new AssertionError("Progress did not stop at the failed module: " + WaterMedia.step() + "/" + WaterMedia.steps());
         }
         if (WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID) != null) throw new AssertionError("Failed installation published a native path");
         try {
-            MediaAPI.mrl("https://example.invalid/clip.mp4");
+            PlayerAPI.mrl("https://example.invalid/clip.mp4");
             throw new AssertionError("A failed load resolved media");
         } catch (final IllegalStateException expected) {}
         requireFinal(root);
@@ -81,23 +82,23 @@ public final class BootstrapProbe {
     // A DEDICATED SERVER WALKS EVERY MODULE, BUT THE CLIENT ONES DECIDE BY THEMSELVES TO DO NOTHING THERE
     private static void server(final Path root) {
         WaterMedia.start("PROBE", root.resolve("temp"), root, false);
-        if (!WaterMedia.loaded() || WaterMedia.steps() != 4 || WaterMedia.step() != 4)
+        if (!WaterMedia.loaded() || WaterMedia.steps() != 5 || WaterMedia.step() != 5)
             throw new AssertionError("The server did not walk every module: " + WaterMedia.step() + "/" + WaterMedia.steps());
         if (WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID) != null || WaterMediaBinaries.pathOf(WaterMediaBinaries.YTDLP_ID) != null)
             throw new AssertionError("Server initialized native paths");
         if (Files.exists(root.resolve("temp/ffmpeg"))) throw new AssertionError("Server extracted client natives");
         try {
-            MediaAPI.mrl("https://example.invalid/clip.mp4");
+            PlayerAPI.mrl("https://example.invalid/clip.mp4");
             throw new AssertionError("A server resolved media");
         } catch (final IllegalStateException expected) {}
-        final ServerMediaPlayer player = MediaAPI.serverPlayer();
+        final ServerMediaPlayer player = PlayerAPI.serverPlayer();
         player.release();
         requireFinal(root);
     }
 
     private static void nativeLoad(final Path root) {
         WaterMedia.start("PROBE", root.resolve("temp"), root, true);
-        if (!WaterMedia.loaded() || !MediaAPI.ffmpegLoaded() || MediaAPI.ffmpegError()) throw new AssertionError("Required FFmpeg did not load");
+        if (!WaterMedia.loaded() || !CodecsAPI.ffmpegLoaded() || CodecsAPI.ffmpegError()) throw new AssertionError("Required FFmpeg did not load");
         final Path installed = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID);
         if (installed == null || !Files.isRegularFile(installed.resolve("version.cfg")))
             throw new AssertionError("Native module did not publish its verified installation");
@@ -109,9 +110,9 @@ public final class BootstrapProbe {
     // DISABLED FFMPEG PUBLISHES NO NATIVE STATE, AND A CANCELLED WAIT NEVER CANCELS THE LOAD BEHIND IT
     private static void client(final Path root) throws Exception {
         WaterMedia.start("PROBE", root.resolve("temp"), root, true);
-        if (!WaterMedia.loaded() || WaterMedia.steps() != 4 || WaterMedia.step() != 4)
+        if (!WaterMedia.loaded() || WaterMedia.steps() != 5 || WaterMedia.step() != 5)
             throw new AssertionError("The client did not walk every module: " + WaterMedia.step() + "/" + WaterMedia.steps());
-        if (MediaAPI.ffmpegLoaded() || MediaAPI.ffmpegError() || MediaAPI.vulkanDecode()) throw new AssertionError("Disabled FFmpeg published native state");
+        if (CodecsAPI.ffmpegLoaded() || CodecsAPI.ffmpegError() || CodecsAPI.vulkanDecode()) throw new AssertionError("Disabled FFmpeg published native state");
         if (Files.exists(root.resolve("temp/ffmpeg"))) throw new AssertionError("Disabled FFmpeg was extracted");
         if (!root.resolve("temp/yt-dlp").equals(WaterMediaBinaries.pathOf(WaterMediaBinaries.YTDLP_ID)))
             throw new AssertionError("Executable paths were not published");
@@ -120,7 +121,7 @@ public final class BootstrapProbe {
         try (final Origin origin = Origin.of(new byte[] { 1, 2, 3 }, "image/png")) {
             origin.hold();
             final URI slow = origin.uri(".png");
-            final MRL previous = MediaAPI.mrl(slow);
+            final MRL previous = PlayerAPI.mrl(slow);
             if (!origin.awaitEntered(5_000L)) throw new AssertionError("Request never started");
             Thread.currentThread().interrupt();
             try {
@@ -129,7 +130,7 @@ public final class BootstrapProbe {
             } finally {
                 Thread.interrupted();
             }
-            if (MediaAPI.mrl(slow) != previous) throw new AssertionError("The cached MRL was replaced");
+            if (PlayerAPI.mrl(slow) != previous) throw new AssertionError("The cached MRL was replaced");
             origin.release();
             if (!previous.await(10_000) || previous.status() != MRL.Status.LOADED) throw new AssertionError("The interrupted wait cancelled the load: " + previous.status());
         }

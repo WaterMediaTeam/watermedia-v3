@@ -1,7 +1,6 @@
 package org.watermedia.api.codecs;
 
 import org.watermedia.api.codecs.common.dds.DdsHeader;
-import org.watermedia.api.media.GFXEngine;
 import org.watermedia.api.util.PixelFormat;
 
 import java.io.Closeable;
@@ -85,7 +84,7 @@ public final class BcReader implements Closeable {
     /** Returns the number of texture-array slices, including already consumed frames. */
     public int frameCount() { return this.frames.length; }
 
-    /** Returns the BC layout of the stored texture, the format to check with {@link GFXEngine#supports(PixelFormat)} before upload. */
+    /** Returns the BC layout of the stored texture, the format to check with {@code GFXEngine.supports(PixelFormat)} before upload. */
     public PixelFormat pixelFormat() { return this.format; }
 
     /** Per-frame delays in milliseconds (defensive copy). */

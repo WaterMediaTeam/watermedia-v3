@@ -1,7 +1,7 @@
 package org.watermedia.bootstrap.app;
 
-import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.player.MRL;
+import org.watermedia.api.player.MediaPlayer;
 import org.watermedia.api.util.MediaQuality;
 
 import java.time.LocalTime;

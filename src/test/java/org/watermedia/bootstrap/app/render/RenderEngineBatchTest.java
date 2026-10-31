@@ -4,7 +4,7 @@ import org.joml.Matrix4f;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.watermedia.api.media.GFXEngine;
+import org.watermedia.api.player.GFXEngine;
 
 import java.awt.Color;
 import java.nio.ByteBuffer;

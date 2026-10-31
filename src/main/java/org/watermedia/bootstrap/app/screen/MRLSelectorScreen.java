@@ -1,9 +1,9 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.player.MRL;
+import org.watermedia.api.player.MediaPlayer;
+import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
@@ -306,7 +306,7 @@ public final class MRLSelectorScreen extends Screen {
         if (uri == null) return null;
         MRL mrl = this.ctx.media.groupMRLs.get(uri.name());
         if (mrl != null) return mrl;
-        mrl = MediaAPI.mrl(uri.uri());
+        mrl = PlayerAPI.mrl(uri.uri());
         this.ctx.media.groupMRLs.put(uri.name(), mrl);
         if (!Previews.loaded(mrl) && this.groupSubscriptions.add(uri.name())) mrl.subscribe(done -> this.ctx.requestRender());
         this.ctx.requestRender();
@@ -373,7 +373,7 @@ public final class MRLSelectorScreen extends Screen {
             for (final MRL.Source src: sources) {
                 final URI thumbnailUri = src.thumbnail();
                 if (thumbnailUri == null) continue;
-                final MRL thumbnailMrl = MediaAPI.mrl(thumbnailUri.toString());
+                final MRL thumbnailMrl = PlayerAPI.mrl(thumbnailUri.toString());
                 final MRL.Status thumbStatus = thumbnailMrl.status();
                 if (thumbStatus == MRL.Status.FETCHING) {
                     pendingThumbnail = true;
@@ -381,7 +381,7 @@ public final class MRLSelectorScreen extends Screen {
                     break;
                 }
                 if (thumbStatus != MRL.Status.LOADED) continue;
-                player = MediaAPI.player(thumbnailMrl, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
+                player = PlayerAPI.player(thumbnailMrl, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) break;
             }
 
@@ -391,7 +391,7 @@ public final class MRLSelectorScreen extends Screen {
             if (player == null) {
                 for (int i = 0; i < sources.size(); i++) {
                     if (sources.get(i).type() == MediaType.IMAGE) {
-                        player = MediaAPI.player(mrl, i, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
+                        player = PlayerAPI.player(mrl, i, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                         break;
                     }
                 }
@@ -455,7 +455,7 @@ public final class MRLSelectorScreen extends Screen {
         if (uri == null) return;
         final String name = uri.name();
         MRL mrl = this.ctx.media.groupMRLs.get(name);
-        mrl = mrl == null ? MediaAPI.mrl(uri.uri()) : mrl.reload();
+        mrl = mrl == null ? PlayerAPI.mrl(uri.uri()) : mrl.reload();
         this.ctx.media.groupMRLs.put(name, mrl);
 
         final MediaPlayer thumbnail = this.thumbPlayers.remove(name);

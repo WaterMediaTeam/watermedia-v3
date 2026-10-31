@@ -9,7 +9,7 @@ import org.apache.logging.log4j.message.StringMapMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.player.MRL;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;

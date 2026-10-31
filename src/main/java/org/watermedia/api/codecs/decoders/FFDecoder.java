@@ -1,0 +1,1913 @@
+package org.watermedia.api.codecs.decoders;
+
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.bytedeco.ffmpeg.avcodec.*;
+import org.bytedeco.ffmpeg.avformat.*;
+import org.bytedeco.ffmpeg.avformat.AVIOInterruptCB.Callback_Pointer;
+import org.bytedeco.ffmpeg.avutil.*;
+import org.bytedeco.ffmpeg.swresample.*;
+import org.bytedeco.ffmpeg.global.avcodec;
+import org.bytedeco.ffmpeg.global.avformat;
+import org.bytedeco.ffmpeg.global.avutil;
+import org.bytedeco.ffmpeg.global.swresample;
+import org.bytedeco.javacpp.BytePointer;
+import org.bytedeco.javacpp.IntPointer;
+import org.bytedeco.javacpp.Pointer;
+import org.bytedeco.javacpp.PointerPointer;
+import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.util.HttpHeaders;
+import org.watermedia.api.util.SampleType;
+import org.watermedia.api.util.Track;
+import org.watermedia.tools.DataTool;
+import org.watermedia.tools.FFTool;
+import org.watermedia.tools.IOTool;
+import org.watermedia.tools.ThreadTool;
+
+import java.io.IOException;
+import java.net.URI;
+import java.nio.file.Path;
+import java.util.Objects;
+import java.util.concurrent.ThreadFactory;
+
+import static org.bytedeco.ffmpeg.global.avcodec.*;
+import static org.bytedeco.ffmpeg.global.avutil.*;
+import static org.watermedia.WaterMedia.LOGGER;
+
+/**
+ * FFmpeg demuxer and decoders of one input. A demux thread opens the input, then fills one packet queue per stream; a
+ * video and an audio thread decode them into the {@link #videoFrames()} and {@link #audioFrames()} queues a player
+ * consumes. Hardware decoders download to RAM, except on the player's Vulkan device, whose frames stay on the GPU and
+ * may pass through libplacebo. The player's clock drives it through a {@link Timeline}; one decoder serves one run.
+ */
+public final class FFDecoder {
+    private static final Marker IT = MarkerManager.getMarker(FFDecoder.class.getSimpleName());
+    // PIPELINE THREADS ARE OWNED WORKERS NAMED BY THE PLAYER'S GROUP, FFThread-<PLAYER>-<ROLE>
+    private static final ThreadFactory THREADS = ThreadTool.workerFactory("FFThread", Thread.NORM_PRIORITY);
+    // ONE CALLBACK FOR EVERY DECODER, READING THE ABORT FLAG ITS opaque POINTS AT: JAVACPP BINDS AT MOST 10 LIVE INSTANCES PER
+    // CALLBACK CLASS AND FREES ONE ONLY ON DEALLOCATION, SO A CALLBACK PER DECODER SILENTLY LOST ITS FUNCTION AFTER THE TENTH
+    private static final Callback_Pointer INTERRUPT = new Callback_Pointer() {
+        @Override
+        public int call(final Pointer opaque) {
+            return new IntPointer(opaque).get();
+        }
+    };
+
+    /** Seconds a timestamp may jump before it counts as a discontinuity (HLS ad stitching) instead of time passing. */
+    public static final double PTS_DISCONTINUITY_SEC = 10.0;
+
+    // AUDIO OUTPUT FORMAT
+    private static final int AUDIO_SAMPLES = 2048;
+
+    // THREADING
+    private static final int MAX_DECODE_THREADS = ThreadTool.processors() / 2;
+
+    // QUEUE CAPACITIES
+    private static final long VIDEO_PACKET_QUEUE_BYTES = 16L * 1024 * 1024;
+    private static final long AUDIO_PACKET_QUEUE_BYTES = 8L * 1024 * 1024;
+    private static final int VIDEO_FRAME_QUEUE_SLOTS = 3;
+    private static final int AUDIO_FRAME_QUEUE_SLOTS = 9;
+
+    // HW DECODE HEALTH — FALL BACK TO SOFTWARE WHEN THE GPU PATH MISBEHAVES.
+    // SOME DRIVERS (NOTABLY AMD D3D11VA) DECODE FINE BUT STALL ON THE GPU→CPU
+    // FRAME TRANSFER, MAKING HW DECODE SLOWER THAN SOFTWARE.
+    private static final int HW_TRANSFER_FAIL_LIMIT = 30;       // CONSECUTIVE av_hwframe_transfer_data FAILURES
+    private static final int HW_TRANSFER_PERF_WINDOW = 120;     // FRAMES PER PERFORMANCE EVALUATION
+    private static final double HW_TRANSFER_BUDGET_RATIO = 0.75; // MAX AVG TRANSFER TIME VS FRAME DURATION
+
+    private static final int[] VIDEO_HW_CODECS = {
+            AV_HWDEVICE_TYPE_CUDA,          // NVIDIA
+            AV_HWDEVICE_TYPE_QSV,           // INTEL
+            AV_HWDEVICE_TYPE_AMF,           // AMD
+            // DEDICATED HW LIBRARY
+            AV_HWDEVICE_TYPE_OHCODEC,
+            // OS DEDICATED HARDWARE
+            AV_HWDEVICE_TYPE_D3D11VA,       // WINDOWS DIRECTX 11
+            AV_HWDEVICE_TYPE_D3D12VA,       // WINDOWS DIRECTX 12
+            AV_HWDEVICE_TYPE_VIDEOTOOLBOX,  // MACOS
+            AV_HWDEVICE_TYPE_VAAPI,         // LINUX VA-API
+            AV_HWDEVICE_TYPE_VDPAU,         // LINUX VDPAU
+            AV_HWDEVICE_TYPE_DRM,           // LINUX DRM
+            AV_HWDEVICE_TYPE_MEDIACODEC,    // ANDROID MEDIACODEC
+            // GENERIC GPU PATH, KEPT LAST ON PURPOSE AS THE LAST RESORT
+            AV_HWDEVICE_TYPE_VULKAN         // VULKAN
+    };
+
+    /** Playback timeline the decoder follows: seeks, pause, queue serials and the end of the input; the player's clock. */
+    public interface Timeline {
+        /** Takes the pending seek, or returns null when none is pending. */
+        Seek consumeSeek();
+        /** Returns whether a seek is pending. */
+        boolean seekPending();
+        /** Returns whether playback is held paused, so the demuxer parks. */
+        boolean holding();
+        /** Waits until the status changes or a seek arrives, at most {@code timeoutMs} (0 waits for it). */
+        void awaitChange(final long timeoutMs) throws InterruptedException;
+        /** Adopts the serial the queues carry after a reset, so frames of that serial count. */
+        void serial(final int serial);
+        /** Starts the clock once the input is open. */
+        void start();
+        /** Records that the demuxer resumed after the end of the input. */
+        void signalDemuxResumed();
+        /** Records that the demuxer reached the end of the input. */
+        void signalDemuxFinished();
+        /** Returns the duration of one video frame in seconds. */
+        double frameDurationSec();
+    }
+
+    /** Player side of the decoder: the cache, the Vulkan device, the audio format and the open and failure reports. */
+    public interface Host {
+        /** Returns the cached copy of {@code uri}, or null to open it remotely; runs on the demux thread, so it may block. */
+        Path cached(final URI uri) throws IOException;
+        /** Returns the player engine's Vulkan device for {@code codecId}, whose reference the decoder then owns, or null. */
+        Device vulkan(final int codecId);
+        /** Formats the player's audio engine for a source and returns the PCM it takes, or null to drop the audio. */
+        Pcm audio(final SampleType type, final int channels, final int rate);
+        /** Reports the duration of the input in milliseconds (0 when unknown, as live) each time it is probed, on the demux thread. */
+        void duration(final long ms);
+        /** Reports the open input before the clock starts, on the demux thread. */
+        void opened(final FFDecoder decoder);
+        /** Reports why the input could not open or keep playing; never called for an abort. */
+        void failed(final Throwable cause);
+    }
+
+    /** A seek to {@code targetMs}, frame-exact when {@code precise}. */
+    public record Seek(long targetMs, boolean precise) {}
+
+    /** A Vulkan device reference and whether libplacebo runs on it. */
+    public record Device(AVBufferRef ref, boolean filters) {}
+
+    /** Interleaved PCM layout an audio engine takes. */
+    public record Pcm(SampleType type, int channels) {}
+
+    // INPUT
+    private final String group;
+    private final URI uri;
+    private final Track track;
+    private final HttpHeaders headers;
+    private final boolean videoWanted;
+    private final boolean audioWanted;
+    private final Timeline timeline;
+    private final Host host;
+
+    // FFMPEG COMPONENTS
+    AVFormatContext formatContext;
+    AVFormatContext trackFormatContext;
+    private AVCodecContext videoCodecContext;
+    private AVCodecContext audioCodecContext;
+    private SwrContext swrContext;
+
+    // HW
+    private volatile AVBufferRef hwDeviceCtx;
+    private int hwPixelFormat = AV_PIX_FMT_NONE;
+    // THE DECODER WRITES AV_PIX_FMT_VULKAN FRAMES ON THE ENGINE'S DEVICE OR ITS TWIN: NOTHING COMES DOWN TO RAM, THE ENGINE SAMPLES THEM
+    private boolean vulkanFrames;
+    private boolean filters; // LIBPLACEBO RUNS ON THAT DEVICE
+
+    // STREAMS
+    private volatile int videoStreamIndex = -1;
+    private volatile int audioStreamIndex = -1;
+    private AVStream videoStream; // HELD SO THE DECODE THREAD NEVER INDEXES THE STREAM ARRAY THE DEMUXER MAY GROW (MPEG-TS ADDS STREAMS)
+    private boolean useAudioTrack;
+    private double videoTimeBase;
+    private double audioTimeBase;
+
+    // THREADS: THE DECODERS ARE (RE)STARTED BY THE DEMUXER'S SEEK PATH, SO THEIR CREATION AND TEARDOWN SHARE decodeLock: TWO
+    // DECODERS ON ONE CODEC CONTEXT CRASH NATIVELY
+    private final Object decodeLock = new Object();
+    private volatile Thread demuxThread;
+    private volatile Thread videoDecodeThread;
+    private volatile Thread audioDecodeThread;
+
+    // QUEUES
+    private final PacketQueue videoPacketQueue = new PacketQueue(VIDEO_PACKET_QUEUE_BYTES);
+    private final PacketQueue audioPacketQueue = new PacketQueue(AUDIO_PACKET_QUEUE_BYTES);
+    private final FrameQueue videoFrameQueue = new FrameQueue(VIDEO_FRAME_QUEUE_SLOTS);
+    private final FrameQueue audioFrameQueue = new FrameQueue(AUDIO_FRAME_QUEUE_SLOTS);
+
+    // STATE
+    private volatile boolean aborted;
+    private final IntPointer abortFlag = new IntPointer(new int[1]); // aborted AS INTERRUPT READS IT, FREED WITH THIS DECODER
+    private boolean closed;
+    private Throwable failure; // WHY THE OPEN FAILED, REPORTED BY THE DEMUX THREAD THAT RECORDED IT
+    private volatile float fps;
+    private boolean hls;
+
+    // PTS DISCONTINUITY HANDLING (HLS AD STITCHING)
+    // TWITCH AND SIMILAR SERVICES INSERT ADS VIA #EXT-X-DISCONTINUITY.
+    // FFMPEG'S HLS DEMUXER DOESN'T ALWAYS NORMALIZE PTS ACROSS THESE
+    // BOUNDARIES — RAW PTS CAN JUMP BY HOURS (STREAM ELAPSED TIME).
+    // WE TRACK AN OFFSET PER STREAM TO KEEP PTS CONTINUOUS.
+    private double videoPtsOffset;
+    private double lastRawVideoPts = Double.NaN;
+    private double audioPtsOffset;
+    private double lastRawAudioPts = Double.NaN;
+
+    // AUDIO FORMAT NEGOTIATION
+    private boolean audioPassthrough;
+    private int audioOutputChannels;
+    private int audioOutputSampleRate;
+    private int audioOutputAvFormat;   // FFmpeg AV_SAMPLE_FMT_* for the resample output
+
+    // AUDIO INPUT PARAMETERS AS NEGOTIATED — COMPARED PER-FRAME TO DETECT MID-STREAM
+    // CHANGES (CHAINED OGG / ICECAST CAN SWITCH SAMPLE RATE OR LAYOUT MID-STREAM;
+    // FEEDING THE OLD RESAMPLER PLAYS AUDIO AT THE WRONG SPEED).
+    private int audioInputSampleRate;
+    private int audioInputAvFormat = AV_SAMPLE_FMT_NONE;
+    private int audioInputChannels;
+
+    // AUDIO DECODE CONTINUITY (DECODE THREAD ONLY) — END PTS OF THE LAST ENQUEUED
+    // AUDIO FRAME, USED FOR RESAMPLER-FLUSH PTS AND AS NOPTS FALLBACK.
+    private double audioNextPtsSec = Double.NaN;
+
+    // ANOMALY LATCHES: EACH REPEATABLE ANOMALY IS LOGGED ONCE PER DECODER
+    private boolean placeboWarned;
+    private boolean slotWarned;
+    private boolean audioUnusableWarned;
+    private boolean audioChangeWarned;
+
+    /** Prepares a decoder of the wanted streams of {@code uri}, with its threads named after {@code group} and the audio of {@code track} when not null; nothing opens until {@link #start()}. */
+    public FFDecoder(final String group, final URI uri, final Track track, final HttpHeaders headers, final boolean video,
+                     final boolean audio, final Timeline timeline, final Host host) {
+        this.group = group;
+        this.uri = uri;
+        this.track = track;
+        this.headers = headers;
+        this.videoWanted = video;
+        this.audioWanted = audio;
+        this.timeline = timeline;
+        this.host = host;
+    }
+
+    // ==========================================================================
+    // CONTROL
+    // ==========================================================================
+    /** Spawns the demux thread, which opens the input, reports it to the host, starts the clock and the decoders. */
+    public void start() {
+        final Thread demux = this.thread("demux", this::demuxLoop);
+        this.demuxThread = demux;
+        demux.start();
+    }
+
+    /** Cuts blocking native I/O short and interrupts the demuxer; returns at once. */
+    public void abort() {
+        this.aborted = true;
+        this.abortFlag.put(1);
+        final Thread demux = this.demuxThread;
+        if (demux != null) demux.interrupt();
+    }
+
+    /** Aborts the queues and joins every decoder thread, the demuxer first so nothing spawns a decoder behind it. */
+    public void stop() {
+        this.abort();
+        this.videoPacketQueue.abort();
+        this.audioPacketQueue.abort();
+        this.videoFrameQueue.abort();
+        this.audioFrameQueue.abort();
+        final boolean wasInterrupted = Thread.interrupted();
+        final Thread demux = this.demuxThread;
+        if (demux != null) ThreadTool.join(demux);
+        this.demuxThread = null;
+        this.stopDecodeThreads();
+        if (wasInterrupted) Thread.currentThread().interrupt();
+    }
+
+    /** Stops the threads and frees the queues and every native context; a second call does nothing. */
+    public void close() {
+        if (this.closed) return;
+        this.closed = true;
+        this.stop();
+        this.videoFrameQueue.free();
+        this.audioFrameQueue.free();
+        this.videoPacketQueue.free();
+        this.audioPacketQueue.free();
+        this.free();
+    }
+
+    /** Returns whether {@code thread} is one of this decoder's threads. */
+    public boolean owns(final Thread thread) {
+        return thread == this.demuxThread || thread == this.videoDecodeThread || thread == this.audioDecodeThread;
+    }
+
+    // ==========================================================================
+    // STATE
+    // ==========================================================================
+    /** Returns the queue of decoded video frames, read by one consumer thread. */
+    public FrameQueue videoFrames() { return this.videoFrameQueue; }
+
+    /** Returns the queue of decoded audio frames, read by one consumer thread. */
+    public FrameQueue audioFrames() { return this.audioFrameQueue; }
+
+    /** Returns whether a video stream decodes. */
+    public boolean video() { return this.videoStreamIndex >= 0; }
+
+    /** Returns whether an audio stream decodes. */
+    public boolean audio() { return this.audioStreamIndex >= 0; }
+
+    /** Returns whether a decode thread is still running. */
+    public boolean decoding() {
+        final Thread video = this.videoDecodeThread;
+        final Thread audio = this.audioDecodeThread;
+        return video != null && video.isAlive() || audio != null && audio.isAlive();
+    }
+
+    /** Returns whether the demux thread ended on its own, without {@link #stop()}. */
+    public boolean demuxDied() {
+        final Thread demux = this.demuxThread;
+        return demux != null && !demux.isAlive();
+    }
+
+    /** Returns how full the packet queues of the decoding streams are, 0 to 100. */
+    public int buffered() {
+        long sum = 0;
+        int parts = 0;
+        if (this.videoStreamIndex >= 0) {
+            sum += Math.min(100, this.videoPacketQueue.byteSize() * 100 / VIDEO_PACKET_QUEUE_BYTES);
+            parts++;
+        }
+        if (this.audioStreamIndex >= 0) {
+            sum += Math.min(100, this.audioPacketQueue.byteSize() * 100 / AUDIO_PACKET_QUEUE_BYTES);
+            parts++;
+        }
+        return parts == 0 ? 0 : (int) (sum / parts);
+    }
+
+    /** Returns whether a hardware decoder is in use. */
+    public boolean hardware() { return !FFTool.isNull(this.hwDeviceCtx); }
+
+    /** Returns whether the frames stay on the player's Vulkan device. */
+    public boolean vulkan() { return this.vulkanFrames; }
+
+    /** Returns whether libplacebo converts the frames on that device. */
+    public boolean filters() { return this.vulkanFrames && this.filters; }
+
+    /** Returns the open video decoder, for the format and color tags the player prepares its engine with; valid during {@code opened}. */
+    public AVCodecContext videoContext() { return this.videoCodecContext; }
+
+    /** Returns the input the decoder opened. */
+    public URI uri() { return this.uri; }
+
+    /** Returns the plausible frame rate of the video stream, or 0 when it reports none. */
+    public float fps() { return this.fps; }
+
+    /** Returns whether the input is an HLS playlist. */
+    public boolean hls() { return this.hls; }
+
+    // ==========================================================================
+    // DEMUX THREAD
+    // ==========================================================================
+    private void demuxLoop() {
+        try {
+            if (!this.init()) {
+                // AN OPEN CUT SHORT BY stop()/RESTART/RELEASE IS NOT A FAILURE: THE INTERRUPTED
+                // LIFECYCLE LANDS ON STOPPED BY ITSELF AND NO EXCEPTION LEAKS INTO THE NEXT RUN
+                if (!this.aborted) this.host.failed(this.failure != null ? this.failure : new IOException("Failed to open " + this.uri));
+                return;
+            }
+            this.host.opened(this);
+        } catch (final Throwable e) {
+            // WHATEVER AN ABORT LEFT HALF DONE IS NOT A FAILURE
+            if (this.aborted) return;
+            LOGGER.error(IT, "Init failed with exception", e);
+            this.host.failed(e);
+            return;
+        }
+        // THE CLOCK FOLLOWS THESE QUEUES FROM HERE ON: A DECODER OPENED BY A QUALITY SWITCH STARTS THEM AT SERIAL 0 AGAIN. THE DECODERS
+        // RUN BEFORE THE CLOCK STARTS, UNLESS A SEEK REQUESTED WHILE LOADING STARTS THEM ONCE IT IS SERVED
+        this.timeline.serial(this.videoPacketQueue.serial());
+        if (!this.timeline.seekPending()) this.ensureDecodeThreads();
+        this.timeline.start();
+
+        final AVPacket packet = avcodec.av_packet_alloc();
+        final AVPacket trackPacket = this.useAudioTrack ? avcodec.av_packet_alloc() : null;
+        long demuxVideoPackets = 0;
+        long demuxAudioPackets = 0;
+        boolean mainEof = false;
+        boolean trackEof = false;
+
+        LOGGER.debug(IT, "Demux loop starting — videoIdx={}, audioIdx={}, useAudioTrack={}, nb_streams={}",
+                this.videoStreamIndex, this.audioStreamIndex, this.useAudioTrack,
+                this.formatContext != null ? this.formatContext.nb_streams() : -1);
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                // SEEK HANDLING
+                final Seek seekReq = this.timeline.consumeSeek();
+                if (seekReq != null) {
+                    final long targetMs = seekReq.targetMs();
+                    final boolean precise = seekReq.precise();
+
+                    this.timeline.signalDemuxResumed();
+
+                    if (precise) {
+                        this.stopDecodeThreads();
+                        this.videoPacketQueue.reset();
+                        this.audioPacketQueue.reset();
+                        if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+                        if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+                    } else {
+                        // MUST USE reset() NOT flush() — flush() DOESN'T CLEAR THE 'finished'
+                        // FLAG. AFTER EOF→repeat, finish() WAS CALLED, AND flush() ALONE LEAVES
+                        // finished=true. DECODE THREADS THEN CALL get() ON AN EMPTY+FINISHED
+                        // QUEUE → null → EXIT IMMEDIATELY, PRODUCING 0 FRAMES. reset() CLEARS
+                        // BOTH 'finished' AND 'aborted', MAKING THE QUEUE REUSABLE.
+                        this.videoPacketQueue.reset();
+                        this.audioPacketQueue.reset();
+                    }
+
+                    this.timeline.serial(this.videoPacketQueue.serial());
+                    LOGGER.debug(IT, "Seek serial sync: vQueueSerial={}, aQueueSerial={}", this.videoPacketQueue.serial(), this.audioPacketQueue.serial());
+                    mainEof = false;
+                    trackEof = false;
+
+                    if (this.timeline.seekPending()) {
+                        LOGGER.debug(IT, "Seek to {}ms superseded; skipping", targetMs);
+                        this.ensureDecodeThreads();
+                        continue;
+                    }
+
+                    // A TARGET WITHOUT A DURATION TO CLAMP IT (LIVE, RELOAD) IS SATURATED, NEVER WRAPPED NEGATIVE
+                    final long ffTs = Math.min(targetMs, Long.MAX_VALUE / 1_000L) * 1_000L;
+                    final int seekFlags = avformat.AVSEEK_FLAG_BACKWARD;
+                    boolean reopened = false;
+
+                    int seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, seekFlags);
+                    if (seekResult < 0) {
+                        seekResult = avformat.avformat_seek_file(this.formatContext, -1, Long.MIN_VALUE, ffTs, ffTs, seekFlags);
+                    }
+                    if (seekResult < 0) {
+                        seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, 0);
+                    }
+                    if (seekResult < 0) {
+                        // REOPEN NEEDS EXCLUSIVE CODEC ACCESS — ON NON-PRECISE SEEKS THE
+                        // DECODE THREADS ARE STILL RUNNING AND reopenFormat() FLUSHES THE
+                        // CODECS THEY ARE USING (NATIVE RACE). STOP THEM AND MAKE THE
+                        // QUEUES REUSABLE AGAIN (CLEAR ABORT FLAG + RESYNC SERIAL).
+                        this.stopDecodeThreads();
+                        final boolean reopenOk = this.reopenFormat();
+                        this.videoPacketQueue.reset();
+                        this.audioPacketQueue.reset();
+                        this.timeline.serial(this.videoPacketQueue.serial());
+                        if (!reopenOk) {
+                            // reopenFormat ALREADY CLOSED THE OLD CONTEXT — THERE IS NOTHING LEFT TO READ FROM, THE
+                            // PIPELINE CANNOT RECOVER; A REOPEN CUT SHORT BY stop() IS THE CALLER'S OWN DOING, NOT A FAILURE
+                            if (this.aborted) return;
+                            LOGGER.error(IT, "Seek to {}ms failed and the input could not be reopened — stopping pipeline", targetMs);
+                            this.host.failed(new IOException("Seek to " + targetMs + "ms failed and the input could not be reopened"));
+                            return;
+                        }
+                        LOGGER.warn(IT, "Seek to {}ms failed; reopened input from beginning", targetMs);
+                        reopened = true;
+                        seekResult = 0;
+                        if (targetMs > 0) {
+                            seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, 0);
+                            if (seekResult < 0) seekResult = avformat.avformat_seek_file(this.formatContext, -1, Long.MIN_VALUE, ffTs, ffTs, 0);
+                        }
+                    }
+                    if (seekResult < 0) {
+                        LOGGER.warn(IT, "Seek to {}ms not honored by reopened input; resuming from beginning", targetMs);
+                        this.ensureDecodeThreads();
+                        continue;
+                    }
+
+                    if (this.timeline.seekPending()) {
+                        LOGGER.debug(IT, "Seek to {}ms superseded after main seek; skipping drain", targetMs);
+                        this.ensureDecodeThreads();
+                        continue;
+                    }
+
+                    if (this.useAudioTrack && this.trackFormatContext != null) {
+                        avformat.av_seek_frame(this.trackFormatContext, -1, ffTs, seekFlags);
+                    }
+
+                    if (precise && !(reopened && targetMs == 0)) {
+                        this.syncDrain(targetMs, packet, trackPacket);
+                    }
+
+                    this.ensureDecodeThreads();
+
+                    LOGGER.debug(IT, "Seek completed to {}ms (precise={}, serial={})", targetMs, precise, this.videoPacketQueue.serial());
+                    continue;
+                }
+
+                // PAUSE HANDLING
+                if (this.timeline.holding()) {
+                    this.timeline.awaitChange(0);
+                    continue;
+                }
+
+                // SEPARATE AUDIO TRACK
+                if (this.useAudioTrack && !trackEof && this.trackFormatContext != null && trackPacket != null) {
+                    final int reads = WaterMediaConfig.codecs.ffmpeg.trackPacketReads;
+                    for (int i = 0; i < reads; i++) {
+                        final int trackResult = avformat.av_read_frame(this.trackFormatContext, trackPacket);
+                        if (trackResult >= 0) {
+                            try {
+                                if (trackPacket.stream_index() == this.audioStreamIndex) {
+                                    if (!this.audioPacketQueue.put(trackPacket)) break;
+                                    demuxAudioPackets++;
+                                }
+                            } finally {
+                                avcodec.av_packet_unref(trackPacket);
+                            }
+                        } else {
+                            trackEof = true;
+                            LOGGER.debug(IT, "Audio track reached EOF after {} packets", demuxAudioPackets);
+                            this.audioPacketQueue.finish();
+                            break;
+                        }
+                    }
+                }
+
+                // READ PACKET (MAIN CONTEXT)
+                if (!mainEof) {
+                    final int result = avformat.av_read_frame(this.formatContext, packet);
+                    // A READ AN ABORT CUT SHORT ENDS THIS DECODER, NOT THE INPUT: THE CLOCK, SHARED WITH THE NEXT DECODER, NEVER HEARS IT AS EOF
+                    if (result < 0 && this.aborted) break;
+                    if (result < 0) {
+                        mainEof = true;
+                        LOGGER.debug(IT, "Main context EOF after {} video packets", demuxVideoPackets);
+                        this.videoPacketQueue.finish();
+                        // WITHOUT A SEPARATE TRACK, AUDIO PACKETS COME FROM THE SAME FORMAT
+                        // CONTEXT — FINISH THE AUDIO QUEUE SO DECODE THREADS DRAIN CLEANLY.
+                        if (!this.useAudioTrack) this.audioPacketQueue.finish();
+                    }
+                }
+
+                // CHECK BOTH EOF — SIGNAL DEMUX FINISHED AND WAIT FOR SEEK.
+                // THE PLAYER HANDLES BOTH REPEAT AND ENDED AFTER ALL DECODED FRAMES
+                // HAVE BEEN DRAINED AND RENDERED. SEEKING TO 0 HERE WOULD FLUSH ALL
+                // UNPROCESSED PACKETS — A RAPID EOF→SEEK→EOF LOOP RENDERING ALMOST NOTHING.
+                if (mainEof && (trackEof || !this.useAudioTrack)) {
+                    LOGGER.debug(IT, "All contexts EOF (video: {}, audio: {})", demuxVideoPackets, demuxAudioPackets);
+
+                    this.timeline.signalDemuxFinished();
+                    LOGGER.debug(IT, "Demux finished; the player handles ENDED/repeat after drain");
+
+                    while (!this.timeline.seekPending() && !Thread.currentThread().isInterrupted()) {
+                        this.timeline.awaitChange(0);
+                    }
+                    if (!this.timeline.seekPending()) break;
+
+                    LOGGER.debug(IT, "Seek after EOF; restarting pipeline");
+                    mainEof = false;
+                    trackEof = false;
+                    this.videoPacketQueue.reset();
+                    this.audioPacketQueue.reset();
+                    continue;
+                }
+
+                if (mainEof) {
+                    continue;
+                }
+
+                try {
+                    final int streamIndex = packet.stream_index();
+                    if (streamIndex == this.videoStreamIndex) {
+                        while (!this.videoPacketQueue.tryPut(packet)) {
+                            if (Thread.currentThread().isInterrupted() || this.timeline.seekPending()) break;
+                            if (this.useAudioTrack && this.trackFormatContext != null && trackPacket != null) {
+                                final int sr = avformat.av_read_frame(this.trackFormatContext, trackPacket);
+                                if (sr >= 0) {
+                                    try {
+                                        if (trackPacket.stream_index() == this.audioStreamIndex) {
+                                            this.audioPacketQueue.put(trackPacket);
+                                            demuxAudioPackets++;
+                                        }
+                                    } finally {
+                                        avcodec.av_packet_unref(trackPacket);
+                                    }
+                                }
+                            }
+                            Thread.sleep(1);
+                        }
+                        demuxVideoPackets++;
+                    } else if (!this.useAudioTrack && streamIndex == this.audioStreamIndex) {
+                        if (!this.audioPacketQueue.put(packet)) break;
+                        demuxAudioPackets++;
+                    }
+                } finally {
+                    avcodec.av_packet_unref(packet);
+                }
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            LOGGER.debug(IT, "Demux loop exiting — video: {}, audio: {}, interrupted: {}",
+                    demuxVideoPackets, demuxAudioPackets, Thread.currentThread().isInterrupted());
+
+            this.videoPacketQueue.finish();
+            this.audioPacketQueue.finish();
+
+            avcodec.av_packet_free(packet);
+            if (trackPacket != null) avcodec.av_packet_free(trackPacket);
+        }
+    }
+
+    // ==========================================================================
+    // VIDEO DECODE THREAD
+    // ==========================================================================
+    private void videoDecodeLoop() {
+        final AVFrame tempFrame = avutil.av_frame_alloc();
+        // FRAMES DECODED ON THE ENGINE'S VULKAN DEVICE ARE QUEUED AS THEY ARE; EVERY OTHER ACCELERATOR'S COME DOWN TO RAM
+        final AVFrame hwTransfer = this.hwDeviceCtx != null && !this.vulkanFrames ? avutil.av_frame_alloc() : null;
+        // THEY BECOME RGBA THROUGH LIBPLACEBO WHEN THE ENGINE'S DEVICE RUNS IT: ONE GRAPH PER DECODER POOL, REBUILT AFTER A SEEK SO NO FRAME OF
+        // THE PREVIOUS SEGMENT LEAVES IT; A GRAPH FFMPEG REFUSES LEAVES THE FRAMES TO THE ENGINE'S OWN CONVERSION UNTIL THE NEXT START
+        boolean filtering = this.vulkanFrames && this.filters;
+        final AVFrame filtered = filtering ? avutil.av_frame_alloc() : null;
+        Placebo placebo = null;
+        final int again = avutil.AVERROR_EAGAIN();
+        final int[] serialOut = new int[1];
+        int lastSerial = -1;
+        long packetsProcessed = 0;
+        long framesProduced = 0;
+        long sendFailures = 0;
+        long receiveFailures = 0;
+
+        // HW DECODE HEALTH TRACKING (SEE HW_TRANSFER_* CONSTANTS)
+        int hwFailStreak = 0;
+        long hwTransferNs = 0;
+        int hwTransferCount = 0;
+        boolean hwGaveUp = false;
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                final AVPacket packet = this.videoPacketQueue.get(serialOut);
+
+                // A null PACKET MEANS THE QUEUE IS DONE: A CLEAN EOF (DRAIN THE DECODER'S
+                // BUFFERED BACKLOG WITH A null FLUSH PACKET) OR AN abort() FROM stop()/seek()
+                // (THE BACKLOG IS STALE — JUST EXIT). DELAYED/THREADED DECODERS (libdav1d,
+                // THE NATIVE av1 DECODER) HOLD A REORDER WINDOW THAT ONLY COMES OUT ON FLUSH;
+                // WITHOUT THIS THE TAIL IS LOST, AND A DECODER THAT BUFFERS THE WHOLE STREAM
+                // EMITS NOTHING AT ALL — ENDING PLAYBACK WITH ZERO RENDERED FRAMES.
+                final boolean eof = packet == null;
+                if (eof && (lastSerial < 0 || !this.videoPacketQueue.endOfFile())) break;
+
+                final int packetSerial = eof ? lastSerial : serialOut[0];
+
+                try {
+                    if (!eof && packetSerial != lastSerial) {
+                        if (lastSerial >= 0) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+                        if (placebo != null) placebo.close();
+                        placebo = null;
+                        lastSerial = packetSerial;
+                        this.lastRawVideoPts = Double.NaN;
+                        this.videoPtsOffset = 0;
+                    }
+
+                    if (!eof && packetSerial != this.videoPacketQueue.serial()) continue;
+
+                    // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE
+                    // SKIPS ONLY THAT PACKET.
+                    final int sent = avcodec.avcodec_send_packet(this.videoCodecContext, packet);
+                    if (sent < 0 && sent != again && sent != AVERROR_EOF && ++sendFailures == 1)
+                        logCodecError("video", "send packet", this.videoCodecContext, this.videoStreamIndex, sent);
+                    if (sent < 0 && !eof) continue;
+
+                    while (true) {
+                        final int received = avcodec.avcodec_receive_frame(this.videoCodecContext, tempFrame);
+                        if (received < 0) {
+                            if (received != again && received != AVERROR_EOF && ++receiveFailures == 1)
+                                logCodecError("video", "receive frame", this.videoCodecContext, this.videoStreamIndex, received);
+                            break;
+                        }
+                        AVFrame frameToQueue = tempFrame;
+
+                        if (!hwGaveUp && hwTransfer != null && tempFrame.format() == this.hwPixelFormat) {
+                            final long transferStart = System.nanoTime();
+                            if (av_hwframe_transfer_data(hwTransfer, tempFrame, 0) < 0) {
+                                if (hwFailStreak++ == 0) LOGGER.warn(IT, "Failed to transfer frame from GPU");
+                                if (hwFailStreak >= HW_TRANSFER_FAIL_LIMIT) {
+                                    LOGGER.error(IT, "GPU frame transfer failed {} times in a row — falling back to software decoding", hwFailStreak);
+                                    hwGaveUp = this.reinitVideoCodecSoftware();
+                                    hwFailStreak = 0;
+                                }
+                                continue;
+                            }
+                            hwFailStreak = 0;
+                            frameToQueue = hwTransfer;
+                            // THE GPU COPY CARRIES PIXELS ONLY, SO THE COLOR TAGS COME FROM THE DECODED FRAME
+                            hwTransfer.colorspace(tempFrame.colorspace()).color_range(tempFrame.color_range())
+                                    .chroma_location(tempFrame.chroma_location()).color_trc(tempFrame.color_trc())
+                                    .color_primaries(tempFrame.color_primaries());
+
+                            // SOME DRIVERS (NOTABLY AMD D3D11VA) DECODE FINE BUT STALL ON
+                            // THE GPU→CPU COPY — IF THE TRANSFER ALONE EATS THE FRAME
+                            // BUDGET, SOFTWARE DECODING IS FASTER. EVALUATE PERIODICALLY.
+                            hwTransferNs += System.nanoTime() - transferStart;
+                            if (++hwTransferCount >= HW_TRANSFER_PERF_WINDOW) {
+                                final double avgSec = hwTransferNs / 1_000_000_000.0 / hwTransferCount;
+                                final double frameSec = this.timeline.frameDurationSec();
+                                if (avgSec > frameSec * HW_TRANSFER_BUDGET_RATIO) {
+                                    LOGGER.warn(IT, "GPU frame transfer too slow (avg {}ms vs {}ms frame budget) — falling back to software decoding",
+                                            String.format("%.1f", avgSec * 1000.0), (long) (frameSec * 1000.0));
+                                    hwGaveUp = this.reinitVideoCodecSoftware();
+                                }
+                                hwTransferNs = 0;
+                                hwTransferCount = 0;
+                            }
+                        }
+
+                        if (filtering && tempFrame.format() == AV_PIX_FMT_VULKAN && (placebo == null || placebo.pool != tempFrame.hw_frames_ctx().data().address())) {
+                            if (placebo != null) placebo.close();
+                            placebo = null;
+                            try {
+                                placebo = Placebo.open(tempFrame, this.hwDeviceCtx, this.videoStream.time_base());
+                            } catch (final IllegalStateException e) {
+                                if (!this.placeboWarned) LOGGER.warn(IT, "Decoded frames keep the engine's own conversion: libplacebo is unavailable on this device", e);
+                                this.placeboWarned = true;
+                                filtering = false;
+                            }
+                        }
+                        // A FRAME WITHOUT ANY TIMESTAMP STAYS OUT OF THE GRAPH, WHICH ORDERS FRAMES BY pts; THE ENGINE CONVERTS IT ITSELF
+                        final long bestPts = tempFrame.best_effort_timestamp() != avutil.AV_NOPTS_VALUE ? tempFrame.best_effort_timestamp() : tempFrame.pts();
+                        if (placebo != null && tempFrame.format() == AV_PIX_FMT_VULKAN && bestPts != avutil.AV_NOPTS_VALUE) {
+                            tempFrame.pts(bestPts);
+                            final int pushed = placebo.push(tempFrame);
+                            int pulled = again;
+                            boolean accepted = true;
+                            while (pushed >= 0 && accepted && (pulled = placebo.pull(filtered)) >= 0) {
+                                // THE GRAPH RETIMES pts IN ITS OWN TIME BASE; THE BEST-EFFORT TIMESTAMP IT COPIES IS STILL THE DECODER'S
+                                filtered.best_effort_timestamp(avutil.AV_NOPTS_VALUE);
+                                accepted = this.queueVideo(filtered, filtered, packetSerial, placebo.timeBase);
+                                if (accepted) framesProduced++;
+                            }
+                            if (!accepted) break;
+                            if (pushed >= 0 && (pulled == again || pulled == AVERROR_EOF)) continue;
+                            // A GRAPH THAT FAILS MID-STREAM WOULD SWALLOW EVERY LATER FRAME: IT GOES, AND THIS FRAME (UNTOUCHED WHEN REFUSED) QUEUES AS IT IS
+                            if (!this.placeboWarned) LOGGER.warn(IT, "libplacebo failed on a decoded frame ({}); frames keep the engine's own conversion",
+                                    FFTool.error(pushed < 0 ? pushed : pulled));
+                            this.placeboWarned = true;
+                            placebo.close();
+                            placebo = null;
+                            filtering = false;
+                            if (pushed >= 0) continue;
+                        }
+
+                        if (!this.queueVideo(frameToQueue, tempFrame, packetSerial, this.videoTimeBase)) break;
+                        framesProduced++;
+                    }
+
+                    // THE DRAINED DECODER LEAVES THE FRAMES LIBPLACEBO STILL HOLDS TO TIME THEM
+                    if (eof && placebo != null && placebo.push(null) >= 0) {
+                        while (placebo.pull(filtered) >= 0) {
+                            filtered.best_effort_timestamp(avutil.AV_NOPTS_VALUE);
+                            if (!this.queueVideo(filtered, filtered, packetSerial, placebo.timeBase)) break;
+                            framesProduced++;
+                        }
+                    }
+
+                    packetsProcessed++;
+                } finally {
+                    if (packet != null) avcodec.av_packet_free(packet);
+                }
+
+                if (eof) break; // DECODER FULLY DRAINED — NOTHING MORE TO PRODUCE
+            }
+        } finally {
+            if (sendFailures > 1 || receiveFailures > 1)
+                LOGGER.warn(IT, "Video decoder suppressed repeated errors: send={}, receive={}, stream={}",
+                        Math.max(0L, sendFailures - 1), Math.max(0L, receiveFailures - 1), this.videoStreamIndex);
+            LOGGER.debug(IT, "Video decode exiting — packets: {}, frames produced: {}, interrupted: {}",
+                    packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
+            // RESET THE CODEC FOR THE NEXT RUN. AT A CLEAN EOF THIS THREAD DRAINS THE DECODER
+            // (null FLUSH PACKET ABOVE), LEAVING IT IN DRAINED/EOF STATE THAT REJECTS NEW PACKETS.
+            // A repeat() RESTARTS THIS THREAD WITH lastSerial=-1, WHICH SKIPS THE PER-SEEK FLUSH —
+            // WITHOUT FLUSHING HERE THE DECODER WOULD STAY DRAINED AND EMIT ZERO FRAMES ON REPEAT,
+            // TRIPPING THE PLAYER'S ZERO-FRAME → ERROR CHECK AND FREEZING VIDEO.
+            if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+            if (placebo != null) placebo.close();
+            avutil.av_frame_free(tempFrame);
+            if (hwTransfer != null) avutil.av_frame_free(hwTransfer);
+            if (filtered != null) avutil.av_frame_free(filtered);
+        }
+    }
+
+    // QUEUES frame AT THE PRESENTATION TIME OF timing (OFTEN THE SAME FRAME): ITS BEST-EFFORT TIMESTAMP OR pts IN timeBase SECONDS PER TICK,
+    // SYNTHESIZED WHEN MISSING AND KEPT CONTINUOUS ACROSS HLS DISCONTINUITIES. MOVES THE FRAME'S REFERENCE; FALSE WHEN THE QUEUE TAKES NO MORE
+    private boolean queueVideo(final AVFrame frame, final AVFrame timing, final int serial, final double timeBase) {
+        final double frameSec = this.timeline.frameDurationSec();
+        // A RAW AV_NOPTS_VALUE WOULD PRODUCE AN ASTRONOMICAL PTS THAT LATCHES A GARBAGE DISCONTINUITY OFFSET AND WRECKS THE CLOCK
+        long rawPts = timing.best_effort_timestamp();
+        if (rawPts == avutil.AV_NOPTS_VALUE) rawPts = timing.pts();
+        final double rawPtsSec;
+        if (rawPts == avutil.AV_NOPTS_VALUE) {
+            rawPtsSec = Double.isNaN(this.lastRawVideoPts) ? 0.0 : this.lastRawVideoPts + frameSec;
+        } else {
+            rawPtsSec = rawPts * timeBase;
+        }
+
+        // PTS DISCONTINUITY DETECTION (HLS AD STITCHING)
+        if (!Double.isNaN(this.lastRawVideoPts)) {
+            final double jump = rawPtsSec - this.lastRawVideoPts;
+            if (Math.abs(jump) > PTS_DISCONTINUITY_SEC) {
+                final double expected = this.lastRawVideoPts + this.videoPtsOffset + frameSec;
+                this.videoPtsOffset = expected - rawPtsSec;
+                LOGGER.debug(IT, "Video PTS discontinuity: jump={}s, new offset={}s", String.format("%.1f", jump), String.format("%.1f", this.videoPtsOffset));
+            }
+        }
+        this.lastRawVideoPts = rawPtsSec;
+
+        final FrameQueue.Slot slot = this.videoFrameQueue.peekWritable();
+        if (slot == null) return false;
+
+        av_frame_unref(slot.frame);
+        av_frame_move_ref(slot.frame, frame);
+        slot.ptsMs = (long) ((rawPtsSec + this.videoPtsOffset) * 1000.0);
+        slot.durationMs = (long) (frameSec * 1000.0);
+        slot.serial = serial;
+        slot.width = slot.frame.width();
+        slot.height = slot.frame.height();
+        slot.format = slot.frame.format();
+        this.videoFrameQueue.push();
+        return true;
+    }
+
+    // ==========================================================================
+    // AUDIO DECODE THREAD
+    // ==========================================================================
+    private void audioDecodeLoop() {
+        final AVFrame tempFrame = avutil.av_frame_alloc();
+        final int again = avutil.AVERROR_EAGAIN();
+        final int[] serialOut = new int[1];
+        int lastSerial = -1;
+        long packetsProcessed = 0;
+        long framesProduced = 0;
+        long sendFailures = 0;
+        long receiveFailures = 0;
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                final AVPacket packet = this.audioPacketQueue.get(serialOut);
+
+                // SEE videoDecodeLoop: a null PACKET IS A CLEAN EOF (FLUSH THE DECODER'S
+                // BUFFERED BACKLOG) OR AN abort() TEARDOWN (DROP IT).
+                final boolean eof = packet == null;
+                if (eof && (lastSerial < 0 || !this.audioPacketQueue.endOfFile())) break;
+
+                final int packetSerial = eof ? lastSerial : serialOut[0];
+
+                try {
+                    if (!eof && packetSerial != lastSerial) {
+                        if (lastSerial >= 0) {
+                            avcodec.avcodec_flush_buffers(this.audioCodecContext);
+                            // DROP SAMPLES BUFFERED INSIDE THE RESAMPLER — THEY BELONG
+                            // TO THE PRE-SEEK POSITION AND WOULD LEAK INTO POST-SEEK AUDIO
+                            if (!this.audioPassthrough && this.swrContext != null) {
+                                swresample.swr_close(this.swrContext);
+                                swresample.swr_init(this.swrContext);
+                            }
+                        }
+                        lastSerial = packetSerial;
+                        this.lastRawAudioPts = Double.NaN;
+                        this.audioPtsOffset = 0;
+                        this.audioNextPtsSec = Double.NaN;
+                    }
+
+                    if (!eof && packetSerial != this.audioPacketQueue.serial()) continue;
+
+                    // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE
+                    // SKIPS ONLY THAT PACKET.
+                    final int sent = avcodec.avcodec_send_packet(this.audioCodecContext, packet);
+                    if (sent < 0 && sent != again && sent != AVERROR_EOF && ++sendFailures == 1)
+                        logCodecError("audio", "send packet", this.audioCodecContext, this.audioStreamIndex, sent);
+                    if (sent < 0 && !eof) continue;
+
+                    while (true) {
+                        final int received = avcodec.avcodec_receive_frame(this.audioCodecContext, tempFrame);
+                        if (received < 0) {
+                            if (received != again && received != AVERROR_EOF && ++receiveFailures == 1)
+                                logCodecError("audio", "receive frame", this.audioCodecContext, this.audioStreamIndex, received);
+                            break;
+                        }
+                        // MID-STREAM PARAMETER CHANGES (CHAINED OGG / ICECAST) NEED A NEW
+                        // RESAMPLER — FEEDING THE OLD ONE PLAYS AUDIO AT THE WRONG SPEED
+                        if (!this.ensureAudioInputConfig(tempFrame)) continue;
+
+                        // PREFER BEST-EFFORT TIMESTAMPS; SYNTHESIZE CONTINUITY WHEN MISSING
+                        // (THE OGG DEMUXER IS A COMMON SOURCE OF AV_NOPTS_VALUE PACKETS)
+                        long rawPts = tempFrame.best_effort_timestamp();
+                        if (rawPts == avutil.AV_NOPTS_VALUE) rawPts = tempFrame.pts();
+                        final double rawPtsSec;
+                        if (rawPts == avutil.AV_NOPTS_VALUE) {
+                            rawPtsSec = Double.isNaN(this.audioNextPtsSec)
+                                    ? 0.0 : this.audioNextPtsSec - this.audioPtsOffset;
+                        } else {
+                            rawPtsSec = rawPts * this.audioTimeBase;
+                        }
+
+                        // PTS DISCONTINUITY DETECTION (HLS AD STITCHING)
+                        if (!Double.isNaN(this.lastRawAudioPts)) {
+                            final double jump = rawPtsSec - this.lastRawAudioPts;
+                            if (Math.abs(jump) > PTS_DISCONTINUITY_SEC) {
+                                final double audioDur = (double) tempFrame.nb_samples() / tempFrame.sample_rate();
+                                final double expected = this.lastRawAudioPts + this.audioPtsOffset + audioDur;
+                                this.audioPtsOffset = expected - rawPtsSec;
+                                LOGGER.debug(IT, "Audio PTS discontinuity: jump={}s, new offset={}s", String.format("%.1f", jump), String.format("%.1f", this.audioPtsOffset));
+                            }
+                        }
+                        this.lastRawAudioPts = rawPtsSec;
+
+                        final double ptsSec = rawPtsSec + this.audioPtsOffset;
+
+                        if (!this.enqueueResampledAudio(tempFrame, ptsSec, packetSerial)) break;
+                        framesProduced++;
+
+                        if (!this.audioPassthrough) {
+                            final long delay = swresample.swr_get_delay(this.swrContext, this.audioOutputSampleRate);
+                            if (delay > AUDIO_SAMPLES / 2) {
+                                if (!this.enqueueResamplerFlush(packetSerial)) break;
+                                framesProduced++;
+                            }
+                        }
+                    }
+
+                    packetsProcessed++;
+                } finally {
+                    if (packet != null) avcodec.av_packet_free(packet);
+                }
+
+                if (eof) break; // DECODER FULLY DRAINED — NOTHING MORE TO PRODUCE
+            }
+        } finally {
+            if (sendFailures > 1 || receiveFailures > 1)
+                LOGGER.warn(IT, "Audio decoder suppressed repeated errors: send={}, receive={}, stream={}",
+                        Math.max(0L, sendFailures - 1), Math.max(0L, receiveFailures - 1), this.audioStreamIndex);
+            LOGGER.debug(IT, "Audio decode exiting — packets: {}, frames produced: {}, interrupted: {}",
+                    packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
+            // RESET THE CODEC FOR THE NEXT RUN (SEE THE VIDEO DECODER): AT A CLEAN EOF THIS THREAD
+            // DRAINS THE DECODER, LEAVING IT IN DRAINED/EOF STATE. A repeat() RESTARTS THIS THREAD
+            // WITH lastSerial=-1 AND SKIPS ITS PER-SEEK FLUSH, SO WITHOUT THIS FLUSH THE DECODER
+            // WOULD STAY DRAINED AND REJECT NEW PACKETS. AUDIO RARELY BUFFERS, BUT IT KEEPS THE INVARIANT.
+            if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+            avutil.av_frame_free(tempFrame);
+        }
+    }
+
+    private boolean enqueueResampledAudio(final AVFrame srcFrame, final double ptsSec, final int serial) {
+        final FrameQueue.Slot slot = this.audioFrameQueue.peekWritable();
+        if (slot == null) return false;
+
+        av_frame_unref(slot.frame);
+
+        if (this.audioPassthrough) {
+            // AN EMPTY FRAME HAS NOTHING TO PLAY, LIKE AN EMPTY RESAMPLE BELOW; THE ENGINE REFUSES EMPTY CHUNKS
+            if (srcFrame.nb_samples() <= 0) return true;
+            av_frame_ref(slot.frame, srcFrame);
+            final double durationSec = (double) srcFrame.nb_samples() / srcFrame.sample_rate();
+            slot.ptsMs = (long) (ptsSec * 1000.0);
+            slot.durationMs = (long) (durationSec * 1000.0);
+            slot.serial = serial;
+            this.audioNextPtsSec = ptsSec + durationSec;
+            this.audioFrameQueue.push();
+            return true;
+        }
+
+        slot.frame.format(this.audioOutputAvFormat);
+        slot.frame.ch_layout().nb_channels(this.audioOutputChannels);
+        av_channel_layout_default(slot.frame.ch_layout(), this.audioOutputChannels);
+        slot.frame.sample_rate(this.audioOutputSampleRate);
+        slot.frame.nb_samples(AUDIO_SAMPLES);
+
+        if (av_frame_get_buffer(slot.frame, 0) < 0) {
+            if (!this.slotWarned) LOGGER.warn(IT, "Failed to allocate audio buffer in slot");
+            this.slotWarned = true;
+            return true;
+        }
+
+        // SAMPLES BUFFERED INSIDE THE RESAMPLER COME OUT FIRST, SO THE OUTPUT
+        // STARTS EARLIER THAN THE INPUT PTS BY THE BUFFERED DELAY
+        final long delaySamples = swresample.swr_get_delay(this.swrContext, this.audioOutputSampleRate);
+        final double outPtsSec = ptsSec - (delaySamples > 0 ? (double) delaySamples / this.audioOutputSampleRate : 0.0);
+
+        final int samplesConverted = swresample.swr_convert(
+                this.swrContext,
+                slot.frame.data(), slot.frame.nb_samples(),
+                srcFrame.data(), srcFrame.nb_samples()
+        );
+
+        if (samplesConverted <= 0) {
+            av_frame_unref(slot.frame);
+            return true;
+        }
+
+        final double durationSec = (double) samplesConverted / this.audioOutputSampleRate;
+        slot.frame.nb_samples(samplesConverted);
+        slot.ptsMs = (long) (outPtsSec * 1000.0);
+        slot.durationMs = (long) (durationSec * 1000.0);
+        slot.serial = serial;
+        this.audioNextPtsSec = outPtsSec + durationSec;
+
+        this.audioFrameQueue.push();
+        return true;
+    }
+
+    private boolean enqueueResamplerFlush(final int serial) {
+        final FrameQueue.Slot slot = this.audioFrameQueue.peekWritable();
+        if (slot == null) return false;
+
+        av_frame_unref(slot.frame);
+        slot.frame.format(this.audioOutputAvFormat);
+        slot.frame.ch_layout().nb_channels(this.audioOutputChannels);
+        av_channel_layout_default(slot.frame.ch_layout(), this.audioOutputChannels);
+        slot.frame.sample_rate(this.audioOutputSampleRate);
+        slot.frame.nb_samples(AUDIO_SAMPLES);
+
+        if (av_frame_get_buffer(slot.frame, 0) < 0) return true;
+
+        final int flushed = swresample.swr_convert(
+                this.swrContext,
+                slot.frame.data(), slot.frame.nb_samples(),
+                null, 0
+        );
+
+        if (flushed <= 0) {
+            av_frame_unref(slot.frame);
+            return true;
+        }
+
+        // THE FLUSHED SAMPLES CONTINUE THE LAST ENQUEUED FRAME — STAMPING THEM
+        // WITH THE CONSUMER CLOCK (WHICH LAGS DECODE BY THE QUEUE DEPTH) WOULD
+        // YANK THE CLOCK BACKWARD ON UPLOAD AND STALL PLAYBACK
+        final double ptsSec = Double.isNaN(this.audioNextPtsSec) ? 0.0 : this.audioNextPtsSec;
+        final double durationSec = (double) flushed / this.audioOutputSampleRate;
+        slot.frame.nb_samples(flushed);
+        slot.ptsMs = (long) (ptsSec * 1000.0);
+        slot.durationMs = (long) (durationSec * 1000.0);
+        slot.serial = serial;
+        this.audioNextPtsSec = ptsSec + durationSec;
+
+        this.audioFrameQueue.push();
+        return true;
+    }
+
+    // VERIFIES THE DECODED FRAME STILL MATCHES THE NEGOTIATED INPUT PARAMETERS,
+    // REBUILDING THE RESAMPLER WHEN A MID-STREAM CHANGE IS DETECTED. THE OUTPUT
+    // SIDE (ENGINE FORMAT) NEVER CHANGES — RATE CHANGES BECOME REAL RESAMPLING.
+    // RETURNS FALSE IF THE FRAME CANNOT BE PLAYED (CALLER SKIPS IT).
+    private boolean ensureAudioInputConfig(final AVFrame frame) {
+        final int rate = frame.sample_rate();
+        final int format = frame.format();
+        final int channels = frame.ch_layout().nb_channels();
+        if (rate == this.audioInputSampleRate && format == this.audioInputAvFormat && channels == this.audioInputChannels) {
+            return true;
+        }
+        if (rate <= 0 || channels <= 0 || format == AV_SAMPLE_FMT_NONE) {
+            if (!this.audioUnusableWarned) LOGGER.warn(IT, "Audio frame with unusable parameters: {}ch {}Hz fmt={}", channels, rate, format);
+            this.audioUnusableWarned = true;
+            return false;
+        }
+
+        if (!this.audioChangeWarned)
+            LOGGER.warn(IT, "Audio parameters changed mid-stream: {}ch {}Hz fmt={} -> {}ch {}Hz fmt={} — rebuilding resampler",
+                    this.audioInputChannels, this.audioInputSampleRate, this.audioInputAvFormat, channels, rate, format);
+        this.audioChangeWarned = true;
+
+        final SwrContext fresh = swresample.swr_alloc();
+        if (fresh == null) return false;
+
+        final AVChannelLayout inputLayout = new AVChannelLayout();
+        final AVChannelLayout outputLayout = new AVChannelLayout();
+        try {
+            avutil.av_channel_layout_copy(inputLayout, frame.ch_layout());
+            avutil.av_channel_layout_default(outputLayout, this.audioOutputChannels);
+
+            avutil.av_opt_set_chlayout(fresh, "in_chlayout", inputLayout, 0);
+            avutil.av_opt_set_int(fresh, "in_sample_rate", rate, 0);
+            avutil.av_opt_set_sample_fmt(fresh, "in_sample_fmt", format, 0);
+
+            avutil.av_opt_set_chlayout(fresh, "out_chlayout", outputLayout, 0);
+            avutil.av_opt_set_int(fresh, "out_sample_rate", this.audioOutputSampleRate, 0);
+            avutil.av_opt_set_sample_fmt(fresh, "out_sample_fmt", this.audioOutputAvFormat, 0);
+
+            if (swresample.swr_init(fresh) < 0) {
+                LOGGER.error(IT, "Failed to initialize resampler for new audio parameters");
+                swresample.swr_free(fresh);
+                return false;
+            }
+        } finally {
+            av_channel_layout_uninit(inputLayout);
+            av_channel_layout_uninit(outputLayout);
+        }
+
+        if (this.swrContext != null) swresample.swr_free(this.swrContext);
+        this.swrContext = fresh;
+        this.audioPassthrough = false;
+        this.audioInputSampleRate = rate;
+        this.audioInputAvFormat = format;
+        this.audioInputChannels = channels;
+        return true;
+    }
+
+    // ==========================================================================
+    // DECODE THREADS
+    // ==========================================================================
+    private void stopDecodeThreads() {
+        this.videoPacketQueue.abort();
+        this.audioPacketQueue.abort();
+        final boolean wasInterrupted = Thread.interrupted();
+        synchronized (this.decodeLock) {
+            if (this.videoDecodeThread != null) {
+                this.videoDecodeThread.interrupt();
+                ThreadTool.join(this.videoDecodeThread);
+            }
+            if (this.audioDecodeThread != null) {
+                this.audioDecodeThread.interrupt();
+                ThreadTool.join(this.audioDecodeThread);
+            }
+            this.videoDecodeThread = null;
+            this.audioDecodeThread = null;
+        }
+        if (wasInterrupted) Thread.currentThread().interrupt();
+    }
+
+    private void ensureDecodeThreads() {
+        synchronized (this.decodeLock) {
+            if ((this.videoDecodeThread == null || !this.videoDecodeThread.isAlive()) && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
+                this.videoDecodeThread = this.thread("video", this::videoDecodeLoop);
+                this.videoDecodeThread.start();
+            }
+            if ((this.audioDecodeThread == null || !this.audioDecodeThread.isAlive()) && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
+                this.audioDecodeThread = this.thread("audio", this::audioDecodeLoop);
+                this.audioDecodeThread.start();
+            }
+        }
+    }
+
+    // DECODES ON THE DEMUX THREAD UP TO THE PRECISE SEEK TARGET, WITH THE DECODE THREADS STOPPED
+    private void syncDrain(final long targetMs, final AVPacket packet, final AVPacket trackPacket) {
+        final AVFrame drainFrame = avutil.av_frame_alloc();
+        final long threshold = targetMs - (long) (this.timeline.frameDurationSec() * 1000.0);
+        int maxDrain = 500;
+        boolean videoReached = this.videoCodecContext == null;
+        boolean audioReached = this.audioCodecContext == null;
+
+        while (maxDrain-- > 0 && !Thread.currentThread().isInterrupted()
+                && !this.timeline.seekPending() && (!videoReached || !audioReached)) {
+
+            if (this.useAudioTrack) {
+                if (!videoReached) {
+                    videoReached = this.drainRead(this.formatContext, packet,
+                            this.videoStreamIndex, this.videoCodecContext, drainFrame,
+                            this.videoTimeBase, threshold);
+                }
+                if (!audioReached && trackPacket != null && this.trackFormatContext != null) {
+                    audioReached = this.drainRead(this.trackFormatContext, trackPacket,
+                            this.audioStreamIndex, this.audioCodecContext, drainFrame,
+                            this.audioTimeBase, threshold);
+                }
+            } else {
+                final int readRes = avformat.av_read_frame(this.formatContext, packet);
+                if (readRes < 0) break;
+                try {
+                    final int idx = packet.stream_index();
+                    if (idx == this.videoStreamIndex) {
+                        if (!videoReached) {
+                            videoReached = this.drainDecode(this.videoCodecContext, packet, drainFrame,
+                                    this.videoTimeBase, threshold);
+                        } else {
+                            // THRESHOLD ALREADY MET — STILL FEED THE CODEC TO KEEP THE DPB INTACT
+                            avcodec.avcodec_send_packet(this.videoCodecContext, packet);
+                            while (avcodec.avcodec_receive_frame(this.videoCodecContext, drainFrame) >= 0) { }
+                        }
+                    } else if (idx == this.audioStreamIndex) {
+                        if (!audioReached) {
+                            audioReached = this.drainDecode(this.audioCodecContext, packet, drainFrame,
+                                    this.audioTimeBase, threshold);
+                        } else {
+                            avcodec.avcodec_send_packet(this.audioCodecContext, packet);
+                            while (avcodec.avcodec_receive_frame(this.audioCodecContext, drainFrame) >= 0) { }
+                        }
+                    }
+                } finally {
+                    avcodec.av_packet_unref(packet);
+                }
+            }
+        }
+        avutil.av_frame_free(drainFrame);
+    }
+
+    private boolean drainRead(final AVFormatContext ctx, final AVPacket pkt,
+                              final int streamIndex, final AVCodecContext codec,
+                              final AVFrame frame, final double timeBase, final long threshold) {
+        final int res = avformat.av_read_frame(ctx, pkt);
+        if (res < 0) return false;
+        try {
+            if (pkt.stream_index() == streamIndex) {
+                return this.drainDecode(codec, pkt, frame, timeBase, threshold);
+            }
+        } finally {
+            avcodec.av_packet_unref(pkt);
+        }
+        return false;
+    }
+
+    private boolean drainDecode(final AVCodecContext codec, final AVPacket pkt,
+                                final AVFrame frame, final double timeBase, final long threshold) {
+        avcodec.avcodec_send_packet(codec, pkt);
+        while (avcodec.avcodec_receive_frame(codec, frame) >= 0) {
+            if ((long) (frame.pts() * timeBase * 1000) >= threshold) return true;
+        }
+        return false;
+    }
+
+    // ==========================================================================
+    // INPUT
+    // ==========================================================================
+    // WHAT FFMPEG OPENS FOR uri: THE PLAYER'S CACHED COPY, A LOCAL PATH OR THE URI ITSELF; NULL WHEN AN ABORT CUT THE CACHE WAIT
+    // SHORT, SO THE CALLER NEVER OPENS THE ABANDONED SOURCE
+    private String url(final URI uri) {
+        try {
+            final Path cached = this.host.cached(uri);
+            if (cached != null) return cached.toAbsolutePath().toString();
+        } catch (final IOException e) {
+            if (this.aborted) return null;
+            LOGGER.debug(IT, "Cache bypass for {}", uri, e);
+        }
+        // FILE URIS MUST GO THROUGH Path — STRIPPING THE LEADING SLASH ONLY WORKS
+        // FOR WINDOWS DRIVE PATHS (/C:/x) AND BREAKS UNIX ABSOLUTE PATHS (/home/x)
+        if ("file".equalsIgnoreCase(uri.getScheme())) {
+            try {
+                return Path.of(uri).toString();
+            } catch (final Exception e) {
+                return uri.getPath();
+            }
+        }
+        return uri.toString();
+    }
+
+    // OPENS THE ALREADY-ALLOCATED MAIN INPUT; FFMPEG FREES THE CONTEXT WHEN OPENING FAILS.
+    // CLEAR ITS JAVA REFERENCE SO CLEANUP AND READS CANNOT TOUCH FREED MEMORY.
+    private boolean openInput(final String url) {
+        final AVDictionary options = new AVDictionary();
+        try {
+            this.applyInputOptions(options);
+
+            final int ret = avformat.avformat_open_input(this.formatContext, url, null, options);
+            if (ret < 0) {
+                this.formatContext = null;
+                // AN OPEN CUT SHORT BY THE INTERRUPT CALLBACK IS THE CALLER'S OWN stop(), NOT A FAILURE
+                if (this.aborted) {
+                    LOGGER.debug(IT, "Open aborted by stop/restart: {}", url);
+                    return false;
+                }
+                final String reason = FFTool.error(ret);
+                LOGGER.error(IT, "Failed to open input ({}): {}", reason, url);
+                this.failure = new IOException("Failed to open input (" + reason + "): " + url);
+                return false;
+            }
+            return true;
+        } finally {
+            av_dict_free(options);
+        }
+    }
+
+    private boolean reopenFormat() {
+        final String url = this.url(this.uri);
+        if (url == null) return false;
+
+        if (this.formatContext != null) {
+            avformat.avformat_close_input(this.formatContext);
+        }
+
+        this.formatContext = avformat.avformat_alloc_context();
+        this.formatContext.interrupt_callback().callback(INTERRUPT).opaque(this.abortFlag);
+
+        if (!this.openInput(url)) return false;
+
+        if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
+            if (!this.aborted) LOGGER.error(IT, "reopenFormat: failed to find stream info");
+            return false;
+        }
+
+        // FFMPEG MARKS AN UNKNOWN DURATION (LIVE) AS AV_NOPTS_VALUE
+        final long duration = this.formatContext.duration();
+        this.host.duration(duration == AV_NOPTS_VALUE || duration < 0 ? 0 : duration / 1000);
+
+        // RE-RESOLVE STREAM INDICES — A REOPENED INPUT MAY EXPOSE STREAMS IN A
+        // DIFFERENT ORDER (COMMON WITH HLS). THE CODEC CONTEXTS ARE KEPT, SO THE
+        // NEW STREAMS MUST MATCH THE CODECS THEY WERE OPENED FOR.
+        int newVideoIndex = -1;
+        int newAudioIndex = -1;
+        for (int i = 0; i < this.formatContext.nb_streams(); i++) {
+            final int codecType = this.formatContext.streams(i).codecpar().codec_type();
+            if (codecType == avutil.AVMEDIA_TYPE_VIDEO && newVideoIndex < 0) newVideoIndex = i;
+            else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && newAudioIndex < 0) newAudioIndex = i;
+        }
+        if (this.videoCodecContext != null) {
+            if (newVideoIndex < 0 || this.formatContext.streams(newVideoIndex).codecpar().codec_id() != this.videoCodecContext.codec_id()) {
+                LOGGER.error(IT, "reopenFormat: video stream missing or codec mismatch (index={})", newVideoIndex);
+                return false;
+            }
+            this.videoStreamIndex = newVideoIndex;
+            this.videoStream = this.formatContext.streams(newVideoIndex);
+            this.videoTimeBase = av_q2d(this.videoStream.time_base());
+        }
+        if (!this.useAudioTrack && this.audioCodecContext != null) {
+            if (newAudioIndex < 0 || this.formatContext.streams(newAudioIndex).codecpar().codec_id() != this.audioCodecContext.codec_id()) {
+                LOGGER.error(IT, "reopenFormat: audio stream missing or codec mismatch (index={})", newAudioIndex);
+                return false;
+            }
+            this.audioStreamIndex = newAudioIndex;
+            this.audioTimeBase = av_q2d(this.formatContext.streams(newAudioIndex).time_base());
+        }
+
+        if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+        if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+
+        return true;
+    }
+
+    // MAIN AND SEPARATE AUDIO INPUTS SHARE TRANSPORT AND PROBING POLICY.
+    // FFMPEG EXPECTS MICROSECONDS/BYTES WHERE CONFIG USES MILLISECONDS/MEBIBYTES.
+    void applyInputOptions(final AVDictionary options) {
+        FFTool.configureTLS(options);
+        av_dict_set(options, "headers", this.headers.toRawString(), 0);
+        final long analyzeMs = WaterMediaConfig.codecs.ffmpeg.analyzeDuration;
+        if (analyzeMs > 0) {
+            av_dict_set(options, "analyzeduration", String.valueOf(analyzeMs * 1000L), 0);
+        }
+        av_dict_set(options, "probesize", String.valueOf(DataTool.megabytes(WaterMediaConfig.codecs.ffmpeg.probeSize)), 0);
+        av_dict_set(options, "buffer_size", "33554432", 0);
+        av_dict_set(options, "rtbufsize", "15000000", 0);
+        av_dict_set(options, "http_persistent", "1", 0);
+        av_dict_set(options, "multiple_requests", "0", 0);
+        av_dict_set(options, "reconnect", "1", 0);
+        av_dict_set(options, "reconnect_streamed", "1", 0);
+        av_dict_set(options, "reconnect_delay_max", "5", 0);
+        av_dict_set(options, "timeout", "10000000", 0);
+        av_dict_set(options, "rtsp_transport", "tcp", 0);
+        av_dict_set(options, "max_delay", "5000000", 0);
+    }
+
+    // ==========================================================================
+    // INIT
+    // ==========================================================================
+    // OPENS THE INPUT, PICKS THE STREAMS AND OPENS THEIR DECODERS; FALSE WHEN NOTHING CAN PLAY (failure SAYS WHY) OR AN ABORT CUT IT SHORT
+    private boolean init() {
+        try {
+            final String url = this.url(this.uri);
+            if (url == null) return false;
+
+            this.formatContext = avformat.avformat_alloc_context();
+            this.formatContext.interrupt_callback().callback(INTERRUPT).opaque(this.abortFlag);
+
+            LOGGER.debug(IT, "Target origin {}://{}", this.uri.getScheme(), this.uri.getHost());
+            if (!this.openInput(url)) return false;
+
+            if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
+                if (this.aborted) {
+                    LOGGER.debug(IT, "Stream probe aborted by stop/restart: {}", url);
+                    return false;
+                }
+                LOGGER.error(IT, "Failed to find stream info");
+                this.failure = new IOException("Failed to find stream info: " + url);
+                return false;
+            }
+
+            // FFMPEG MARKS AN UNKNOWN DURATION (LIVE) AS AV_NOPTS_VALUE
+            final long duration = this.formatContext.duration();
+            this.host.duration(duration == AV_NOPTS_VALUE || duration < 0 ? 0 : duration / 1000);
+
+            final String fmtName = this.formatContext.iformat() != null ? this.formatContext.iformat().name().getString() : "";
+            this.hls = url.contains(".m3u8") || fmtName.contains("hls");
+
+            for (int i = 0; i < this.formatContext.nb_streams(); i++) {
+                final AVStream stream = this.formatContext.streams(i);
+                final int codecType = stream.codecpar().codec_type();
+
+                if (codecType == avutil.AVMEDIA_TYPE_VIDEO && this.videoStreamIndex < 0 && this.videoWanted) {
+                    this.videoStreamIndex = i;
+                    this.videoStream = stream;
+                    this.videoTimeBase = av_q2d(stream.time_base());
+                } else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0 && this.audioWanted && this.track == null) {
+                    this.audioStreamIndex = i;
+                    this.audioTimeBase = av_q2d(stream.time_base());
+                }
+            }
+
+            if (this.audioWanted && this.track != null) {
+                this.useAudioTrack = this.initAudioTrack(this.track);
+                if (!this.useAudioTrack) {
+                    // A stop()/RESTART CUT THE TRACK OPEN SHORT: THE WHOLE SETUP IS ABANDONED, THERE IS NOTHING TO FALL BACK TO
+                    if (this.aborted) return false;
+                    LOGGER.warn(IT, "Audio track failed to open, falling back to main audio stream");
+                    for (int i = 0; i < this.formatContext.nb_streams(); i++) {
+                        final AVStream stream = this.formatContext.streams(i);
+                        if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0) {
+                            this.audioStreamIndex = i;
+                            this.audioTimeBase = av_q2d(stream.time_base());
+                        }
+                    }
+                }
+            }
+
+            final boolean videoInit = this.initVideo();
+            final boolean audioInit = this.initAudio();
+
+            // FULLY DISABLE A STREAM WHOSE INIT FAILED. THE DECODE THREADS ONLY CHECK
+            // streamIndex >= 0 && codecContext != null TO START, BUT A PARTIALLY-OPENED
+            // PIPELINE LEAVES codecContext NON-NULL (E.G. avcodec_open2 SUCCEEDS WHILE
+            // swr_init FAILS). RUNNING ON THAT HALF-INITIALIZED RESAMPLER CALLS
+            // swr_get_delay ON AN UNINITIALIZED SwrContext WHOSE in_sample_rate IS 0,
+            // CAUSING A NATIVE INTEGER DIVIDE-BY-ZERO (JVM CRASH). THIS HAPPENS ON HLS
+            // VARIANTS WHOSE AUDIO PARAMS CANNOT BE PROBED (sample_rate=0, 0 channels).
+            if (!videoInit) {
+                if (this.videoCodecContext != null) {
+                    avcodec.avcodec_free_context(this.videoCodecContext);
+                    this.videoCodecContext = null;
+                }
+                this.videoStreamIndex = -1;
+                this.videoStream = null;
+            }
+            if (!audioInit) {
+                if (this.audioCodecContext != null) {
+                    avcodec.avcodec_free_context(this.audioCodecContext);
+                    this.audioCodecContext = null;
+                }
+                if (this.swrContext != null) {
+                    swresample.swr_free(this.swrContext);
+                    this.swrContext = null;
+                }
+                this.audioStreamIndex = -1;
+            }
+
+            if (!videoInit && !audioInit)
+                throw new IllegalStateException("Video and Audio failed to initialize");
+            return true;
+        } catch (final Exception e) {
+            // A SETUP CUT SHORT BY stop()/RESTART IS NOT A FAILURE WORTH RECORDING
+            if (this.aborted) return false;
+            LOGGER.error(IT, "Failed to initialize the FFmpeg decoder", e);
+            this.failure = e;
+            return false;
+        }
+    }
+
+    boolean initAudioTrack(final Track track) {
+        final URI trackUri = track.uri();
+        if (trackUri == null) {
+            LOGGER.error(IT, "Audio track {} has no URI", track.name());
+            return false;
+        }
+
+        final String trackUrl = this.url(trackUri);
+        if (trackUrl == null) return false;
+
+        this.trackFormatContext = avformat.avformat_alloc_context();
+        this.trackFormatContext.interrupt_callback().callback(INTERRUPT).opaque(this.abortFlag);
+        final AVDictionary trackOptions = new AVDictionary();
+
+        try {
+            this.applyInputOptions(trackOptions);
+
+            if (avformat.avformat_open_input(this.trackFormatContext, trackUrl, null, trackOptions) < 0) {
+                if (!this.aborted) LOGGER.error(IT, "Failed to open audio track input: {}", trackUrl);
+                this.trackFormatContext = null;
+                return false;
+            }
+        } finally {
+            av_dict_free(trackOptions);
+        }
+
+        if (avformat.avformat_find_stream_info(this.trackFormatContext, (PointerPointer<?>) null) < 0) {
+            if (!this.aborted) LOGGER.error(IT, "Failed to find stream info for audio track");
+            avformat.avformat_close_input(this.trackFormatContext);
+            this.trackFormatContext = null;
+            return false;
+        }
+
+        for (int i = 0; i < this.trackFormatContext.nb_streams(); i++) {
+            final AVStream stream = this.trackFormatContext.streams(i);
+            if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO) {
+                this.audioStreamIndex = i;
+                this.audioTimeBase = av_q2d(stream.time_base());
+                LOGGER.debug(IT, "Audio track opened: {}", trackUrl);
+                return true;
+            }
+        }
+
+        LOGGER.error(IT, "No audio stream found in audio track: {}", trackUrl);
+        avformat.avformat_close_input(this.trackFormatContext);
+        this.trackFormatContext = null;
+        return false;
+    }
+
+    private boolean initVideo() {
+        if (!this.videoWanted || this.videoStreamIndex < 0) {
+            LOGGER.warn(IT, "No video stream found or video disabled");
+            return true;
+        }
+
+        final AVStream videoStream = this.videoStream;
+
+        // DETERMINE FRAME RATE — PREFER avg_frame_rate, FALL BACK TO r_frame_rate.
+        // REJECT IMPLAUSIBLE VALUES: MPEG-TS (COMMON INSIDE HLS) REPORTS THE 90kHz PCR
+        // CLOCK (90000fps) AS r_frame_rate UNTIL THE REAL RATE IS PROBED. FEEDING THAT
+        // TO THE CLOCK COLLAPSES FRAME PACING — frameDuration AND skipThreshold ROUND
+        // TO 0ms — SO THE PLAYER KEEPS ITS CLOCK'S SANE DEFAULT WHEN NO REAL RATE IS AVAILABLE.
+        final double avgFps = av_q2d(videoStream.avg_frame_rate());
+        final double rFps = av_q2d(videoStream.r_frame_rate());
+        this.fps = isPlausibleFps(avgFps) ? (float) avgFps : isPlausibleFps(rFps) ? (float) rFps : 0f;
+        if (this.fps == 0f) LOGGER.warn(IT, "No plausible frame rate (avg={}, r={}) — the clock keeps its default", avgFps, rFps);
+
+        final AVCodecParameters codecpar = videoStream.codecpar();
+        final int codecId = codecpar.codec_id();
+
+        final String codecName = FFTool.string(avcodec_get_name(codecId), null);
+        final AVCodecDescriptor descriptor = avcodec_descriptor_get(codecId);
+        final String codecLongName = descriptor != null ? FFTool.string(descriptor.long_name(), "unknown") : "unknown";
+        final long bitrate = codecpar.bit_rate();
+        final int profile = codecpar.profile();
+        final int level = codecpar.level();
+        final int pixFmt = codecpar.format();
+
+        final var profilePointer = avcodec_profile_name(codecId, profile);
+        final var fmtNamePointer = av_get_pix_fmt_name(pixFmt);
+
+        final AVCodec decoder = avcodec_find_decoder(codecId);
+        if (decoder == null)
+            LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}", codecId, this.videoStreamIndex);
+
+        // REPORT THE ACTUAL DECODER (e.g. libdav1d vs libaom-av1 vs THE NATIVE av1 DECODER):
+        // THE SAME CODEC ID RESOLVES TO DIFFERENT DECODERS PER PLATFORM BUILD, AND THEY DIFFER
+        // IN REORDER DELAY AND STREAM SUPPORT — KEY CONTEXT WHEN A DECODE YIELDS NO FRAMES.
+        LOGGER.debug(IT, "Video codec: {} ({}) via {}, bitrate: {} kbps, profile: {}, level: {}, pixel format: {}",
+                codecName, codecLongName, decoder != null ? FFTool.string(decoder.name(), codecName) : "no decoder",
+                bitrate > 0 ? bitrate / 1000 : "N/A", FFTool.string(profilePointer, profile), level, FFTool.string(fmtNamePointer, pixFmt));
+
+        final boolean hwAllowed = WaterMediaConfig.codecs.ffmpeg.hardwareAccel;
+        // THE DEFAULT DECODER IS KEPT FOR THE HARDWARE PATH (THE NATIVE av1 DECODER IS THE
+        // HWACCEL HOST). THE SOFTWARE PATH NEEDS A REAL SOFTWARE DECODER INSTEAD — SEE
+        // softwareVideoDecoder. GUARD decoder == null: initHwDecoder WOULD DEREFERENCE IT
+        // NATIVELY (avcodec_get_hw_config) AND SEGFAULT THE JVM — LET THE SOFTWARE PATH FAIL CLEANLY.
+        if (!hwAllowed || decoder == null || !this.initHwDecoder(decoder, videoStream)) {
+            if (!hwAllowed) LOGGER.debug(IT, "Hardware acceleration disabled by config — using software decoding");
+
+            final AVCodec swDecoder = softwareVideoDecoder(codecId, decoder);
+            if (swDecoder == null) {
+                LOGGER.error(IT, "No software decoder available for codec id {}", codecId);
+                return false;
+            }
+            if (decoder == null || !Objects.equals(FFTool.string(swDecoder.name(), ""), FFTool.string(decoder.name(), "")))
+                LOGGER.debug(IT, "Software decode using {}", FFTool.string(swDecoder.name(), "?"));
+
+            this.videoCodecContext = avcodec.avcodec_alloc_context3(swDecoder);
+            if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
+                LOGGER.error(IT, "Failed to copy video codec parameters to context");
+                return false;
+            }
+
+            configureSwDecoderThreads(this.videoCodecContext);
+
+            if (avcodec.avcodec_open2(this.videoCodecContext, swDecoder, (PointerPointer<?>) null) < 0) {
+                LOGGER.error(IT, "Failed to open video codec");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean initHwDecoder(final AVCodec decoder, final AVStream videoStream) {
+        // THE ENGINE'S VULKAN DEVICE (OR ITS TWIN) FIRST: ITS FRAMES STAY ON THE GPU, EVERY OTHER ACCELERATOR DOWNLOADS THEM TO RAM. LIBPLACEBO
+        // TURNS ANY POOL INTO RGBA THERE; WITHOUT IT ONLY 4:2:0 STREAMS QUALIFY, WHOSE POOLS (NV12, P010) THE ENGINE SAMPLES ITSELF
+        final int streamFormat = videoStream.codecpar().format();
+        final AVCodecHWConfig vulkan = hwConfig(decoder, AV_HWDEVICE_TYPE_VULKAN);
+        final Device device = vulkan == null ? null : this.host.vulkan(videoStream.codecpar().codec_id());
+        if (device != null) {
+            final boolean sampled = device.filters() || streamFormat == AV_PIX_FMT_YUV420P || streamFormat == AV_PIX_FMT_YUVJ420P || streamFormat == AV_PIX_FMT_YUV420P10LE;
+            if (!sampled) av_buffer_unref(device.ref());
+            else if (this.openHw(decoder, videoStream, vulkan, device.ref())) {
+                this.vulkanFrames = true;
+                this.filters = device.filters();
+                return true;
+            }
+        }
+        for (final int hw: VIDEO_HW_CODECS) {
+            final AVCodecHWConfig config = hwConfig(decoder, hw);
+            if (config == null) continue;
+            final AVBufferRef ref = new AVBufferRef();
+            if (av_hwdevice_ctx_create(ref, hw, (String) null, null, 0) < 0) {
+                ref.releaseReference();
+                continue;
+            }
+            if (this.openHw(decoder, videoStream, config, ref)) return true;
+        }
+        return false;
+    }
+
+    // THE DECODER'S CONFIGURATION THAT TAKES A DEVICE CONTEXT OF TYPE hw, OR NULL
+    private static AVCodecHWConfig hwConfig(final AVCodec decoder, final int hw) {
+        for (int i = 0; ; i++) {
+            final AVCodecHWConfig config = avcodec.avcodec_get_hw_config(decoder, i);
+            if (config == null) return null;
+            if (config.device_type() == hw && (config.methods() & avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) return config;
+        }
+    }
+
+    // OPENS THE DECODER ON device, A REFERENCE THIS DECODER OWNS FROM HERE ON; FALSE LEAVES NOTHING OPEN
+    private boolean openHw(final AVCodec decoder, final AVStream videoStream, final AVCodecHWConfig config, final AVBufferRef device) {
+        this.hwDeviceCtx = device;
+        this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
+        if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
+            this.cleanupHwContext();
+            return false;
+        }
+        this.videoCodecContext.hw_device_ctx(av_buffer_ref(device));
+        this.hwPixelFormat = config.pix_fmt();
+        if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) >= 0) {
+            final BytePointer hwName = av_hwdevice_get_type_name(config.device_type());
+            LOGGER.debug(IT, "Hardware decoder initialized: {}", FFTool.string(hwName, "unknown (" + config.device_type() + ")"));
+            IOTool.closeQuietly(hwName);
+            return true;
+        }
+        this.cleanupHwContext();
+        return false;
+    }
+
+    private void cleanupHwContext() {
+        if (this.videoCodecContext != null) {
+            avcodec.avcodec_free_context(this.videoCodecContext);
+            this.videoCodecContext = null;
+        }
+        if (this.hwDeviceCtx != null) {
+            av_buffer_unref(this.hwDeviceCtx);
+            this.hwDeviceCtx = null;
+        }
+        this.hwPixelFormat = AV_PIX_FMT_NONE;
+        this.vulkanFrames = false;
+    }
+
+    // RESOLVES A SOFTWARE-CAPABLE VIDEO DECODER FOR THE SOFTWARE DECODE PATH.
+    // avcodec_find_decoder CAN HAND BACK A HWACCEL-ONLY DECODER: THE NATIVE FFmpeg "av1"
+    // DECODER HAS NO SOFTWARE DECODE PATH AND EMITS ZERO FRAMES WHEN NO HARDWARE ACCELERATOR
+    // IS ACTIVE (IT ERRORS ON MOST PACKETS), WHICH SURFACES AS A VIDEO THAT INSTANTLY "ENDS".
+    // FOR AV1 ON THE SOFTWARE PATH, PREFER A DEDICATED SOFTWARE DECODER (libdav1d, THEN
+    // libaom-av1); FALL BACK TO THE DEFAULT WHEN THE BUILD SHIPS NEITHER.
+    //
+    // AV1 IS THE ONLY VIDEO CODEC THAT NEEDS THIS. ENUMERATING THE BUNDLED FFMPEG CONFIRMS
+    // EVERY OTHER CODEC WITH MULTIPLE DECODERS (h264, hevc, vp8, vp9, vc1, mpeg2, mjpeg, vvc)
+    // DEFAULTS TO ITS NATIVE *SOFTWARE* DECODER — ONLY AV1 DEFAULTS TO/CAN LAND ON A NON-SW
+    // STUB BECAUSE FFmpeg NEVER WROTE A NATIVE SOFTWARE AV1 DECODER. THE GENERAL BACKSTOP FOR
+    // ANY FUTURE STUB IS THE PLAYER'S ZERO-FRAME → ERROR CHECK.
+    private static AVCodec softwareVideoDecoder(final int codecId, final AVCodec fallback) {
+        if (codecId == AV_CODEC_ID_AV1) {
+            final AVCodec dav1d = avcodec_find_decoder_by_name("libdav1d");
+            if (dav1d != null) return dav1d;
+            final AVCodec aom = avcodec_find_decoder_by_name("libaom-av1");
+            if (aom != null) return aom;
+        }
+        return fallback;
+    }
+
+    // SIZES THE SOFTWARE DECODER THREAD POOL TO THE FRAME AREA
+    private static void configureSwDecoderThreads(final AVCodecContext ctx) {
+        final int width = ctx.width();
+        final int height = ctx.height();
+        final int pixels = width * height;
+
+        final int threads = pixels <= 921_600
+                ? Math.min(2, MAX_DECODE_THREADS) : pixels <= 2_073_600
+                ? Math.min(4, MAX_DECODE_THREADS) : pixels <= 3_686_400
+                ? Math.min(6, MAX_DECODE_THREADS) : MAX_DECODE_THREADS;
+
+        ctx.thread_count(threads);
+        ctx.thread_type(AVCodecContext.FF_THREAD_FRAME | AVCodecContext.FF_THREAD_SLICE);
+
+        LOGGER.debug(IT, "Decoder threading: {} threads for {}x{}", threads, width, height);
+    }
+
+    // REPLACES A MISBEHAVING HARDWARE DECODER WITH A SOFTWARE ONE, IN PLACE.
+    // CALLED FROM THE VIDEO DECODE THREAD. ONLY SWAPS this.videoCodecContext ON
+    // FULL SUCCESS — ON FAILURE THE HW CONTEXT STAYS USABLE. FRAMES OF THE
+    // CURRENT GOP ARE LOST UNTIL THE NEXT KEYFRAME, WHICH IS ACCEPTABLE ON AN
+    // ALREADY-FAILING PIPELINE.
+    private boolean reinitVideoCodecSoftware() {
+        final AVStream stream = this.videoStream;
+        final int codecId = stream.codecpar().codec_id();
+        // ROUTE AROUND THE HWACCEL-ONLY NATIVE av1 DECODER ON THIS SOFTWARE FALLBACK — SEE
+        // softwareVideoDecoder. WITHOUT THIS A FAILED AV1 HWACCEL WOULD FALL BACK TO A
+        // DECODER THAT PRODUCES NO FRAMES.
+        final AVCodec decoder = softwareVideoDecoder(codecId, avcodec_find_decoder(codecId));
+        if (decoder == null) return false;
+
+        final AVCodecContext fresh = avcodec.avcodec_alloc_context3(decoder);
+        if (fresh == null) return false;
+        if (avcodec_parameters_to_context(fresh, stream.codecpar()) < 0) {
+            avcodec.avcodec_free_context(fresh);
+            LOGGER.error(IT, "SW fallback: failed to copy codec parameters");
+            return false;
+        }
+
+        configureSwDecoderThreads(fresh);
+
+        if (avcodec.avcodec_open2(fresh, decoder, (PointerPointer<?>) null) < 0) {
+            avcodec.avcodec_free_context(fresh);
+            LOGGER.error(IT, "SW fallback: failed to open software codec");
+            return false;
+        }
+
+        final AVCodecContext old = this.videoCodecContext;
+        this.videoCodecContext = fresh;
+        avcodec.avcodec_free_context(old);
+        if (this.hwDeviceCtx != null) {
+            av_buffer_unref(this.hwDeviceCtx);
+            this.hwDeviceCtx = null;
+        }
+        this.hwPixelFormat = AV_PIX_FMT_NONE;
+        this.vulkanFrames = false;
+
+        LOGGER.info(IT, "Software decoding fallback active");
+        return true;
+    }
+
+    private boolean initAudio() {
+        if (!this.audioWanted || this.audioStreamIndex < 0)
+            return false;
+
+        final AVFormatContext audioContext = this.useAudioTrack ? this.trackFormatContext : this.formatContext;
+        final AVStream audioStream = audioContext.streams(this.audioStreamIndex);
+        final AVCodecParameters codecParams = audioStream.codecpar();
+        final int codecId = codecParams.codec_id();
+        final AVCodec audioCodec = avcodec.avcodec_find_decoder(codecId);
+
+        int errorCode;
+        if (audioCodec == null) {
+            LOGGER.error(IT, "Failed to find audio codec with id {} for audioIndex {}", codecId, this.audioStreamIndex);
+            return false;
+        }
+
+        final var audioCodecPointer = avcodec_get_name(codecId);
+        final var sampleNamePointer = av_get_sample_fmt_name(codecParams.format());
+        final String audioCodecName = FFTool.string(audioCodecPointer, null);
+        LOGGER.debug(IT, "Audio codec: {} (id={}), channels: {}, sample_rate: {}, format: {}",
+                audioCodecName, codecId,
+                codecParams.ch_layout().nb_channels(),
+                codecParams.sample_rate(),
+                FFTool.string(sampleNamePointer, codecParams.format()));
+
+        this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
+        if (this.audioCodecContext == null) {
+            LOGGER.error(IT, "Failed to allocate audio codec context");
+            return false;
+        }
+
+        if ((errorCode = avcodec_parameters_to_context(this.audioCodecContext, codecParams)) < 0) {
+            LOGGER.error(IT, "Failed to copy audio codec parameters to context - err: {}", errorCode);
+            return false;
+        }
+
+        if ((errorCode = avcodec.avcodec_open2(this.audioCodecContext, audioCodec, (PointerPointer<?>) null)) < 0) {
+            LOGGER.error(IT, "Failed to open audio codec - err: {}", errorCode);
+            return false;
+        }
+
+        // THE PLAYER FORMATS ITS ENGINE FOR THIS SOURCE AND SAYS WHAT IT TAKES
+        final int srcFormat = codecParams.format();
+        final int srcChannels = codecParams.ch_layout().nb_channels();
+        final boolean srcPlanar = av_sample_fmt_is_planar(srcFormat) != 0;
+        final SampleType srcType = FFTool.sampleType(srcFormat);
+
+        this.audioOutputSampleRate = codecParams.sample_rate();
+
+        // RECORD NEGOTIATED INPUT PARAMETERS FOR MID-STREAM CHANGE DETECTION
+        this.audioInputSampleRate = codecParams.sample_rate();
+        this.audioInputAvFormat = srcFormat;
+        this.audioInputChannels = srcChannels;
+
+        final Pcm target = this.host.audio(srcType, srcChannels, this.audioOutputSampleRate);
+        if (target == null) return false;
+        this.audioOutputChannels = target.channels();
+        // KEPT EVEN IN PASSTHROUGH — A MID-STREAM PARAMETER CHANGE DEMOTES PASSTHROUGH TO THE RESAMPLE
+        // PATH, WHICH CONVERTS TOWARD THIS FORMAT (THE ENGINE FORMAT CANNOT CHANGE)
+        this.audioOutputAvFormat = FFTool.avSampleFormat(target.type());
+
+        // PASSTHROUGH: AN INTERLEAVED SOURCE THE ENGINE TAKES AS IT IS
+        if (!srcPlanar && target.type() == srcType && target.channels() == srcChannels) {
+            this.audioPassthrough = true;
+            LOGGER.debug(IT, "Audio passthrough: type={}, channels={}, rate={}", srcType, srcChannels, this.audioOutputSampleRate);
+            return true;
+        }
+
+        this.audioPassthrough = false;
+        LOGGER.debug(IT, "Audio resample ({}): {} {}ch {}Hz → {} {}ch {}Hz", srcPlanar ? "de-planarize only" : "format conversion",
+                FFTool.string(av_get_sample_fmt_name(srcFormat), srcFormat),
+                srcChannels, this.audioOutputSampleRate,
+                target.type(), this.audioOutputChannels, this.audioOutputSampleRate);
+
+        this.swrContext = swresample.swr_alloc();
+        if (this.swrContext == null) {
+            LOGGER.error(IT, "Failed to allocate SWResampler context");
+            return false;
+        }
+
+        final AVChannelLayout inputLayout = new AVChannelLayout();
+        final AVChannelLayout outputLayout = new AVChannelLayout();
+
+        try {
+            if (srcChannels > 0) {
+                avutil.av_channel_layout_copy(inputLayout, codecParams.ch_layout());
+            } else {
+                LOGGER.warn(IT, "Audio codec has no channel layout info, defaulting to stereo");
+                avutil.av_channel_layout_default(inputLayout, 2);
+            }
+
+            avutil.av_channel_layout_default(outputLayout, this.audioOutputChannels);
+
+            avutil.av_opt_set_chlayout(this.swrContext, "in_chlayout", inputLayout, 0);
+            avutil.av_opt_set_int(this.swrContext, "in_sample_rate", this.audioOutputSampleRate, 0);
+            avutil.av_opt_set_sample_fmt(this.swrContext, "in_sample_fmt", srcFormat, 0);
+
+            avutil.av_opt_set_chlayout(this.swrContext, "out_chlayout", outputLayout, 0);
+            avutil.av_opt_set_int(this.swrContext, "out_sample_rate", this.audioOutputSampleRate, 0);
+            avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", this.audioOutputAvFormat, 0);
+
+            if (swresample.swr_init(this.swrContext) < 0) {
+                LOGGER.error(IT, "Failed to initialize SWResampler context");
+                return false;
+            }
+        } finally {
+            av_channel_layout_uninit(inputLayout);
+            av_channel_layout_uninit(outputLayout);
+        }
+        return true;
+    }
+
+    // ==========================================================================
+    // CLEANUP
+    // ==========================================================================
+    private void free() {
+        LOGGER.debug(IT, "Freeing the FFmpeg decoder...");
+
+        if (this.hwDeviceCtx != null) {
+            av_buffer_unref(this.hwDeviceCtx);
+            this.hwDeviceCtx = null;
+        }
+        this.hwPixelFormat = AV_PIX_FMT_NONE;
+        this.vulkanFrames = false;
+
+        if (this.swrContext != null) {
+            swresample.swr_free(this.swrContext);
+            this.swrContext = null;
+        }
+        if (this.videoCodecContext != null) {
+            // FLUSH BEFORE FREE: A FRAME-THREADED DECODER (E.G. THE MULTI-THREAD SOFTWARE FALLBACK)
+            // INTERRUPTED MID-DECODE CAN LEAVE ITS ASYNC PIPELINE UNBALANCED, WHICH TRIPS
+            // av_assert0(fctx->async_lock) IN pthread_frame.c ON avcodec_free_context. FLUSHING DRAINS
+            // THE WORKER THREADS AND RESETS THAT STATE FIRST.
+            avcodec.avcodec_flush_buffers(this.videoCodecContext);
+            avcodec.avcodec_free_context(this.videoCodecContext);
+            this.videoCodecContext = null;
+        }
+        if (this.audioCodecContext != null) {
+            avcodec.avcodec_free_context(this.audioCodecContext);
+            this.audioCodecContext = null;
+        }
+        if (this.formatContext != null) {
+            try {
+                avformat.avformat_close_input(this.formatContext);
+            } catch (final Exception e) {
+                LOGGER.warn(IT, "Error closing format context", e);
+            }
+            this.formatContext = null;
+        }
+        if (this.trackFormatContext != null) {
+            try {
+                avformat.avformat_close_input(this.trackFormatContext);
+            } catch (final Exception e) {
+                LOGGER.warn(IT, "Error closing track format context", e);
+            }
+            this.trackFormatContext = null;
+        }
+        this.useAudioTrack = false;
+        this.videoStreamIndex = -1;
+        this.videoStream = null;
+        this.audioStreamIndex = -1;
+
+        LOGGER.debug(IT, "FFmpeg decoder freed");
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // AN UNSTARTED PIPELINE THREAD OF THE PLAYER'S GROUP, SO A CALLER CAN PUBLISH IT IN ITS FIELD BEFORE IT RUNS
+    private Thread thread(final String role, final Runnable task) {
+        final Thread thread = THREADS.newThread(task);
+        thread.setName(this.group + "-" + role);
+        return thread;
+    }
+
+    // PLAUSIBLE REAL-WORLD VIDEO FRAME RATE. REJECTS 0/NaN/INFINITY AND TIMEBASE
+    // ARTIFACTS LIKE THE 90kHz MPEG-TS PCR CLOCK (90000), WHICH WOULD OTHERWISE
+    // DRIVE frameDuration TO 0ms AND BREAK PACING. 1000fps IS WELL ABOVE ANY REAL
+    // CONTENT WHILE STILL EXCLUDING CLOCK-RATE VALUES.
+    private static boolean isPlausibleFps(final double fps) {
+        return fps >= 1.0 && fps <= 1000.0;
+    }
+
+    // LOGS THE FIRST UNEXPECTED send/receive FAILURE OF A DECODE LOOP WITH ITS CODEC AND NATIVE DETAIL
+    private static void logCodecError(final String media, final String operation, final AVCodecContext codec, final int stream, final int code) {
+        LOGGER.warn(IT, "{} decoder {} failed: codec={}, stream={}, code={} ({})",
+                media, operation, FFTool.string(avcodec_get_name(codec.codec_id()), "unknown"), stream, code, FFTool.error(code));
+    }
+}

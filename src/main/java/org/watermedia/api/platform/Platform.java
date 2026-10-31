@@ -1,6 +1,6 @@
 package org.watermedia.api.platform;
 
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.player.MRL;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;

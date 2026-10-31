@@ -284,9 +284,12 @@ public final class AppBootstrap {
                 }
             }
         }
-        final List<String> command = new ArrayList<>(List.of(
-                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-D" + APP_FLAG + "=true", "-D" + ENGINE_PROP + "=" + engine, "-Dlog4j2.StatusLogger.level=WARN",
+        // THE APP LOADS THE LWJGL AND FFMPEG NATIVES FROM THE CLASSPATH AND LWJGL READS MEMORY THROUGH sun.misc.Unsafe;
+        // JAVA 24+ WARNS ON BOTH WITHOUT THESE FLAGS, AND THE UNSAFE ONE DOES NOT EXIST BEFORE JAVA 23
+        final List<String> command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "--enable-native-access=ALL-UNNAMED"));
+        if (Runtime.version().feature() >= 23) command.add("--sun-misc-unsafe-memory-access=allow");
+        command.addAll(List.of("-D" + APP_FLAG + "=true", "-D" + ENGINE_PROP + "=" + engine, "-Dlog4j2.StatusLogger.level=WARN",
                 "-cp", String.join(File.pathSeparator, classpath), AppBootstrap.class.getName()));
         command.addAll(Arrays.asList(args));
         return new ProcessBuilder(command).inheritIO().start().waitFor();

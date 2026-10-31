@@ -15,8 +15,8 @@ import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.GFXEngine;
+import org.watermedia.api.player.GFXEngine;
+import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.RenderSystem;
@@ -143,7 +143,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
 
     @Override
     public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
-        return () -> MediaAPI.glEngine(renderThread, renderExecutor);
+        return () -> PlayerAPI.glEngine(renderThread, renderExecutor);
     }
 
     // ==========================================================================

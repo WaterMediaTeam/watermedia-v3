@@ -8,7 +8,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.PlatformAPI;
 
@@ -50,19 +49,18 @@ public final class WithoutBinariesProbe {
             waterMedia.getMethod("start", String.class, Path.class, Path.class, boolean.class)
                     .invoke(null, "WITHOUT_BINARIES", root.resolve("temp"), root, client);
             if (!(boolean) waterMedia.getMethod("loaded").invoke(null)) throw new AssertionError("Startup failed without binaries");
-            // THE MISSING MODULE IS NEVER CREATED: BOTH SIDES WALK THE OTHER THREE
+            // THE MISSING MODULE IS NEVER CREATED: BOTH SIDES WALK THE OTHER FOUR
             final int steps = (int) waterMedia.getMethod("steps").invoke(null);
-            if (steps != 3 || (int) waterMedia.getMethod("step").invoke(null) != steps)
+            if (steps != 4 || (int) waterMedia.getMethod("step").invoke(null) != steps)
                 throw new AssertionError("Module count did not match the installed set: " + steps);
             // THE PLATFORM REGISTRY MUST ENLIST WITHOUT LINKING THE yt-dlp HANDLERS
             final Class<?> platforms = Class.forName(PlatformAPI.class.getName(), true, isolated);
             if (((List<?>) platforms.getMethod("platforms").invoke(null)).isEmpty())
                 throw new AssertionError("Built-in platforms were not enlisted without binaries");
             if (client) {
-                final Class<?> media = Class.forName(MediaAPI.class.getName(), true, isolated);
-                if ((boolean) media.getMethod("ffmpegLoaded").invoke(null) || (boolean) media.getMethod("ffmpegError").invoke(null))
-                    throw new AssertionError("Absent binaries must disable video without a native initialization error");
                 final Class<?> codecs = Class.forName(CodecsAPI.class.getName(), true, isolated);
+                if ((boolean) codecs.getMethod("ffmpegLoaded").invoke(null) || (boolean) codecs.getMethod("ffmpegError").invoke(null))
+                    throw new AssertionError("Absent binaries must disable video without a native initialization error");
                 final ByteBuffer image = ByteBuffer.wrap("P6\n1 1\n255\nABC".getBytes(StandardCharsets.US_ASCII));
                 final Object reader = codecs.getMethod("reader", ByteBuffer.class).invoke(null, image);
                 try (final AutoCloseable closeable = (AutoCloseable) reader) {

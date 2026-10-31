@@ -1,8 +1,8 @@
 package org.watermedia.bootstrap.app.screen;
 
-import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.player.MRL;
+import org.watermedia.api.player.MediaPlayer;
+import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.util.MathUtil;
@@ -486,7 +486,7 @@ public class OpenMultimediaScreen extends Screen {
                 this.previewMRL = null;
                 return;
             }
-            this.previewMRL = MediaAPI.mrl(url);
+            this.previewMRL = PlayerAPI.mrl(url);
             this.loadStartTime = System.currentTimeMillis();
             this.subscribePreviewMRL(this.previewMRL, generation);
         } catch (final Exception ignored) {
@@ -707,7 +707,7 @@ public class OpenMultimediaScreen extends Screen {
         if (existing != null) return existing;
         if (this.thumbAttempted.contains(thumbnail)) return null;
 
-        final MRL mrl = MediaAPI.mrl(thumbnail.toString());
+        final MRL mrl = PlayerAPI.mrl(thumbnail.toString());
         final MRL.Status status = mrl.status();
         if (status == MRL.Status.FETCHING) {
             if (this.thumbSubscribed.add(thumbnail)) mrl.subscribe(done -> this.ctx.requestRender());
@@ -719,7 +719,7 @@ public class OpenMultimediaScreen extends Screen {
         final var sources = mrl.sources();
         for (int i = 0; i < sources.size(); i++) {
             if (sources.get(i).type() == MediaType.IMAGE) {
-                final MediaPlayer player = MediaAPI.player(mrl, i,
+                final MediaPlayer player = PlayerAPI.player(mrl, i,
                         mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) {
                     player.repeat(true); // LOOP ANIMATED THUMBNAILS (GIF, WEBP)

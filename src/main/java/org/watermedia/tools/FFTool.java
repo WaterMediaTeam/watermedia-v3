@@ -1,19 +1,38 @@
 package org.watermedia.tools;
 
+import org.bytedeco.ffmpeg.avutil.AVClass;
+import org.bytedeco.ffmpeg.avutil.AVDictionary;
+import org.bytedeco.ffmpeg.global.avformat;
 import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.IntPointer;
 import org.bytedeco.javacpp.Pointer;
+import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.api.util.SampleType;
 
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyStore;
+import java.security.cert.CertificateException;
+import java.util.Base64;
+import java.util.TreeSet;
 
 import static org.bytedeco.ffmpeg.global.avutil.*;
 
-/** FFmpeg helpers shared by the media API, the FFmpeg player and the WebM writer. */
+/** FFmpeg helpers shared by the codecs and the FFmpeg player: pixel formats, native errors and strings, native origin and TLS. */
 public final class FFTool {
     /** 8-bit packed BGRA, the layout every scaler conversion produces. */
     public static final Pixels BGRA = new Pixels(PixelFormat.BGRA, 8);
+
+    // NATIVE STATE, PUBLISHED ONCE WHEN FFMPEG STARTS AND KEPT FOR THE LIFE OF THE PROCESS
+    private static volatile boolean bundled;
+    private static volatile Certificates certificates;
+
+    private record Certificates(String file, String protocols) {}
 
     private FFTool() {}
 
@@ -101,6 +120,29 @@ public final class FFTool {
         };
     }
 
+    /** Maps an FFmpeg sample format, packed or planar, to its PCM sample type, or null when it has none. */
+    public static SampleType sampleType(final int avSampleFormat) {
+        return switch (avSampleFormat) {
+            case AV_SAMPLE_FMT_U8, AV_SAMPLE_FMT_U8P -> SampleType.U8;
+            case AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_S16P -> SampleType.S16;
+            case AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_S32P -> SampleType.S32;
+            case AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_FLTP -> SampleType.FLT;
+            case AV_SAMPLE_FMT_DBL, AV_SAMPLE_FMT_DBLP -> SampleType.DBL;
+            default -> null;
+        };
+    }
+
+    /** Maps a PCM sample type to its packed (interleaved) FFmpeg sample format. */
+    public static int avSampleFormat(final SampleType type) {
+        return switch (type) {
+            case U8 -> AV_SAMPLE_FMT_U8;
+            case S16 -> AV_SAMPLE_FMT_S16;
+            case S32 -> AV_SAMPLE_FMT_S32;
+            case FLT -> AV_SAMPLE_FMT_FLT;
+            case DBL -> AV_SAMPLE_FMT_DBL;
+        };
+    }
+
     /** Decodes a negative FFmpeg return code into its native message. */
     public static String error(final int code) {
         final byte[] detail = new byte[256];
@@ -130,5 +172,86 @@ public final class FFTool {
     /** Reads a native string, or returns {@code orElse} as text when the pointer is null. */
     public static String string(final BytePointer pointer, final Object orElse) {
         return !isNull(pointer) ? pointer.getString() : orElse != null ? String.valueOf(orElse) : null;
+    }
+
+    /** Returns a library version packed by {@code AV_VERSION_INT}, such as {@code avformat_version()}, as {@code major.minor.micro}. */
+    public static String parseVersion(final int version) {
+        return (version >> 16) + "." + ((version >> 8) & 0xFF) + "." + (version & 0xFF);
+    }
+
+    /** Returns whether the loaded natives came from WaterMedia Binaries, whose FFmpeg exports its Vulkan decoder pools. */
+    public static boolean bundled() { return bundled; }
+
+    /** Records whether the loaded natives came from WaterMedia Binaries; the FFmpeg boot calls it once. */
+    public static void bundled(final boolean value) { bundled = value; }
+
+    // ==========================================================================
+    // NATIVE TLS
+    // ==========================================================================
+    /** Exports the JVM trust anchors as the PEM bundle every input verifies against, after checking the patched transport options. */
+    public static void startTLS() throws Exception {
+        // HTTP MUST RETAIN TLS OPTIONS AND CREDENTIAL ORIGINS FOR NESTED MEDIA REQUESTS.
+        for (final String protocol: new String[] { "http", "https", "hls", "dash" }) {
+            final boolean http = protocol.equals("http") || protocol.equals("https");
+            final AVClass type;
+            if (http) {
+                type = avformat.avio_protocol_get_class(protocol);
+            } else {
+                final var format = avformat.av_find_input_format(protocol);
+                type = isNull(format) ? null : format.priv_class();
+            }
+            if (isNull(type)) throw new IllegalStateException("Required native transport is unavailable: " + protocol);
+            try (final var object = new PointerPointer<AVClass>(1).put(type)) {
+                for (final String option: http ? new String[] { "tls_verify", "ca_file", "header_origin" } : new String[] { "protocol_opts" }) {
+                    final var definition = av_opt_find(object, option, null, 0, AV_OPT_SEARCH_FAKE_OBJ);
+                    if (isNull(definition))
+                        throw new IllegalStateException("FFmpeg lacks the required transport security patches; install the WaterMedia native build");
+                }
+            }
+        }
+
+        final TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        factory.init((KeyStore) null);
+        final var anchors = new TreeSet<String>();
+        final var encoder = Base64.getMimeEncoder(64, new byte[] { '\n' });
+        for (final var manager: factory.getTrustManagers()) {
+            if (manager instanceof final X509TrustManager trust)
+                for (final var certificate: trust.getAcceptedIssuers())
+                    anchors.add(encoder.encodeToString(certificate.getEncoded()));
+        }
+        if (anchors.isEmpty()) throw new CertificateException("The JVM truststore exposes no certificate authorities");
+        final var pem = new StringBuilder();
+        for (final String certificate: anchors)
+            pem.append("-----BEGIN CERTIFICATE-----\n").append(certificate).append("\n-----END CERTIFICATE-----\n");
+
+        // THE BUNDLE LIVES AS LONG AS THE PROCESS; ONLY A COMPLETE ONE BECOMES AVAILABLE TO INPUTS
+        final Path bundle = Files.createTempFile("watermedia-ca-", ".pem");
+        bundle.toFile().deleteOnExit();
+        Files.writeString(bundle, pem, StandardCharsets.US_ASCII);
+        final String file = bundle.toString();
+        final var nested = new AVDictionary(null);
+        final var serialized = new BytePointer((Pointer) null);
+        try {
+            // NATIVE ESCAPING PRESERVES WINDOWS DRIVE LETTERS AND SPECIAL CHARACTERS IN THE CA PATH.
+            if (av_dict_set(nested, "tls_verify", "1", 0) < 0 || av_dict_set(nested, "ca_file", file, 0) < 0
+                    || av_dict_get_string(nested, serialized, (byte) '=', (byte) ':') < 0)
+                throw new IllegalStateException("Cannot configure nested HTTPS verification");
+            certificates = new Certificates(file, serialized.getString(StandardCharsets.UTF_8));
+        } finally {
+            av_free(serialized);
+            av_dict_free(nested);
+        }
+    }
+
+    /** Requires certificate and peer-name verification for an input and its nested connections. */
+    public static void configureTLS(final AVDictionary options) {
+        if (options == null) throw new IllegalArgumentException("Options are required");
+        final Certificates current = certificates;
+        if (current == null) throw new IllegalStateException("Native HTTPS verification has not initialized");
+        if (av_dict_set(options, "verify", null, 0) < 0 || av_dict_set(options, "cafile", null, 0) < 0
+                || av_dict_set(options, "verifyhost", null, 0) < 0
+                || av_dict_set(options, "tls_verify", "1", 0) < 0 || av_dict_set(options, "ca_file", current.file(), 0) < 0
+                || av_dict_set(options, "protocol_opts", current.protocols(), 0) < 0)
+            throw new IllegalStateException("Cannot configure native HTTPS verification");
     }
 }

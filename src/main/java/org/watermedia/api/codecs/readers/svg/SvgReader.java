@@ -18,7 +18,7 @@ import java.nio.ByteBuffer;
  * very first byte.
  *
  * <p>SVG is resolution-independent. The output size is the intrinsic size uniformly downscaled so
- * the larger side never exceeds {@link WaterMediaConfig.Decoders.Svg#maxSize} (default 512 px), and
+ * the larger side never exceeds {@link WaterMediaConfig.Codecs.Svg#maxSize} (default 512 px), and
  * it is never upscaled.
  *
  * <p>The frame is {@link PixelFormat#BGRA} natively; a {@link PixelFormat#RGBA} request is honored by
@@ -47,7 +47,7 @@ public final class SvgReader extends ImageReader {
         final double iw = this.document.intrinsicWidth(), ih = this.document.intrinsicHeight();
         if (iw <= 0 || ih <= 0) throw new CodecException("SVG has no resolvable size");
         // INTRINSIC SIZE CAPPED BY THE CONFIG, NEVER UPSCALED
-        final double cap = Math.max(1, WaterMediaConfig.decoders.svg.maxSize);
+        final double cap = Math.max(1, WaterMediaConfig.codecs.svg.maxSize);
         final double s = Math.min(Math.max(iw, ih), cap) / Math.max(iw, ih);
         this.w = Math.max(1, (int) Math.round(iw * s));
         this.h = Math.max(1, (int) Math.round(ih * s));

@@ -10,8 +10,9 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.spi.ExtendedLogger;
 import org.apache.logging.log4j.spi.ExtendedLoggerWrapper;
-import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.network.NetworkAPI;
+import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.DataTool;
@@ -64,12 +65,13 @@ public final class WaterMedia {
         this.clientSide = clientSide;
 
         // THE MODULES IN LOAD ORDER: CONFIGURATION, NATIVES, THEN THE APIS THAT USE THEM; EACH ONE DECIDES BY ITSELF WHETHER THIS SIDE RUNS IT.
-        final List<WaterMediaModule> modules = new ArrayList<>(4);
+        final List<WaterMediaModule> modules = new ArrayList<>(5);
         modules.add(new WaterMediaConfig.Module(this));
         // BINARIES IS OPTIONAL: ITS INSTALL IS CHECKED WITH THE CLASS LOADER'S getResource(), WHICH SEES OTHER JARS WITHOUT LINKING THE CLASS
         if (WaterMedia.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") != null) modules.add(new WaterMediaBinaries(this));
         modules.add(new NetworkAPI.Module(this));
-        modules.add(new MediaAPI.Module(this));
+        modules.add(new CodecsAPI.Module(this));
+        modules.add(new PlayerAPI.Module(this));
         this.modules = List.copyOf(modules);
     }
 

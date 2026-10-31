@@ -14,7 +14,7 @@ import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.AppTheme;
@@ -414,7 +414,7 @@ public class WaterMediaApp {
             case BACK -> screens.backToHome();
 
             case OPEN_MULTIMEDIA -> {
-                if (!MediaAPI.ffmpegLoaded()) {
+                if (!CodecsAPI.ffmpegLoaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
                             null);
@@ -434,7 +434,7 @@ public class WaterMediaApp {
             }
 
             case PLAYER -> {
-                if (!MediaAPI.ffmpegLoaded()) {
+                if (!CodecsAPI.ffmpegLoaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
                             null);
@@ -518,7 +518,7 @@ public class WaterMediaApp {
         ctx.requestRender();
     }
 
-    // REBUILDS THE WINDOW AND ENGINE IN PLACE, KEEPING THE JVM, THE MEDIA API, THE ctx EXECUTOR AND THE GLOW
+    // REBUILDS THE WINDOW AND ENGINE IN PLACE, KEEPING THE JVM, THE PLAYER API, THE ctx EXECUTOR AND THE GLOW
     // PULSE; RUNS ONLY FROM THE TOP OF mainLoop()
     private static void performEngineSwap() {
         final RenderSystem.Engine target = swapTarget;

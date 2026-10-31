@@ -40,13 +40,13 @@ in this repository under [`binaries/`](https://github.com/SrRapero720/watermedia
 # 💻 BASIC USAGE
 ## CREATE AN MRL AND A PLAYER
 ```java
-MRL mrl = MediaAPI.mrl(URI.create("https://imgur.com/gallery/snow-ducks-YcDd9x"));
+MRL mrl = PlayerAPI.mrl(URI.create("https://imgur.com/gallery/snow-ducks-YcDd9x"));
 
 // IN A TICK-LOOP METHOD
 if (mrl.status() == MRL.Status.LOADED) {
-    MediaPlayer player = MediaAPI.player(mrl,
-            () -> MediaAPI.glEngine(renderThread, renderExecutor),
-            () -> MediaAPI.alEngine());
+    MediaPlayer player = PlayerAPI.player(mrl,
+            () -> PlayerAPI.glEngine(renderThread, renderExecutor),
+            () -> PlayerAPI.alEngine());
 }
 ```
 
@@ -91,8 +91,8 @@ public final class MyVKContext implements VKContext {
 ```
 
 ```java
-MediaPlayer player = MediaAPI.player(mrl,
-        () -> MediaAPI.vkEngine(myContext),
+MediaPlayer player = PlayerAPI.player(mrl,
+        () -> PlayerAPI.vkEngine(myContext),
         () -> null);
 
 // EACH FRAME: texture() IS A VkImageView HANDLE (RGBA, SHADER_READ_ONLY) — 0 MEANS NO FRAME YET
@@ -150,7 +150,7 @@ public VKContext.DeviceInfo deviceInfo() {
 ### Minecraft 26.x (Vulkan backend)
 WaterMedia stays engine-agnostic and never touches Mojang's Blaze3D internals — bridging is the
 mod's job. The recommended pattern is a **mixin that implements ``VKContext`` directly on Mojang's
-``VulkanDevice``**, so the device itself IS the context and ``MediaAPI.vkEngine`` only needs a cast.
+``VulkanDevice``**, so the device itself IS the context and ``PlayerAPI.vkEngine`` only needs a cast.
 ``VKContext``'s method names avoid overloading that class's members by return type alone (the
 merged bytecode would be legal — the JVM resolves by full descriptor — but duplicate names muddy
 stack traces and crash reports), and MC's own ``vkDevice()`` accessor already satisfies the
@@ -191,8 +191,8 @@ cast it in the factory call:
 
 ```java
 GpuDeviceBackend backend = ((GpuDeviceAccessor) RenderSystem.getDevice()).wm$backend();
-MediaPlayer player = MediaAPI.player(mrl,
-        () -> MediaAPI.vkEngine((VKContext) backend),
+MediaPlayer player = PlayerAPI.player(mrl,
+        () -> PlayerAPI.vkEngine((VKContext) backend),
         () -> null);
 ```
 
@@ -206,8 +206,8 @@ Two caveats verified against the 26.2 sources:
   its staging-buffer path and compute-shader YUV conversion.
 
 # 🔌 AVAILABLE APIs
-- CodecsAPI: Picture, ~~Audio~~ and ~~Video~~ decoding
-- MediaAPI: Multimedia management and display
+- CodecsAPI: House-made picture and animation codecs plus FFmpeg-backed audio and video
+- PlayerAPI: Multimedia management and display
 - NetworkAPI: Host and Remote storage access for private media
 - PlatformAPI: Web platform support for media loading ~~and media searching~~
 

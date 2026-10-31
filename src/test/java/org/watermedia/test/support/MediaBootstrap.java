@@ -1,7 +1,7 @@
 package org.watermedia.test.support;
 
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.codecs.CodecsAPI;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -32,7 +32,7 @@ public final class MediaBootstrap {
                     final Path tmp = Files.createTempDirectory("wm-test");
                     WaterMedia.start("WMTEST", tmp, Path.of("").toAbsolutePath(), true);
                 }
-                ffmpeg = MediaAPI.ffmpegLoaded();
+                ffmpeg = CodecsAPI.ffmpegLoaded();
             } catch (final Exception | LinkageError e) {
                 failure = e;
             }

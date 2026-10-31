@@ -226,14 +226,14 @@ public class PngTest {
             // 2x1 RGBA: A HALF-COVERING RED PIXEL AND A FULLY TRANSPARENT GREEN ONE, OVER A BLUE bKGD
             final byte[] bytes = png(ihdr(2, 1, 8, 6), pngChunk("bKGD", new byte[] { 0, 0, 0, 0, 0, (byte) 255 }),
                     idat(0, 255, 0, 0, 128, 0, 255, 0, 0));
-            final boolean previous = WaterMediaConfig.decoders.png.useBKGDChunk;
+            final boolean previous = WaterMediaConfig.codecs.png.useBKGDChunk;
             try {
-                WaterMediaConfig.decoders.png.useBKGDChunk = false;
+                WaterMediaConfig.codecs.png.useBKGDChunk = false;
                 assertArrayEquals(new int[] { 0x80FF0000, 0x0000FF00 }, pixels(CodecsAPI.decode(bytes), 0), "transparency kept");
-                WaterMediaConfig.decoders.png.useBKGDChunk = true;
+                WaterMediaConfig.codecs.png.useBKGDChunk = true;
                 assertArrayEquals(new int[] { 0xFF80007F, 0xFF0000FF }, pixels(CodecsAPI.decode(bytes), 0), "flattened onto bKGD");
             } finally {
-                WaterMediaConfig.decoders.png.useBKGDChunk = previous;
+                WaterMediaConfig.codecs.png.useBKGDChunk = previous;
             }
         }
 

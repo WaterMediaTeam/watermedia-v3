@@ -1,7 +1,7 @@
 package org.watermedia.test.support;
 
 import org.joml.Matrix4f;
-import org.watermedia.api.media.GFXEngine;
+import org.watermedia.api.player.GFXEngine;
 import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.RenderEngine;
