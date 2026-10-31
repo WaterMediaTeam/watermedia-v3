@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.UnsupportedFormatException;
+import org.watermedia.test.support.ImageBytes;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -117,8 +118,6 @@ public class AlphaDecoderTest {
 
     // ONE HEADER BYTE FOLLOWED BY THE PLANE BYTES
     private static ByteBuffer alph(final int header, final int... plane) {
-        final ByteBuffer buffer = ByteBuffer.allocate(1 + plane.length).put((byte) header);
-        for (final int value: plane) buffer.put((byte) value);
-        return buffer.flip();
+        return ByteBuffer.wrap(new ImageBytes().u8(header).raw(plane).bytes());
     }
 }

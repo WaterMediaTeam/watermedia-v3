@@ -27,11 +27,11 @@ import java.util.Locale;
 import java.util.ServiceLoader;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** WaterMedia, FFmpeg, OS, CPU, GPU and JVM facts for the issue report; a fact that cannot be read reads "unknown". */
 final class SystemInfo {
-
     private SystemInfo() {}
 
     // MARKDOWN LIST OF THE PROBLEMS DETECTED ON THIS MACHINE, OR A "None detected" LINE
@@ -61,7 +61,7 @@ final class SystemInfo {
                 "- OS: " + osInfo() + "\n" +
                 "- CPU: " + cpuInfo() + "\n" +
                 "- GPU: " + gpuInfo() + "\n" +
-                "- RAM (JVM max): " + rt.maxMemory() / 1024 / 1024 + " MB\n" +
+                "- RAM (JVM max): " + rt.maxMemory() / 1_024 / 1_024 + " MB\n" +
                 "- RAM (system): " + systemRam() + "\n" +
                 "- Java: " + System.getProperty("java.version") + " (" + System.getProperty("java.vendor") + ")\n" +
                 "- Java Home: " + System.getProperty("java.home") + "\n" +
@@ -70,9 +70,7 @@ final class SystemInfo {
                 "- User Dir: " + System.getProperty("user.dir") + "\n";
     }
 
-    // ==========================================================================
-    // WATERMEDIA AND FFMPEG
-    // ==========================================================================
+    // ==== WATERMEDIA AND FFMPEG ====
 
     // BINARIES ARE OPTIONAL FOR THE APP: WITHOUT THEM THE REPORT SAYS SO INSTEAD OF FAILING ON THE MISSING CLASS
     private static String binariesVersion() {
@@ -94,7 +92,7 @@ final class SystemInfo {
 
     private static String ffmpegHwAccel() {
         // WATERMEDIA'S OWN IMAGE CODECS ARE PURE-JAVA (ALWAYS PRESENT), SO THE USEFUL, VARIABLE SIGNAL IS
-        // WHICH FFMPEG HARDWARE ACCELERATIONS THE PLATFORM BUILD/GPU EXPOSES (dxva2/d3d11va/cuda/qsv/vaapi...).
+        // WHICH FFMPEG HARDWARE ACCELERATIONS THE PLATFORM BUILD/GPU EXPOSES (dxva2/d3d11va/cuda/qsv/vaapi...)
         if (!CodecsAPI.ffmpegLoaded()) return "not loaded";
         try {
             final StringBuilder sb = new StringBuilder();
@@ -150,7 +148,7 @@ final class SystemInfo {
     }
 
     private static String detectedExtensions() {
-        // ENUMERATE THE BOOTSTRAP EXTENSION SPI PROVIDERS BY CLASS — provider.type() DOES NOT INSTANTIATE THEM.
+        // ENUMERATE THE BOOTSTRAP EXTENSION SPI PROVIDERS BY CLASS — provider.type() DOES NOT INSTANTIATE THEM
         try {
             final StringBuilder sb = new StringBuilder();
             for (final var provider: ServiceLoader.load(AppBootstrap.Extension.class).stream().toList()) {
@@ -163,9 +161,7 @@ final class SystemInfo {
         }
     }
 
-    // ==========================================================================
-    // MACHINE
-    // ==========================================================================
+    // ==== MACHINE ====
 
     private static String nvidiaThreadedOptimizationAlert() {
         // NVIDIA "Threaded Optimization" CRASHES OR STUTTERS LWJGL APPS AND HAS NO JAVA API; THE GL WORKER THREADS
@@ -177,7 +173,7 @@ final class SystemInfo {
             if (gpu == null || !gpu.toLowerCase(Locale.ROOT).contains("nvidia")) return null;
 
             final long pid = ProcessHandle.current().pid();
-            final String out = runCommand(4000, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+            final String out = runCommand(4_000, "powershell", "-NoProfile", "-NonInteractive", "-Command",
                     "$p=Get-Process -Id " + pid + "; $m=$p.Modules|?{$_.ModuleName -ieq 'nvoglv64.dll'}|select -First 1; "
                             + "if($m){$b=[int64]$m.BaseAddress;$e=$b+$m.ModuleMemorySize;"
                             + "($p.Threads|?{$a=[int64]$_.StartAddress;$a -ge $b -and $a -lt $e}).Count}else{'nomodule'}");
@@ -187,34 +183,26 @@ final class SystemInfo {
                 return "NVIDIA \"Threaded Optimization\" appears ENABLED (" + workers + " GL worker thread(s) inside nvoglv64.dll). "
                         + "It is a known cause of OpenGL crashes/stutter with LWJGL — turn it Off in "
                         + "NVIDIA Control Panel > Manage 3D Settings > Threaded Optimization.";
-        } catch (final Throwable ignored) {
-        }
+        } catch (final Throwable ignored) {}
         return null;
     }
 
     private static String osInfo() {
-        final String name = System.getProperty("os.name");
-        final String base = name + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")";
-        if ("windows".equals(IOTool.os())) {
-            final String build = windowsBuild();
-            if (build != null) return base + " [Build " + build + "]";
-        }
-        return base;
-    }
-
-    private static String windowsBuild() {
-        // os.version ON WINDOWS IS ONLY "10.0" — THE REAL BUILD NUMBER COMES FROM "cmd /c ver".
-        // MATCH THE DOTTED VERSION ITSELF, NOT THE WORD "Version" (cmd IS LOCALIZED, e.g. "Versión").
-        final String out = runCommand(2500, "cmd", "/c", "ver");
-        if (out == null) return null;
-        final var m = Pattern.compile("(\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)").matcher(out);
-        return m.find() ? m.group(1) : null;
+        final String base = System.getProperty("os.name") + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")";
+        if (!"windows".equals(IOTool.os())) return base;
+        // os.version ON WINDOWS IS ONLY "10.0" — THE REAL BUILD NUMBER COMES FROM "cmd /c ver"; MATCH THE DOTTED
+        // VERSION ITSELF, NOT THE WORD "Version" (cmd IS LOCALIZED, e.g. "Versión")
+        final String out = runCommand(2_500, "cmd", "/c", "ver");
+        if (out == null) return base;
+        final Matcher build = Pattern.compile("(\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)").matcher(out);
+        return build.find() ? base + " [Build " + build.group(1) + "]" : base;
     }
 
     private static String cpuInfo() {
-        // COMMERCIAL NAME (e.g. "AMD Ryzen 7 2700X") THEN THE RAW IDENTIFIER IN PARENTHESES, THEN CORE/THREAD COUNTS.
+        // COMMERCIAL NAME (e.g. "AMD Ryzen 7 2700X") THEN THE RAW IDENTIFIER IN PARENTHESES, THEN CORE/THREAD COUNTS
         final int logical = Runtime.getRuntime().availableProcessors();
-        final String identifier = firstNonBlank(System.getenv("PROCESSOR_IDENTIFIER"), System.getProperty("os.arch"), "unknown").trim();
+        final String env = System.getenv("PROCESSOR_IDENTIFIER"), arch = System.getProperty("os.arch");
+        final String identifier = (env != null && !env.isBlank() ? env : arch != null && !arch.isBlank() ? arch : "unknown").trim();
         String name = null;
         int cores = -1;
         int threads = logical;
@@ -244,8 +232,8 @@ final class SystemInfo {
     }
 
     private static String[] queryWindowsCpu() {
-        // {commercialName, physicalCores, logicalThreads} FROM Win32_Processor, OR null ON FAILURE.
-        final String out = runCommand(4000, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+        // {commercialName, physicalCores, logicalThreads} FROM Win32_Processor, OR null ON FAILURE
+        final String out = runCommand(4_000, "powershell", "-NoProfile", "-NonInteractive", "-Command",
                 "$p=@(Get-CimInstance Win32_Processor)[0]; '{0}|{1}|{2}' -f $p.Name,$p.NumberOfCores,$p.NumberOfLogicalProcessors");
         if (out == null) return null;
         for (final String raw: out.split("\\R")) {
@@ -267,13 +255,12 @@ final class SystemInfo {
     private static String systemRam() {
         try {
             final var bean = ManagementFactory.getOperatingSystemMXBean();
-            if (bean instanceof final OperatingSystemMXBean sun) return sun.getTotalMemorySize() / 1024 / 1024 + " MB";
-        } catch (final Throwable ignored) {
-        }
+            if (bean instanceof final OperatingSystemMXBean sun) return sun.getTotalMemorySize() / 1_024 / 1_024 + " MB";
+        } catch (final Throwable ignored) {}
         return "unknown";
     }
 
-    // UTILITY
+    // ==== UTILITY ====
 
     private static String runCommand(final long timeoutMs, final String... command) {
         Process p = null;
@@ -290,10 +277,5 @@ final class SystemInfo {
             if (p != null) p.destroyForcibly();
             return null;
         }
-    }
-
-    private static String firstNonBlank(final String... values) {
-        for (final String v: values) if (v != null && !v.isBlank()) return v;
-        return "";
     }
 }

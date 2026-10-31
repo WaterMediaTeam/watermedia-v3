@@ -12,9 +12,6 @@ public final class AppTheme {
     // INT KEY ON EVERY CALL. ONLY THE RENDER THREAD CALLS IT
     private static final Map<Color, Color[]> ALPHA_CACHE = new HashMap<>();
 
-    private AppTheme() {
-    }
-
     public static final Color BG_0 = hex(0x04061A);
     public static final Color BG_1 = hex(0x0A0E1F);
     public static final Color BG_2 = hex(0x11172E);
@@ -45,6 +42,8 @@ public final class AppTheme {
     public static final float TEXT_BUTTON = textScale(14);
     public static final float TEXT_SECTION = textScale(16);
     public static final float TEXT_DISPLAY = textScale(18);
+
+    private AppTheme() {}
 
     public static Color hex(final int rgb) {
         return new Color(rgb);

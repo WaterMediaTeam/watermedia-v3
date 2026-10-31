@@ -7,8 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * cHRM - Primary Chromaticities Chunk
- * Specifies the 1931 CIE x,y chromaticities of the RGB primaries and white point
+ * cHRM (primary chromaticities) chunk: the 1931 CIE x,y chromaticities of the RGB primaries and the white point.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11cHRM">PNG Specification - cHRM</a>
  */
@@ -23,14 +22,10 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
 
     /** Converts a generic chunk to cHRM. */
     public static CHRM convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for cHRM: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for cHRM: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("cHRM data must be 32 bytes, got " + data.length);
-        }
+        if (data.length != LENGTH) throw new CodecException("cHRM data must be 32 bytes, got " + data.length);
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         return new CHRM(
@@ -46,21 +41,21 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
     }
 
     /** Returns the white point CIE x chromaticity coordinate. */
-    public float whitePointX() { return this.whiteX / 100000.0f; }
+    public float whitePointX() { return this.whiteX / 100_000.0f; }
     /** Returns the white point CIE y chromaticity coordinate. */
-    public float whitePointY() { return this.whiteY / 100000.0f; }
+    public float whitePointY() { return this.whiteY / 100_000.0f; }
     /** Returns the red primary CIE x chromaticity coordinate. */
-    public float redPrimaryX() { return this.redX / 100000.0f; }
+    public float redPrimaryX() { return this.redX / 100_000.0f; }
     /** Returns the red primary CIE y chromaticity coordinate. */
-    public float redPrimaryY() { return this.redY / 100000.0f; }
+    public float redPrimaryY() { return this.redY / 100_000.0f; }
     /** Returns the green primary CIE x chromaticity coordinate. */
-    public float greenPrimaryX() { return this.greenX / 100000.0f; }
+    public float greenPrimaryX() { return this.greenX / 100_000.0f; }
     /** Returns the green primary CIE y chromaticity coordinate. */
-    public float greenPrimaryY() { return this.greenY / 100000.0f; }
+    public float greenPrimaryY() { return this.greenY / 100_000.0f; }
     /** Returns the blue primary CIE x chromaticity coordinate. */
-    public float bluePrimaryX() { return this.blueX / 100000.0f; }
+    public float bluePrimaryX() { return this.blueX / 100_000.0f; }
     /** Returns the blue primary CIE y chromaticity coordinate. */
-    public float bluePrimaryY() { return this.blueY / 100000.0f; }
+    public float bluePrimaryY() { return this.blueY / 100_000.0f; }
 
     @Override
     public byte[] toBytes() {

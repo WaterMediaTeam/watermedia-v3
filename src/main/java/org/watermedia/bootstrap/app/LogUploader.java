@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Predicate;
 
 /**
  * The log upload dialog: its state, the scan of the instance's logs, their upload to mclo.gs and the GitHub issue
@@ -66,8 +67,7 @@ public final class LogUploader {
     // WAKES THE RENDER LOOP AFTER A WORKER STAGE CHANGES WHAT THE DIALOG SHOWS
     private final Runnable repaint;
 
-    public record SuspectMod(String id, String name, String slug, String url) {
-    }
+    public record SuspectMod(String id, String name, String slug, String url) {}
 
     /** One log file of the dialog: where it lives, whether it can go up and how its upload went. */
     public static final class FileEntry {
@@ -99,8 +99,17 @@ public final class LogUploader {
             return;
         }
         if (!this.visible) {
-            // SCANNED ON A WORKER: exceedsLineLimit() READS UP TO FOUR MULTI-MB FILES
-            this.reset();
+            // BACK TO THE FIRST STAGE, SCANNED ON A WORKER: exceedsLineLimit() READS UP TO FOUR MULTI-MB FILES
+            this.done = false;
+            this.error = false;
+            this.uploadsDone = false;
+            this.issueCopied = false;
+            this.issueOpened = false;
+            this.stage = 1;
+            this.status = "SCAN";
+            this.issueUrl = null;
+            this.repoUrl = null;
+            this.files.clear();
             this.visible = true;
             this.working = true;
             ThreadTool.thread("LogUploader-Scan", this::scan);
@@ -111,11 +120,11 @@ public final class LogUploader {
             return;
         }
         if (this.stage <= 1) {
-            if (!this.hasUploadCandidate()) return;
+            if (this.files.stream().noneMatch(LogUploader::isUploadable)) return;
             this.working = true;
             ThreadTool.thread("LogUploader-Upload", this::upload);
         } else if (this.stage == 2) {
-            if (!this.hasUploadedLog()) return;
+            if (this.files.stream().noneMatch(entry -> entry.uploaded)) return;
             ThreadTool.thread("LogUploader-IssueReport", this::issueReport);
         } else {
             if (this.repoUrl == null || this.repoUrl.isBlank()) return;
@@ -123,9 +132,8 @@ public final class LogUploader {
         }
     }
 
-    // ==========================================================================
-    // WORKER STAGES — HEAVY FILE READS AND NETWORK CALLS MUST NOT BLOCK THE RENDER LOOP
-    // ==========================================================================
+    // ==== WORKER STAGES ====
+    // HEAVY FILE READS AND NETWORK CALLS MUST NOT BLOCK THE RENDER LOOP
 
     private void scan() {
         try {
@@ -135,12 +143,13 @@ public final class LogUploader {
             this.done = false;
             this.files.clear();
 
-            final Path baseDir = uploadBaseDir();
+            final Path cwd = Path.of("").toAbsolutePath();
+            final Path baseDir = WORKDIR_IS_MODS && cwd.getParent() != null ? cwd.getParent() : cwd;
             final Path logsDir = baseDir.resolve("logs");
             final Path crashDir = baseDir.resolve("crash-reports");
-            final Path crashReport = findLatestCrashReport(crashDir);
+            final Path crashReport = latestFile(crashDir, p -> p.toString().endsWith(".txt"));
             // JVM FATAL ERROR LOGS (hs_err_pid<pid>.log) LAND IN THE PROCESS WORKING DIR BY DEFAULT
-            final Path hsErr = findLatestHsErr(baseDir);
+            final Path hsErr = latestFile(baseDir, p -> Files.isRegularFile(p) && p.getFileName().toString().startsWith("hs_err_pid"));
 
             this.addScannedFile("latest.log", logsDir.resolve("latest.log"));
             this.addScannedFile(crashReport != null ? crashReport.getFileName().toString() : "crash-reports", crashReport != null ? crashReport : crashDir);
@@ -165,16 +174,9 @@ public final class LogUploader {
                     .map(p -> p.getFileName().toString().toLowerCase(Locale.ROOT))
                     .filter(n -> n.endsWith(".jar"))
                     .toList();
-            for (final SuspectMod mod: SUSPECT_MODS) {
-                for (final String jar: jars) {
-                    if (jar.contains(mod.id())) {
-                        this.suspectModIds.add(mod.id());
-                        break;
-                    }
-                }
-            }
-        } catch (final IOException ignored) {
-        }
+            for (final SuspectMod mod: SUSPECT_MODS)
+                if (jars.stream().anyMatch(jar -> jar.contains(mod.id()))) this.suspectModIds.add(mod.id());
+        } catch (final IOException ignored) {}
     }
 
     private void addScannedFile(final String name, final Path path) {
@@ -224,8 +226,7 @@ public final class LogUploader {
                 final String content = this.readContent(entry);
                 if (content == null) continue;
                 entry.progress = 64;
-                final String url = this.uploadToMclogs(content, entry);
-                anyUploaded |= url != null;
+                anyUploaded |= this.uploadToMclogs(content, entry) != null;
             }
 
             if (anyUploaded) {
@@ -252,12 +253,21 @@ public final class LogUploader {
             this.status = "SUCCESS";
             this.error = false;
 
-            final String issueText = this.issueTemplate(
-                    this.uploadedUrl("latest.log"),
-                    this.uploadedUrl("watermedia-app.log"),
-                    this.firstUploadedCrashUrl(),
-                    this.uploadedHsErrUrl()
-            );
+            // THE CRASH REPORT IS THE UPLOADED ENTRY THAT IS NONE OF THE OTHER THREE KINDS
+            final String latestUrl = this.uploadedUrl(name -> name.equalsIgnoreCase("latest.log"));
+            final String appUrl = this.uploadedUrl(name -> name.equalsIgnoreCase("watermedia-app.log"));
+            final String crashUrl = this.uploadedUrl(name -> !name.equalsIgnoreCase("latest.log")
+                    && !name.equalsIgnoreCase("watermedia-app.log") && !name.startsWith("hs_err_pid"));
+            final String hsErrUrl = this.uploadedUrl(name -> name.startsWith("hs_err_pid"));
+            final String issueText = "This is an automated issue report generated by WATERMeDIA: Multimedia API.\n\n" +
+                    "## Alerts\n" +
+                    SystemInfo.alerts() + "\n" +
+                    "## Files\n" +
+                    "- Logs: " + (latestUrl != null ? latestUrl : "N/A") + "\n" +
+                    "- Crash-report: " + (crashUrl != null ? crashUrl : "N/A") + "\n" +
+                    "- JVM crash (hs_err): " + (hsErrUrl != null ? hsErrUrl : "N/A") + "\n" +
+                    "- WM Logs: " + (appUrl != null ? appUrl : "N/A") + "\n\n" +
+                    SystemInfo.summary();
             this.issueUrl = githubIssueUrl(issueText);
             // DEFAULT SUBMIT TARGET IS WATERMEDIA; THE STAGE-3 SCREEN LETS THE USER PICK A SUSPECTED MOD INSTEAD.
             this.repoUrl = this.issueUrl;
@@ -320,11 +330,11 @@ public final class LogUploader {
 
     private String readContent(final FileEntry entry) {
         try {
-            // REDACT SESSION/ACCESS TOKENS AND OTHER SECRETS BEFORE THEY EVER LEAVE THE MACHINE.
-            // hs_err DUMPS AND LAUNCH LOGS OFTEN CARRY THE FULL --accessToken IN THE JVM COMMAND LINE.
+            // REDACT SESSION/ACCESS TOKENS AND OTHER SECRETS BEFORE THEY EVER LEAVE THE MACHINE:
+            // hs_err DUMPS AND LAUNCH LOGS OFTEN CARRY THE FULL --accessToken IN THE JVM COMMAND LINE
             final StringBuilder sb = new StringBuilder();
             try (final BufferedReader reader = lenientReader(entry.path)) {
-                final char[] buf = new char[8192];
+                final char[] buf = new char[8_192];
                 int n;
                 while ((n = reader.read(buf)) != -1) sb.append(buf, 0, n);
             }
@@ -337,54 +347,11 @@ public final class LogUploader {
         }
     }
 
-    private String issueTemplate(final String latestUrl, final String wmUrl, final String crashUrl, final String hsErrUrl) {
-        return "This is an automated issue report generated by WATERMeDIA: Multimedia API.\n\n" +
-                "## Alerts\n" +
-                SystemInfo.alerts() + "\n" +
-                "## Files\n" +
-                "- Logs: " + (latestUrl != null ? latestUrl : "N/A") + "\n" +
-                "- Crash-report: " + (crashUrl != null ? crashUrl : "N/A") + "\n" +
-                "- JVM crash (hs_err): " + (hsErrUrl != null ? hsErrUrl : "N/A") + "\n" +
-                "- WM Logs: " + (wmUrl != null ? wmUrl : "N/A") + "\n\n" +
-                SystemInfo.summary();
-    }
-
-    // ==========================================================================
-    // STATE
-    // ==========================================================================
-
-    // RETURNS THE DIALOG TO ITS FIRST STAGE, BEFORE A NEW SCAN
-    private void reset() {
-        this.working = false;
-        this.done = false;
-        this.error = false;
-        this.uploadsDone = false;
-        this.issueCopied = false;
-        this.issueOpened = false;
-        this.stage = 1;
-        this.status = "SCAN";
-        this.issueUrl = null;
-        this.repoUrl = null;
-        this.files.clear();
-    }
+    // ==== STATE ====
 
     private void status(final String status) {
         this.status = status;
         this.repaint.run();
-    }
-
-    private boolean hasUploadCandidate() {
-        for (final FileEntry entry: this.files) {
-            if (isUploadable(entry)) return true;
-        }
-        return false;
-    }
-
-    private boolean hasUploadedLog() {
-        for (final FileEntry entry: this.files) {
-            if (entry.uploaded) return true;
-        }
-        return false;
     }
 
     private boolean uploadsComplete() {
@@ -397,30 +364,14 @@ public final class LogUploader {
         return hadUploadable;
     }
 
-    private String uploadedUrl(final String name) {
-        for (final FileEntry entry: this.files) {
-            if (entry.name.equalsIgnoreCase(name) && entry.uploaded) return entry.url;
-        }
+    // URL OF THE FIRST UPLOADED ENTRY WHOSE NAME MATCHES, OR NULL
+    private String uploadedUrl(final Predicate<String> name) {
+        for (final FileEntry entry: this.files)
+            if (entry.uploaded && name.test(entry.name)) return entry.url;
         return null;
     }
 
-    private String firstUploadedCrashUrl() {
-        for (final FileEntry entry: this.files) {
-            if (!entry.name.equalsIgnoreCase("latest.log") && !entry.name.equalsIgnoreCase("watermedia-app.log")
-                    && !entry.name.startsWith("hs_err_pid") && entry.uploaded)
-                return entry.url;
-        }
-        return null;
-    }
-
-    private String uploadedHsErrUrl() {
-        for (final FileEntry entry: this.files) {
-            if (entry.name.startsWith("hs_err_pid") && entry.uploaded) return entry.url;
-        }
-        return null;
-    }
-
-    // UTILITY
+    // ==== UTILITY ====
 
     private static boolean isUploadable(final FileEntry entry) {
         return entry.present && entry.valid && !entry.uploaded && !"FAILED".equals(entry.state) && !"READ ERROR".equals(entry.state);
@@ -432,22 +383,16 @@ public final class LogUploader {
                 + "&body=" + URLEncoder.encode(body == null ? "" : body, StandardCharsets.UTF_8);
     }
 
-    private static Path uploadBaseDir() {
-        final Path cwd = Path.of("").toAbsolutePath();
-        return WORKDIR_IS_MODS && cwd.getParent() != null ? cwd.getParent() : cwd;
-    }
-
     private static boolean exceedsLineLimit(final Path path) throws IOException {
         try (final BufferedReader reader = lenientReader(path)) {
             int lines = 0;
-            while (reader.readLine() != null) {
+            while (reader.readLine() != null)
                 if (++lines > UPLOAD_LIMIT_LINES) return true;
-            }
             return false;
         }
     }
 
-    // hs_err DUMPS AND SOME LOGS CARRY NON-UTF-8 BYTES; REPLACE THEM INSTEAD OF FAILING THE WHOLE READ.
+    // hs_err DUMPS AND SOME LOGS CARRY NON-UTF-8 BYTES; REPLACE THEM INSTEAD OF FAILING THE WHOLE READ
     private static BufferedReader lenientReader(final Path path) throws IOException {
         final CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPLACE)
@@ -455,27 +400,11 @@ public final class LogUploader {
         return new BufferedReader(new InputStreamReader(Files.newInputStream(path), decoder));
     }
 
-    private static Path findLatestCrashReport(final Path crashDir) {
-        if (!Files.exists(crashDir)) return null;
-        try (final var stream = Files.list(crashDir)) {
-            return stream.filter(p -> p.toString().endsWith(".txt"))
-                    .max(Comparator.comparingLong(p -> {
-                        try {
-                            return Files.getLastModifiedTime(p).toMillis();
-                        } catch (final Exception e) {
-                            return 0L;
-                        }
-                    })).orElse(null);
-        } catch (final Exception e) {
-            return null;
-        }
-    }
-
-    private static Path findLatestHsErr(final Path baseDir) {
-        if (!Files.isDirectory(baseDir)) return null;
-        try (final var stream = Files.list(baseDir)) {
-            return stream.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().startsWith("hs_err_pid"))
+    // NEWEST MATCHING FILE OF THE DIRECTORY BY MODIFICATION TIME, OR NULL; AN UNREADABLE TIME COUNTS AS THE OLDEST
+    private static Path latestFile(final Path dir, final Predicate<Path> filter) {
+        if (!Files.isDirectory(dir)) return null;
+        try (final var stream = Files.list(dir)) {
+            return stream.filter(filter)
                     .max(Comparator.comparingLong(p -> {
                         try {
                             return Files.getLastModifiedTime(p).toMillis();

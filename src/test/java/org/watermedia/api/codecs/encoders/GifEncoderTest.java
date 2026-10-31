@@ -505,20 +505,16 @@ public class GifEncoderTest {
             if (introducer == 0x2C) {
                 final ImageDescriptor descriptor = ImageDescriptor.read(buffer);
                 if (descriptor.localColorTableFlag()) ColorTable.read(descriptor.localColorCount(), buffer);
-                buffer.get(); // LZW MINIMUM CODE SIZE
-                skip(buffer);
+                // SKIPS THE LZW MINIMUM CODE SIZE, THEN THE SUB-BLOCK CHAIN AND ITS TERMINATOR
+                buffer.get();
+                for (int size = buffer.get() & 0xFF; size > 0; size = buffer.get() & 0xFF) buffer.position(buffer.position() + size);
                 images.add(new Image(descriptor, control));
                 control = null;
                 continue;
             }
             assertEquals(0x21, introducer, "only extensions sit between images");
             if ((buffer.get() & 0xFF) == GraphicExtension.GCE_LABEL) control = GraphicExtension.read(buffer);
-            else skip(buffer);
+            else for (int size = buffer.get() & 0xFF; size > 0; size = buffer.get() & 0xFF) buffer.position(buffer.position() + size);
         }
-    }
-
-    // SKIPS A SUB-BLOCK CHAIN AND ITS TERMINATOR
-    private static void skip(final ByteBuffer buffer) {
-        for (int size = buffer.get() & 0xFF; size > 0; size = buffer.get() & 0xFF) buffer.position(buffer.position() + size);
     }
 }

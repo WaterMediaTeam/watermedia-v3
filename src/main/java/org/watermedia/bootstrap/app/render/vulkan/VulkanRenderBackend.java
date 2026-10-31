@@ -1,22 +1,21 @@
 package org.watermedia.bootstrap.app.render.vulkan;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.joml.Matrix4f;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.*;
 import org.watermedia.WaterMedia;
-import org.watermedia.bootstrap.app.render.DrawMode;
-import org.watermedia.bootstrap.app.render.RenderBackend;
-import org.watermedia.bootstrap.app.render.TextureHandle;
 import org.watermedia.api.player.GFXEngine;
 import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.api.player.VKContext;
 import org.watermedia.api.util.MathUtil;
+import org.watermedia.bootstrap.app.render.DrawMode;
+import org.watermedia.bootstrap.app.render.RenderBackend;
+import org.watermedia.bootstrap.app.render.TextureHandle;
 import org.watermedia.tools.IOTool;
-
-import org.apache.logging.log4j.Marker;
-import org.apache.logging.log4j.MarkerManager;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -64,10 +63,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     private static final int FLOATS_PER_VERTEX = 8;          // pos.xy, uv.xy, color.rgba
     private static final int VERTEX_BYTES = FLOATS_PER_VERTEX * Float.BYTES;
-    private static final int MAX_VERTICES = 8192;            // INITIAL PER-FRAME VERTEX CAPACITY (GROWS ON DEMAND)
+    private static final int MAX_VERTICES = 8_192;           // INITIAL PER-FRAME VERTEX CAPACITY (GROWS ON DEMAND)
     private static final int MAX_FRAMES_IN_FLIGHT = 2;
     private static final int SETS_PER_POOL = 256;            // TEXTURED-DRAW DESCRIPTOR SETS PER PER-FRAME POOL CHUNK
-    private static final int PUSH_BYTES = 68;               // mat4 proj (64) + int useTexture (4)
+    private static final int PUSH_BYTES = 68;                // mat4 proj (64) + int useTexture (4)
     // SDF PUSH: mat4 proj (64) + vec4 color (@64) + vec2 center (@80) + vec2 halfExt (@88) + float radius (@96)
     // + float softness (@100); vec4 BEFORE vec2 KEEPS THEM std430-ALIGNED
     private static final int PUSH_SDF_BYTES = 104;
@@ -89,8 +88,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private long minAlign;
     private boolean wideLines;
     private boolean ycbcrSampler;
-    // WHAT THE DEVICE WAS CREATED WITH, LENT THROUGH VKContext#deviceInfo SO FFMPEG DECODES ON IT: THE FEATURE CHAIN LIVES AS LONG AS
-    // THE DEVICE, THE EXTENSION LISTS AND QUEUE COUNTS ARE FIXED, AND THE RENDER QUEUE IS THE LAST OF ITS FAMILY
+    // WHAT THE DEVICE WAS CREATED WITH, LENT THROUGH VKContext#deviceInfo SO FFMPEG DECODES ON IT: THE FEATURE CHAIN
+    // LIVES AS LONG AS THE DEVICE, THE EXTENSION LISTS AND QUEUE COUNTS ARE FIXED, AND THE RENDER QUEUE IS THE LAST OF
+    // ITS FAMILY
     private VkPhysicalDeviceFeatures2 features;
     private VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrFeatures;
     private VkPhysicalDeviceVulkan12Features features12;
@@ -109,8 +109,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private long descLayout;
     private long pipeLayout;
     private long pipeTriList, pipeLineList, pipeLineStrip;
-    private long sdfPipeLayout;  // NO DESCRIPTOR SET; LARGER PUSH RANGE FOR THE SOFT-RECT PARAMS
-    private long sdfPipe;        // SDF SOFT-RECT PIPELINE (TRIANGLE LIST)
+    private long sdfPipeLayout; // NO DESCRIPTOR SET; LARGER PUSH RANGE FOR THE SOFT-RECT PARAMS
+    private long sdfPipe;       // SDF SOFT-RECT PIPELINE (TRIANGLE LIST)
     private long cmdPool;       // PER-FRAME COMMAND BUFFERS
     private long uploadPool;    // ONE-TIME TEXTURE UPLOADS (SEPARATE SO MID-FRAME UPLOADS NEVER TOUCH THE FRAME POOL)
     private VkCommandBuffer uploadCmd;
@@ -151,20 +151,20 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private int clipX, clipY, clipW, clipH;
     private float lineW = 1f;
     private float clearR, clearG, clearB, clearA;
-    private long currentView;        // VkImageView SAMPLED BY THE NEXT TEXTURED DRAW (APP OR ENGINE-OWNED)
+    private long currentView; // VkImageView SAMPLED BY THE NEXT TEXTURED DRAW (APP OR ENGINE-OWNED)
     private int currentFrame;
     private int imageIndex;
-    // MONOTONIC FRAME COUNTER + DEFERRED-DESTRUCTION QUEUE: A RELEASED VKEngine HANDS ITS RESOURCES HERE
-    // (VKContext#retire) AND THEY ARE DESTROYED ONLY AFTER THE FRAMES THAT MIGHT SAMPLE THEM HAVE RETIRED.
+    // MONOTONIC FRAME COUNTER AND DEFERRED-DESTRUCTION QUEUE: A RELEASED VKEngine HANDS ITS RESOURCES HERE
+    // (VKContext#retire) AND THEY ARE DESTROYED ONLY AFTER THE FRAMES THAT MIGHT SAMPLE THEM HAVE RETIRED
     private volatile long frameCounter;
     private final Queue<Retire> retireQueue = new ConcurrentLinkedQueue<>();
-    private boolean frameValid;       // FALSE WHEN THE FRAME COULD NOT ACQUIRE AN IMAGE (MINIMIZED / OUT-OF-DATE)
+    private boolean frameValid; // FALSE WHEN THE FRAME COULD NOT ACQUIRE AN IMAGE (MINIMIZED / OUT-OF-DATE)
     private boolean renderPassActive;
     // DYNAMIC-STATE BOOKKEEPING: SET ONCE PER CHANGE; A FRESH COMMAND BUFFER MARKS ALL DIRTY
     private boolean vpDirty, scDirty, lwDirty;
     private long boundPipeline, boundVbo, boundSet;
-    // LAST TEXTURED-DRAW VIEW AND ITS DESCRIPTOR SET, CACHED PER FRAME SO CONSECUTIVE DRAWS SAMPLING THE
-    // SAME VIEW (ATLAS FLUSHES, REPEATED BLITS) REUSE THE SET INSTEAD OF ALLOCATING/WRITING A NEW ONE.
+    // LAST TEXTURED-DRAW VIEW AND ITS DESCRIPTOR SET, SO CONSECUTIVE DRAWS SAMPLING THE SAME VIEW (ATLAS FLUSHES,
+    // REPEATED BLITS) REUSE THE SET INSTEAD OF WRITING A NEW ONE
     private long boundView, boundTexSet;
 
     /** Creates the instance, surface and device for a GLFW window built with {@code GLFW_NO_API}; {@link #init()} builds the rest. */
@@ -199,7 +199,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                     .applicationVersion(VK_MAKE_API_VERSION(0, 3, 0, 0))
                     .pEngineName(stack.UTF8("WaterMedia"))
                     .engineVersion(VK_MAKE_API_VERSION(0, 3, 0, 0))
-                    // 1.1 FLOOR: NEGATIVE-HEIGHT VIEWPORT (KHR_maintenance1) IS CORE — NEEDED FOR THE GL Y-FLIP.
+                    // 1.1 FLOOR: THE NEGATIVE-HEIGHT VIEWPORT (KHR_maintenance1) OF THE GL Y-FLIP IS CORE THERE
                     .apiVersion(apiVersion);
 
             final PointerBuffer glfwExts = glfwGetRequiredInstanceExtensions();
@@ -260,9 +260,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                 vkGetPhysicalDeviceProperties(candidate, props);
                 final boolean extHost = hasDeviceExtension(candidate, stack, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
 
-                // PREFER A DISCRETE GPU, THEN ONE THAT CAN ZERO-COPY-IMPORT THE DECODER'S HOST BUFFERS.
+                // PREFER A DISCRETE GPU, THEN ONE THAT CAN ZERO-COPY-IMPORT THE DECODER'S HOST BUFFERS
                 int score = 0;
-                if (props.deviceType() == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) score += 1000;
+                if (props.deviceType() == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) score += 1_000;
                 if (extHost) score += 100;
                 if (score > bestScore) {
                     bestScore = score;
@@ -286,7 +286,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         try (final MemoryStack stack = stackPush()) {
             final VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.malloc(stack);
             vkGetPhysicalDeviceProperties(this.physicalDevice, props);
-            // CAPTURE THE GPU NAME + MAX API VERSION ONCE FOR DIAGNOSTICS (SAFE TO READ OFF-THREAD AFTERWARDS)
+            // GPU NAME AND MAX API VERSION, CAPTURED ONCE FOR DIAGNOSTICS SO ANY THREAD CAN READ THEM
             final String name = props.deviceNameString();
             if (!name.isBlank()) this.deviceName = name;
             final int deviceApi = props.apiVersion();
@@ -294,8 +294,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             // WHAT MAY BE USED IS THE LOWER OF THE INSTANCE'S AND THE DEVICE'S VERSIONS
             final int api = Math.min(deviceApi, this.instance.getCapabilities().apiVersion);
 
-            // ONE QUEUE FAMILY FOR GRAPHICS, PRESENT AND THE ENGINE'S TRANSFER/COMPUTE, SO NO OWNERSHIP TRANSFERS; A DEVICE ADVERTISING
-            // VK_KHR_portability_subset (MoltenVK) MUST ENABLE IT, AND A 1.3 DEVICE GETS THE VIDEO DECODE EXTENSIONS IT OFFERS
+            // ONE QUEUE FAMILY FOR GRAPHICS, PRESENT AND THE ENGINE'S TRANSFER/COMPUTE, SO NO OWNERSHIP TRANSFERS; A DEVICE
+            // ADVERTISING VK_KHR_portability_subset (MoltenVK) MUST ENABLE IT, AND A 1.3 DEVICE GETS THE VIDEO DECODE
+            // EXTENSIONS IT OFFERS
             final IntBuffer count = stack.mallocInt(1);
             vkEnumerateDeviceExtensionProperties(this.physicalDevice, (ByteBuffer) null, count, null);
             final VkExtensionProperties.Buffer available = VkExtensionProperties.malloc(count.get(0), stack);
@@ -312,8 +313,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                 if (supported.contains(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME)) codecs.add(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME);
             }
 
-            // FFMPEG NEEDS QUEUES OF ITS OWN: A VIDEO DECODE FAMILY PLUS COMPUTE AND TRANSFER QUEUES OTHER THAN THE RENDER QUEUE, AND LIBPLACEBO A
-            // GRAPHICS ONE: IT TAKES THE FIRST QUEUE OF THE RENDER FAMILY (ALSO ITS COMPUTE ONE WITHOUT A COMPUTE FAMILY) AND THE APP RENDERS ON THE LAST
+            // FFMPEG NEEDS QUEUES OF ITS OWN: A VIDEO DECODE FAMILY PLUS COMPUTE AND TRANSFER QUEUES OTHER THAN THE RENDER
+            // QUEUE, AND LIBPLACEBO A GRAPHICS ONE: IT TAKES THE FIRST QUEUE OF THE RENDER FAMILY (ALSO ITS COMPUTE ONE
+            // WITHOUT A COMPUTE FAMILY) AND THE APP RENDERS ON THE LAST
             vkGetPhysicalDeviceQueueFamilyProperties(this.physicalDevice, count, null);
             final VkQueueFamilyProperties.Buffer families = VkQueueFamilyProperties.malloc(count.get(0), stack);
             vkGetPhysicalDeviceQueueFamilyProperties(this.physicalDevice, count, families);
@@ -353,8 +355,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             for (final String extension: this.deviceExtensions) exts.put(stack.UTF8(extension));
             exts.flip();
 
-            // THE FEATURES, KEPT AS FFMPEG READS THEM: wideLines FOR lineWidth, THE YCBCR SAMPLER THE VKEngine CONVERTS WITH (OPTIONAL 1.1 FEATURE),
-            // THE TIMELINE SEMAPHORES AND synchronization2 DECODING RUNS ON AND WHAT LIBPLACEBO AND FFMPEG'S FILTER SHADERS NEED, EACH WHEN OFFERED
+            // THE FEATURES, KEPT AS FFMPEG READS THEM: wideLines FOR lineWidth, THE YCBCR SAMPLER THE VKEngine CONVERTS
+            // WITH (OPTIONAL 1.1 FEATURE), THE TIMELINE SEMAPHORES AND synchronization2 DECODING RUNS ON AND WHAT
+            // LIBPLACEBO AND FFMPEG'S FILTER SHADERS NEED, EACH WHEN OFFERED
             this.features = VkPhysicalDeviceFeatures2.calloc().sType$Default();
             this.features.features().wideLines(this.wideLines);
             if (api >= VK_API_VERSION_1_1) {
@@ -395,11 +398,11 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             vkGetDeviceQueue(this.device, this.queueFamily, this.queueCounts[this.queueFamily] - 1, pQ);
             this.queue = new VkQueue(pQ.get(0), this.device);
 
-            // PERSISTENT MEMORY PROPERTIES (OUTLIVES EVERY STACK FRAME; SHARED WITH THE VKEngine).
+            // HEAP-ALLOCATED: THE MEMORY PROPERTIES OUTLIVE EVERY STACK FRAME AND THE VKEngine READS THEM
             this.memProps = VkPhysicalDeviceMemoryProperties.malloc();
             vkGetPhysicalDeviceMemoryProperties(this.physicalDevice, this.memProps);
 
-            // HOST-IMPORT ALIGNMENT IS A CHAINED PROPERTY QUERY; ONLY VALID WHEN THE EXTENSION IS ENABLED.
+            // HOST-IMPORT ALIGNMENT IS A CHAINED PROPERTY QUERY, VALID ONLY WITH THE EXTENSION ENABLED
             if (this.hostImport) {
                 final VkPhysicalDeviceExternalMemoryHostPropertiesEXT ext = VkPhysicalDeviceExternalMemoryHostPropertiesEXT.calloc(stack).sType$Default();
                 final VkPhysicalDeviceProperties2 props2 = VkPhysicalDeviceProperties2.calloc(stack).sType$Default().pNext(ext.address());
@@ -417,7 +420,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final IntBuffer present = stack.mallocInt(1);
         for (int i = 0; i < props.capacity(); i++) {
             if ((props.get(i).queueFlags() & VK_QUEUE_GRAPHICS_BIT) == 0) continue;
-            // CHECK THE RESULT: present IS UNINITIALIZED STACK MEMORY, SO A SILENT FAILURE COULD READ GARBAGE.
+            // CHECKED: present IS UNINITIALIZED STACK MEMORY, SO A SILENT FAILURE WOULD READ GARBAGE
             check(vkGetPhysicalDeviceSurfaceSupportKHR(pd, i, this.surface, present), "query surface support");
             if (present.get(0) == VK_TRUE) return i;
         }
@@ -429,9 +432,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         vkEnumerateDeviceExtensionProperties(pd, (ByteBuffer) null, count, null);
         final VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(count.get(0), stack);
         vkEnumerateDeviceExtensionProperties(pd, (ByteBuffer) null, count, props);
-        for (int i = 0; i < props.capacity(); i++) {
-            if (name.equals(props.get(i).extensionNameString())) return true;
-        }
+        for (int i = 0; i < props.capacity(); i++) if (name.equals(props.get(i).extensionNameString())) return true;
         return false;
     }
 
@@ -444,13 +445,13 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         if (this.swapchain == 0L) this.buildSwapchain();
     }
 
-    // BUILDS THE STATIC (FORMAT-INDEPENDENT-OF-EXTENT) RESOURCES ONCE. THE RENDER PASS + PIPELINES ONLY
-    // NEED THE SURFACE FORMAT, NOT THE SWAPCHAIN, SO createTexture() CAN RUN BEFORE ANY FRAME.
     private void ensureCore() {
+        // THE EXTENT-INDEPENDENT RESOURCES, BUILT ONCE: THE RENDER PASS AND PIPELINES NEED ONLY THE SURFACE FORMAT,
+        // NOT THE SWAPCHAIN, SO createTexture() CAN RUN BEFORE ANY FRAME
         if (this.coreReady) return;
 
         try (final MemoryStack stack = stackPush()) {
-            // SURFACE FORMAT: PREFER B8G8R8A8_UNORM (NON-SRGB) FOR PARITY WITH THE GL DEFAULT FRAMEBUFFER.
+            // SURFACE FORMAT: PREFER B8G8R8A8_UNORM (NON-SRGB) FOR PARITY WITH THE GL DEFAULT FRAMEBUFFER
             final IntBuffer fmtCount = stack.mallocInt(1);
             vkGetPhysicalDeviceSurfaceFormatsKHR(this.physicalDevice, this.surface, fmtCount, null);
             final VkSurfaceFormatKHR.Buffer fmts = VkSurfaceFormatKHR.malloc(fmtCount.get(0), stack);
@@ -474,8 +475,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             this.layerSupport = (formatProps.optimalTilingFeatures() & layerFeatures) == layerFeatures;
             if (!this.layerSupport) WaterMedia.LOGGER.warn(IT, "Surface format {} cannot back the tree cache; the UI repaints whole while the CRT bands move", this.surfaceFormat);
 
-            // COMMAND POOLS (RESETTABLE BUFFERS). FRAME POOL FOR PER-FRAME RECORDING, UPLOAD POOL FOR
-            // ONE-TIME TEXTURE STAGING — DISTINCT SO A MID-FRAME createTexture() NEVER RACES THE FRAME POOL.
+            // RESETTABLE COMMAND POOLS: THE FRAME POOL RECORDS FRAMES AND THE UPLOAD POOL STAGES TEXTURES, APART SO A
+            // MID-FRAME createTexture() NEVER RACES THE FRAME POOL
             final VkCommandPoolCreateInfo cpci = VkCommandPoolCreateInfo.calloc(stack).sType$Default()
                     .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(this.queueFamily);
             final LongBuffer pPool = stack.mallocLong(1);
@@ -494,7 +495,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             check(vkCreateFence(this.device, ufci, null, pUf), "create upload fence");
             this.uploadFence = pUf.get(0);
 
-            // LINEAR / CLAMP SAMPLER (PARITY WITH THE GL CLAMP_TO_EDGE LINEAR TEXTURES).
+            // LINEAR CLAMP SAMPLER, AS THE GL CLAMP_TO_EDGE LINEAR TEXTURES
             final VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
                     .magFilter(VK_FILTER_LINEAR).minFilter(VK_FILTER_LINEAR)
                     .mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
@@ -506,7 +507,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             check(vkCreateSampler(this.device, sci, null, ps), "create sampler");
             this.sampler = ps.get(0);
 
-            // DESCRIPTOR SET LAYOUT: ONE COMBINED IMAGE SAMPLER AT BINDING 0 (FRAGMENT).
+            // DESCRIPTOR SET LAYOUT: ONE COMBINED IMAGE SAMPLER AT BINDING 0 (FRAGMENT)
             final VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(1, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -515,7 +516,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             check(vkCreateDescriptorSetLayout(this.device, dlci, null, pdl), "create descriptor set layout");
             this.descLayout = pdl.get(0);
 
-            // PIPELINE LAYOUT: SET 0 + PUSH CONSTANTS { mat4 proj; int useTexture } VISIBLE TO BOTH STAGES.
+            // PIPELINE LAYOUT: SET 0 PLUS PUSH CONSTANTS { mat4 proj; int useTexture } VISIBLE TO BOTH STAGES
             final VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
             pcr.get(0).stageFlags(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT).offset(0).size(PUSH_BYTES);
             final VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
@@ -562,9 +563,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.coreReady = true;
     }
 
-    // THE WINDOW PASS ENDS IN PRESENT_SRC AND THE LAYER PASS IN SHADER_READ_ONLY; EVERYTHING ELSE MATCHES, SO THE TWO
-    // STAY COMPATIBLE AND THE PIPELINES BUILT ON THE WINDOW PASS ALSO DRAW INTO LAYERS
     private long createRenderPass(final int finalLayout) {
+        // THE WINDOW PASS ENDS IN PRESENT_SRC AND THE LAYER PASS IN SHADER_READ_ONLY; EVERYTHING ELSE MATCHES, SO THE TWO
+        // STAY COMPATIBLE AND THE PIPELINES BUILT ON THE WINDOW PASS ALSO DRAW INTO LAYERS
         try (final MemoryStack stack = stackPush()) {
             final VkAttachmentDescription.Buffer color = VkAttachmentDescription.calloc(1, stack);
             color.get(0).format(this.surfaceFormat).samples(VK_SAMPLE_COUNT_1_BIT)
@@ -604,8 +605,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final long sdfVert = this.compileShaderModule("vulkan/sdf.vert", shaderc_glsl_vertex_shader);
         final long sdfFrag = this.compileShaderModule("vulkan/sdf.frag", shaderc_glsl_fragment_shader);
         try {
-            // NO TRIANGLE_FAN PIPELINE: FAN TOPOLOGY IS NOT PORTABLE (MoltenVK/PORTABILITY-SUBSET
-            // DEVICES REJECT IT), SO draw() EXPANDS FANS INTO THE TRIANGLE LIST INSTEAD.
+            // NO TRIANGLE_FAN PIPELINE: FAN TOPOLOGY IS NOT PORTABLE (MoltenVK AND PORTABILITY-SUBSET DEVICES REJECT IT),
+            // SO draw() EXPANDS FANS INTO THE TRIANGLE LIST
             this.pipeTriList = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, vert, frag, this.pipeLayout);
             this.pipeLineList = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, vert, frag, this.pipeLayout);
             this.pipeLineStrip = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_LINE_STRIP, vert, frag, this.pipeLayout);
@@ -624,7 +625,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             stages.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vert).pName(stack.UTF8("main"));
             stages.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(frag).pName(stack.UTF8("main"));
 
-            // VERTEX LAYOUT: 8 FLOATS/VERTEX — pos.xy @0, uv.xy @8, color.rgba @16; STRIDE 32.
+            // VERTEX LAYOUT: 8 FLOATS PER VERTEX, pos.xy @0, uv.xy @8, color.rgba @16; STRIDE 32
             final VkVertexInputBindingDescription.Buffer bind = VkVertexInputBindingDescription.calloc(1, stack);
             bind.get(0).binding(0).stride(VERTEX_BYTES).inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
             final VkVertexInputAttributeDescription.Buffer attrs = VkVertexInputAttributeDescription.calloc(3, stack);
@@ -638,7 +639,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                     .topology(topology).primitiveRestartEnable(false);
 
             final VkPipelineViewportStateCreateInfo vp = VkPipelineViewportStateCreateInfo.calloc(stack).sType$Default()
-                    .viewportCount(1).scissorCount(1); // DYNAMIC — NO pViewports/pScissors
+                    .viewportCount(1).scissorCount(1); // DYNAMIC: NO pViewports OR pScissors
 
             final VkPipelineRasterizationStateCreateInfo rs = VkPipelineRasterizationStateCreateInfo.calloc(stack).sType$Default()
                     .polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE)
@@ -677,7 +678,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final PointerBuffer pCmd = stack.mallocPointer(MAX_FRAMES_IN_FLIGHT);
             check(vkAllocateCommandBuffers(this.device, cbai, pCmd), "alloc frame command buffers");
 
-            // FENCES START SIGNALED SO THE FIRST beginFrame() WAIT RETURNS IMMEDIATELY.
+            // FENCES START SIGNALED SO THE FIRST beginFrame() WAIT RETURNS IMMEDIATELY
             final VkSemaphoreCreateInfo sci = VkSemaphoreCreateInfo.calloc(stack).sType$Default();
             final VkFenceCreateInfo fci = VkFenceCreateInfo.calloc(stack).sType$Default().flags(VK_FENCE_CREATE_SIGNALED_BIT);
             for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -694,14 +695,13 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         }
     }
 
-    // BUILDS / REBUILDS THE SWAPCHAIN AND ITS PER-IMAGE RESOURCES. RETURNS false WHEN THE WINDOW HAS A
-    // ZERO EXTENT (MINIMIZED): THE FRAME IS THEN SKIPPED UNTIL THE WINDOW IS RESTORED.
     private boolean buildSwapchain() {
         try (final MemoryStack stack = stackPush()) {
             final VkSurfaceCapabilitiesKHR caps = VkSurfaceCapabilitiesKHR.malloc(stack);
             check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(this.physicalDevice, this.surface, caps), "query surface caps");
 
-            // EXTENT: USE currentExtent WHEN FIXED, ELSE CLAMP THE GLFW FRAMEBUFFER SIZE TO THE ALLOWED RANGE.
+            // currentExtent WHEN FIXED, ELSE THE GLFW FRAMEBUFFER SIZE CLAMPED TO THE ALLOWED RANGE; A ZERO EXTENT
+            // (MINIMIZED) RETURNS false AND THE FRAMES ARE SKIPPED UNTIL THE WINDOW IS RESTORED
             final int w, h;
             if (caps.currentExtent().width() != 0xFFFFFFFF) {
                 w = caps.currentExtent().width();
@@ -726,7 +726,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                     .imageArrayLayers(1).imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
                     .imageSharingMode(VK_SHARING_MODE_EXCLUSIVE) // SINGLE QUEUE FAMILY
                     .preTransform(caps.currentTransform()).compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
-                    .presentMode(VK_PRESENT_MODE_FIFO_KHR) // VSYNC — PARITY WITH GL glfwSwapInterval(1)
+                    .presentMode(VK_PRESENT_MODE_FIFO_KHR) // VSYNC, AS GL glfwSwapInterval(1)
                     .clipped(true).oldSwapchain(VK_NULL_HANDLE);
             sci.imageExtent().width(w).height(h);
             final LongBuffer pSwap = stack.mallocLong(1);
@@ -765,11 +765,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         return true;
     }
 
-    // RESIZE / OUT-OF-DATE: DRAIN, TEAR DOWN THE SWAPCHAIN-DERIVED OBJECTS, AND REBUILD. THE RENDER PASS
-    // AND PIPELINES SURVIVE BECAUSE THE FORMAT NEVER CHANGES.
     private void recreateSwapchain() {
-        // ONLY THE RENDER QUEUE TOUCHES THE SWAPCHAIN, SO IT ALONE DRAINS, UNDER THE LOCK THE ENGINE'S UPLOADS SHARE; A DEVICE-WIDE
-        // WAIT WOULD RACE FFMPEG, WHICH SUBMITS DECODE WORK TO ITS OWN QUEUES FROM ITS OWN THREADS
+        // ONLY THE RENDER QUEUE TOUCHES THE SWAPCHAIN, SO IT ALONE DRAINS, UNDER THE LOCK THE ENGINE'S UPLOADS SHARE; A
+        // DEVICE-WIDE WAIT WOULD RACE FFMPEG'S DECODE SUBMISSIONS ON ITS OWN QUEUES. THE RENDER PASS AND PIPELINES
+        // SURVIVE BECAUSE THE FORMAT NEVER CHANGES
         synchronized (this.queueLock) {
             vkQueueWaitIdle(this.queue);
             this.destroySwapchainObjects();
@@ -804,12 +803,16 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
         final Frame f = this.frames[this.currentFrame];
         vkWaitForFences(this.device, f.inFlightFence, true, BLOCK);
-        // PRIOR GPU WORK OF THIS SLOT IS DONE: SAFE TO RECLAIM VERTEX BUFFERS RETIRED WHEN IT LAST GREW.
+        // PRIOR GPU WORK OF THIS SLOT IS DONE: SAFE TO RECLAIM VERTEX BUFFERS RETIRED WHEN IT LAST GREW
         this.freeRetired(f);
-        // ADVANCE THE FRAME CLOCK (ONLY ON REAL FRAMES, PAST THE FENCE WAIT) AND DESTROY ENGINE
-        // RESOURCES WHOSE REFERENCING FRAMES HAVE COMPLETED.
+        // THE FRAME CLOCK ADVANCES ONLY ON REAL FRAMES, PAST THE FENCE WAIT; ENGINE RESOURCES WHOSE FRAMES COMPLETED
+        // ARE DESTROYED IN due ORDER, STOPPING AT THE FIRST ONE NOT YET DUE
         this.frameCounter++;
-        this.runRetired();
+        Retire retired;
+        while ((retired = this.retireQueue.peek()) != null && this.frameCounter >= retired.due()) {
+            this.retireQueue.poll();
+            retired.run().run();
+        }
 
         try (final MemoryStack stack = stackPush()) {
             final IntBuffer pImg = stack.mallocInt(1);
@@ -822,10 +825,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) return; // GIVE UP THIS FRAME
             this.imageIndex = pImg.get(0);
 
-            // GUARD AGAINST TWO IN-FLIGHT FRAMES TARGETING THE SAME IMAGE (image count MAY EXCEED frames).
-            if (this.imagesInFlight[this.imageIndex] != 0L) {
+            // TWO IN-FLIGHT FRAMES MUST NOT TARGET THE SAME IMAGE (THE IMAGE COUNT MAY EXCEED THE FRAME COUNT)
+            if (this.imagesInFlight[this.imageIndex] != 0L)
                 vkWaitForFences(this.device, this.imagesInFlight[this.imageIndex], true, BLOCK);
-            }
             this.imagesInFlight[this.imageIndex] = f.inFlightFence;
             vkResetFences(this.device, f.inFlightFence);
 
@@ -835,10 +837,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             check(vkBeginCommandBuffer(f.cmd, begin), "begin command buffer");
         }
 
-        // RESET PER-FRAME TRANSIENT STATE.
-        for (int i = 0; i <= f.descPoolIndex && i < f.descPools.size(); i++) {
-            vkResetDescriptorPool(this.device, f.descPools.get(i), 0);
-        }
+        // RESET THE PER-FRAME TRANSIENT STATE
+        for (int i = 0; i <= f.descPoolIndex && i < f.descPools.size(); i++) vkResetDescriptorPool(this.device, f.descPools.get(i), 0);
         f.descPoolIndex = 0;
         f.descPoolUsed = 0;
         f.viewSetCount = 0;
@@ -846,7 +846,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.boundPipeline = 0L;
         this.boundVbo = 0L;
         this.boundSet = 0L;
-        // THE PER-FRAME DESCRIPTOR POOLS WERE JUST RESET, SO ANY CACHED SET FROM A PRIOR FRAME IS STALE.
+        // THE PER-FRAME DESCRIPTOR POOLS WERE JUST RESET, SO ANY CACHED SET FROM A PRIOR FRAME IS STALE
         this.boundView = 0L;
         this.boundTexSet = 0L;
         this.vpDirty = true;
@@ -857,6 +857,45 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     @Override
+    public void present() {
+        if (!this.frameValid) return;
+        this.endLayer();
+        final Frame f = this.frames[this.currentFrame];
+        if (!this.renderPassActive) this.beginRenderPass(); // THE IMAGE MUST REACH PRESENT_SRC EVEN WITHOUT DRAWS
+        vkCmdEndRenderPass(f.cmd);
+        this.renderPassActive = false;
+        check(vkEndCommandBuffer(f.cmd), "end command buffer");
+
+        final int pres;
+        try (final MemoryStack stack = stackPush()) {
+            final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
+                    .waitSemaphoreCount(1) // NOT AUTO-DERIVED: SHARED WITH pWaitDstStageMask
+                    .pWaitSemaphores(stack.longs(f.imageAvailable))
+                    .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT))
+                    .pCommandBuffers(stack.pointers(f.cmd))
+                    .pSignalSemaphores(stack.longs(this.renderFinished[this.imageIndex]));
+            final VkPresentInfoKHR pi = VkPresentInfoKHR.calloc(stack).sType$Default()
+                    .pWaitSemaphores(stack.longs(this.renderFinished[this.imageIndex]))
+                    .swapchainCount(1).pSwapchains(stack.longs(this.swapchain)).pImageIndices(stack.ints(this.imageIndex));
+            // THE VKEngine PRODUCER SUBMITS TO THE SAME QUEUE UNDER THE SAME LOCK
+            synchronized (this.queueLock) {
+                check(vkQueueSubmit(this.queue, si, f.inFlightFence), "queue submit");
+                pres = vkQueuePresentKHR(this.queue, pi);
+            }
+        }
+        if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) this.recreateSwapchain();
+        else if (pres != VK_SUCCESS) check(pres, "queue present");
+
+        this.currentFrame = (this.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+        this.frameValid = false;
+    }
+
+    @Override
+    public void configureFrameState() {
+        // NO-OP: BLEND IS BAKED INTO THE PIPELINE, AND THERE IS NO DEPTH ATTACHMENT
+    }
+
+    @Override
     public void clear(final float r, final float g, final float b, final float a) {
         this.clearR = r;
         this.clearG = g;
@@ -864,7 +903,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.clearA = a;
         if (!this.frameValid) return;
         if (this.renderPassActive) {
-            // MID-FRAME CLEAR: THE RENDER PASS IS ALREADY OPEN, SO CLEAR INSIDE IT.
+            // MID-FRAME CLEAR: THE RENDER PASS IS ALREADY OPEN, SO CLEAR INSIDE IT
             try (final MemoryStack stack = stackPush()) {
                 final VkClearAttachment.Buffer at = VkClearAttachment.calloc(1, stack);
                 at.get(0).aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).colorAttachment(0);
@@ -881,7 +920,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     @Override
     public void viewport(final int width, final int height) {
-        // THE DRAW-TIME VIEWPORT USES THE SWAPCHAIN EXTENT (NOT THIS WINDOW SIZE); JUST FLAG IT DIRTY.
+        // THE DRAW-TIME VIEWPORT USES THE SWAPCHAIN EXTENT, NOT THIS WINDOW SIZE
         this.vpDirty = true;
     }
 
@@ -947,8 +986,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.layerEpoch++;
     }
 
-    // A DEVICE-LOCAL IMAGE THE LAYER PASS RENDERS INTO AND THE WINDOW PASS SAMPLES; A FAILURE DISABLES THE CACHE
     private boolean createLayer(final int index) {
+        // A DEVICE-LOCAL IMAGE THE LAYER PASS RENDERS INTO AND THE WINDOW PASS SAMPLES; A FAILURE DISABLES THE CACHE
         try (final MemoryStack stack = stackPush()) {
             final VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
                     .imageType(VK_IMAGE_TYPE_2D).format(this.surfaceFormat).mipLevels(1).arrayLayers(1)
@@ -987,8 +1026,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         }
     }
 
-    // NULL-SAFE: ALSO UNDOES A HALF-BUILT LAYER
     private void destroyLayer(final int index) {
+        // NULL-SAFE: ALSO UNDOES A HALF-BUILT LAYER
         if (this.layerFramebuffer[index] != 0L) vkDestroyFramebuffer(this.device, this.layerFramebuffer[index], null);
         if (this.layerView[index] != 0L) vkDestroyImageView(this.device, this.layerView[index], null);
         if (this.layerImage[index] != 0L) vkDestroyImage(this.device, this.layerImage[index], null);
@@ -999,6 +1038,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.layerMemory[index] = 0L;
     }
 
+    // ==========================================================================
+    // DRAWING
+    // ==========================================================================
     @Override
     public void useProjection(final Matrix4f projection) {
         projection.get(this.proj);
@@ -1045,13 +1087,13 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     @Override
     public void draw(final DrawMode mode, final float[] vertices, final int vertexCount, final boolean textured) {
         if (!this.frameValid || vertexCount <= 0) return;
-        if (!this.renderPassActive) this.beginRenderPass(); // SAFETY: A DRAW BEFORE ANY clear()
+        if (!this.renderPassActive) this.beginRenderPass(); // A DRAW BEFORE ANY clear()
 
         final Frame f = this.frames[this.currentFrame];
         final boolean loop = mode == DrawMode.LINE_LOOP;
         final boolean fan = mode == DrawMode.TRIANGLE_FAN;
-        // LINE_LOOP: CLOSE BY REPEATING VERTEX 0. TRIANGLE_FAN: EXPANDED TO A TRIANGLE LIST
-        // (v0, vi, vi+1) BECAUSE FAN TOPOLOGY IS NOT PORTABLE (MoltenVK REJECTS IT).
+        // LINE_LOOP CLOSES BY REPEATING VERTEX 0; TRIANGLE_FAN EXPANDS TO A TRIANGLE LIST (v0, vi, vi+1) BECAUSE FAN
+        // TOPOLOGY IS NOT PORTABLE (MoltenVK REJECTS IT)
         final int drawVerts = fan ? (vertexCount - 2) * 3 : (loop ? vertexCount + 1 : vertexCount);
         if (drawVerts <= 0) return;
 
@@ -1059,7 +1101,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         // THE FENCE SIGNALS
         if (f.vertexOffset + drawVerts > f.vboCapVerts) this.growVbo(f, f.vertexOffset + drawVerts);
 
-        // APPEND THE VERTICES AT THE RUNNING OFFSET INTO THE PERSISTENTLY-MAPPED HOST-VISIBLE BUFFER.
+        // APPEND AT THE RUNNING OFFSET OF THE PERSISTENTLY MAPPED HOST-VISIBLE BUFFER
         final long base = f.vboMapped + (long) f.vertexOffset * VERTEX_BYTES;
         final FloatBuffer dst = MemoryUtil.memFloatBuffer(base, drawVerts * FLOATS_PER_VERTEX);
         if (fan) {
@@ -1086,7 +1128,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                 vkCmdBindVertexBuffers(cmd, 0, stack.longs(f.vbo), stack.longs(0L));
                 this.boundVbo = f.vbo;
             }
-            // DYNAMIC STATE: SET ON CHANGE; PERSISTS FOR SUBSEQUENT DRAWS IN THIS COMMAND BUFFER.
+            // DYNAMIC STATE: SET ON CHANGE; IT PERSISTS FOR THE NEXT DRAWS OF THIS COMMAND BUFFER
             if (this.vpDirty) {
                 // NEGATIVE-HEIGHT VIEWPORT FROM THE SWAPCHAIN EXTENT, NOT viewport(): IT GIVES OPENGL'S CLIP SPACE
                 // SO THE ortho2D(0, w, h, 0) MATH RENDERS THE SAME, AND ALWAYS MATCHES THE FRAMEBUFFER AND SCISSOR
@@ -1100,13 +1142,13 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                 this.scDirty = false;
             }
             if (this.lwDirty) {
-                vkCmdSetLineWidth(cmd, this.wideLines ? this.lineW : 1.0f); // CLAMP TO 1.0 WHEN wideLines UNSUPPORTED
+                vkCmdSetLineWidth(cmd, this.wideLines ? this.lineW : 1.0f); // 1.0 WITHOUT wideLines
                 this.lwDirty = false;
             }
 
             final boolean useTex = textured && this.currentView != 0L;
-            // TEXTURED DRAWS SAMPLE currentView THROUGH THE SET THIS FRAME ALREADY WROTE FOR IT, SO ALTERNATING
-            // BETWEEN ATLASES, ICONS AND THUMBNAILS DOES NOT ALLOCATE A SET PER SWITCH. NON-TEXTURED DRAWS BIND THE DUMMY.
+            // TEXTURED DRAWS SAMPLE currentView THROUGH THE SET THIS FRAME ALREADY WROTE FOR IT, SO ALTERNATING BETWEEN
+            // ATLASES, ICONS AND THUMBNAILS DOES NOT ALLOCATE A SET PER SWITCH; NON-TEXTURED DRAWS BIND THE DUMMY
             final long set;
             if (useTex) {
                 if (this.currentView != this.boundView || this.boundTexSet == 0L) {
@@ -1148,7 +1190,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final long base = f.vboMapped + (long) f.vertexOffset * VERTEX_BYTES;
         final FloatBuffer dst = MemoryUtil.memFloatBuffer(base, drawVerts * FLOATS_PER_VERTEX);
         final float x0 = x - soft, y0 = y - soft, x1 = x + w + soft, y1 = y + h + soft;
-        // 6-VERTEX QUAD (ONLY position IS READ; uv/col PADDED TO KEEP THE 8-FLOAT STRIDE)
+        // 6-VERTEX QUAD: ONLY position IS READ, uv AND color PAD THE 8-FLOAT STRIDE
         putSoftVertex(dst, x0, y0);
         putSoftVertex(dst, x1, y0);
         putSoftVertex(dst, x1, y1);
@@ -1190,78 +1232,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
             vkCmdDraw(cmd, drawVerts, 1, firstVertex, 0);
         }
-        // THE SDF LAYOUT IS INCOMPATIBLE WITH THE UI ONE (NO SET 0, DIFFERENT PUSH) — FORCE THE NEXT UI DRAW
-        // TO REBIND ITS PIPELINE AND DESCRIPTOR SET (IT RE-PUSHES ITS CONSTANTS EVERY DRAW ANYWAY)
+        // THE SDF LAYOUT IS INCOMPATIBLE WITH THE UI ONE (NO SET 0, DIFFERENT PUSH), SO THE NEXT UI DRAW REBINDS ITS
+        // PIPELINE AND DESCRIPTOR SET (IT RE-PUSHES ITS CONSTANTS EVERY DRAW ANYWAY)
         this.boundPipeline = VK_NULL_HANDLE;
         this.boundSet = VK_NULL_HANDLE;
-    }
-
-    private static void putSoftVertex(final FloatBuffer dst, final float x, final float y) {
-        dst.put(x).put(y).put(0f).put(0f).put(0f).put(0f).put(0f).put(0f);
-    }
-
-    @Override
-    public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
-        // VKEngine BORROWS THIS BACKEND'S DEVICE (THIS IS THE VKContext); THE THREAD/EXECUTOR ARE UNUSED.
-        return () -> PlayerAPI.vkEngine(this);
-    }
-
-    @Override
-    public void retire(final Runnable destroy) {
-        // STAMP A FEW FRAMES AHEAD (+1 ABSORBS THE frameCounter READ/WRITE RACE WITH beginFrame). MAY BE
-        // CALLED FROM A BACKGROUND RELEASE THREAD, SO THE QUEUE IS CONCURRENT.
-        this.retireQueue.add(new Retire(this.frameCounter + MAX_FRAMES_IN_FLIGHT + 1, destroy));
-    }
-
-    // RUNS (ON THE RENDER THREAD) THE DESTRUCTORS WHOSE TARGET FRAME HAS PASSED. THE QUEUE IS FIFO BY
-    // due, SO STOP AT THE FIRST NOT-YET-DUE ENTRY.
-    private void runRetired() {
-        Retire r;
-        while ((r = this.retireQueue.peek()) != null && this.frameCounter >= r.due()) {
-            this.retireQueue.poll();
-            r.run().run();
-        }
-    }
-
-    private record Retire(long due, Runnable run) {}
-
-    @Override
-    public void present() {
-        if (!this.frameValid) return;
-        this.endLayer();
-        final Frame f = this.frames[this.currentFrame];
-        if (!this.renderPassActive) this.beginRenderPass(); // ENSURE THE IMAGE REACHES PRESENT_SRC EVEN WITH NO DRAWS
-        vkCmdEndRenderPass(f.cmd);
-        this.renderPassActive = false;
-        check(vkEndCommandBuffer(f.cmd), "end command buffer");
-
-        final int pres;
-        try (final MemoryStack stack = stackPush()) {
-            final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
-                    .waitSemaphoreCount(1) // NOT AUTO-DERIVED: SHARED WITH pWaitDstStageMask
-                    .pWaitSemaphores(stack.longs(f.imageAvailable))
-                    .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT))
-                    .pCommandBuffers(stack.pointers(f.cmd))
-                    .pSignalSemaphores(stack.longs(this.renderFinished[this.imageIndex]));
-            final VkPresentInfoKHR pi = VkPresentInfoKHR.calloc(stack).sType$Default()
-                    .pWaitSemaphores(stack.longs(this.renderFinished[this.imageIndex]))
-                    .swapchainCount(1).pSwapchains(stack.longs(this.swapchain)).pImageIndices(stack.ints(this.imageIndex));
-            // SERIALIZE WITH THE VKEngine PRODUCER: BOTH SUBMIT TO THE SAME QUEUE UNDER THE SHARED LOCK.
-            synchronized (this.queueLock) {
-                check(vkQueueSubmit(this.queue, si, f.inFlightFence), "queue submit");
-                pres = vkQueuePresentKHR(this.queue, pi);
-            }
-        }
-        if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) this.recreateSwapchain();
-        else if (pres != VK_SUCCESS) check(pres, "queue present");
-
-        this.currentFrame = (this.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-        this.frameValid = false;
-    }
-
-    @Override
-    public void configureFrameState() {
-        // NO-OP: BLEND IS BAKED INTO THE PIPELINE, AND THERE IS NO DEPTH ATTACHMENT.
     }
 
     private void beginRenderPass() {
@@ -1289,7 +1263,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             sw = this.extentW;
             sh = this.extentH;
         }
-        // VULKAN FORBIDS A SCISSOR OUTSIDE THE FRAMEBUFFER; CLAMP IT.
+        // VULKAN FORBIDS A SCISSOR OUTSIDE THE FRAMEBUFFER
         if (sx < 0) { sw += sx; sx = 0; }
         if (sy < 0) { sh += sy; sy = 0; }
         if (sx + sw > this.extentW) sw = this.extentW - sx;
@@ -1306,7 +1280,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         return switch (mode) {
             case TRIANGLES, TRIANGLE_FAN -> this.pipeTriList; // FANS ARE EXPANDED TO A LIST IN draw()
             case LINES -> this.pipeLineList;
-            case LINE_LOOP -> this.pipeLineStrip; // LINE_LOOP IS RENDERED AS A CLOSED LINE STRIP (NO LINE_LOOP TOPOLOGY)
+            case LINE_LOOP -> this.pipeLineStrip; // A CLOSED LINE STRIP: VULKAN HAS NO LINE_LOOP TOPOLOGY
         };
     }
 
@@ -1359,11 +1333,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // ==========================================================================
     // DESCRIPTOR SETS (PER-FRAME, GROWABLE POOL CHAIN)
     // ==========================================================================
-    // A FRAME SAMPLES FEW DISTINCT VIEWS, SO A LINEAR SCAN OVER ITS VIEW -> SET PAIRS BEATS A BOXED MAP
     private long textureSet(final MemoryStack stack, final Frame f, final long view) {
-        for (int i = 0; i < f.viewSetCount; i++) {
-            if (f.viewSets[i * 2] == view) return f.viewSets[i * 2 + 1];
-        }
+        // A FRAME SAMPLES FEW DISTINCT VIEWS, SO A LINEAR SCAN OVER ITS VIEW -> SET PAIRS BEATS A BOXED MAP
+        for (int i = 0; i < f.viewSetCount; i++) if (f.viewSets[i * 2] == view) return f.viewSets[i * 2 + 1];
         if (f.descPoolUsed >= SETS_PER_POOL) {
             f.descPoolIndex++;
             f.descPoolUsed = 0;
@@ -1426,8 +1398,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         if (texture == null || texture.id() <= 0) return;
         final TextureRecord rec = this.textures.remove(texture.id());
         if (rec == null) return;
-        // RARE (ATLAS/ICON TEARDOWN): DRAIN THE RENDER QUEUE, THE ONLY ONE THAT SAMPLES THE VIEW, UNDER THE LOCK THE ENGINE'S UPLOADS
-        // SHARE; A DEVICE-WIDE WAIT WOULD RACE FFMPEG'S DECODE SUBMISSIONS ON ITS OWN QUEUES
+        // RARE (ATLAS OR ICON TEARDOWN): DRAIN THE RENDER QUEUE, THE ONLY ONE THAT SAMPLES THE VIEW, UNDER THE LOCK THE
+        // ENGINE'S UPLOADS SHARE; A DEVICE-WIDE WAIT WOULD RACE FFMPEG'S DECODE SUBMISSIONS ON ITS OWN QUEUES
         synchronized (this.queueLock) {
             vkQueueWaitIdle(this.queue);
         }
@@ -1448,9 +1420,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         }
     }
 
-    // CREATES A SAMPLED R8G8B8A8_UNORM DEVICE-LOCAL IMAGE, STAGES THE TIGHTLY-PACKED RGBA THROUGH A
-    // HOST-VISIBLE BUFFER, AND TRANSITIONS IT TO SHADER_READ_ONLY. SUBMITTED UNDER THE SHARED QUEUE LOCK.
     private TextureRecord uploadTexture(final int w, final int h, final ByteBuffer rgba) {
+        // A SAMPLED R8G8B8A8_UNORM DEVICE-LOCAL IMAGE: THE TIGHTLY PACKED RGBA GOES THROUGH A HOST-VISIBLE STAGING
+        // BUFFER AND THE IMAGE ENDS IN SHADER_READ_ONLY, SUBMITTED UNDER THE SHARED QUEUE LOCK
         final long[] im = this.createImage(w, h);
         final long view = this.createView(im[0], VK_FORMAT_R8G8B8A8_UNORM);
         final long size = (long) w * h * 4;
@@ -1488,7 +1460,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
             final VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
-            region.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0); // TIGHTLY PACKED = width ROW LENGTH
+            region.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0); // TIGHTLY PACKED: ROW LENGTH IS width
             region.get(0).imageSubresource(s -> s.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1));
             region.get(0).imageOffset(o -> o.x(0).y(0).z(0));
             region.get(0).imageExtent(e -> e.width(w).height(h).depth(1));
@@ -1561,14 +1533,12 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     private int memType(final int typeBits, final int props) {
         final int count = this.memProps.memoryTypeCount();
-        for (int i = 0; i < count; i++) {
-            if ((typeBits & (1 << i)) != 0 && (this.memProps.memoryTypes(i).propertyFlags() & props) == props) return i;
-        }
+        for (int i = 0; i < count; i++) if ((typeBits & (1 << i)) != 0 && (this.memProps.memoryTypes(i).propertyFlags() & props) == props) return i;
         return -1;
     }
 
-    // COMPILES A BUNDLED SHADER TO SPIR-V AT RUNTIME (shaderc) AND CREATES ITS MODULE
     private long compileShaderModule(final String name, final int kind) {
+        // THE BUNDLED GLSL COMPILES TO SPIR-V AT RUNTIME THROUGH shaderc
         final String glsl;
         try { glsl = IOTool.shader(name); }
         catch (final IOException e) { throw new IllegalStateException("VulkanRenderBackend: cannot read the shader " + name, e); }
@@ -1578,9 +1548,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         try {
             result = shaderc_compile_into_spv(compiler, glsl, kind, name, "main", 0L);
             if (result == 0L) throw new IllegalStateException("VulkanRenderBackend: shaderc compile returned null");
-            if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
+            if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
                 throw new IllegalStateException("VulkanRenderBackend: shader compile failed: " + shaderc_result_get_error_message(result));
-            }
             final ByteBuffer spv = shaderc_result_get_bytes(result);
             if (spv == null) throw new IllegalStateException("VulkanRenderBackend: shaderc produced no SPIR-V");
             try (final MemoryStack stack = stackPush()) {
@@ -1602,11 +1571,12 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     public void cleanup() {
         if (this.device != null) vkDeviceWaitIdle(this.device);
 
-        // RUN ANY STILL-PENDING ENGINE DESTRUCTORS — THE DEVICE IS IDLE, SO NO FRAME REFERENCES THEM.
+        // STILL-PENDING ENGINE DESTRUCTORS RUN NOW: THE DEVICE IS IDLE, SO NO FRAME REFERENCES THEM
         Retire r;
         while ((r = this.retireQueue.poll()) != null) r.run().run();
 
-        if (this.coreReady) {
+        // EVERY HANDLE IS CHECKED, SO A CORE THAT FAILED HALFWAY IS ALSO TORN DOWN BEFORE ITS DEVICE
+        if (this.device != null) {
             this.destroySwapchainObjects();
 
             for (final Frame f: this.frames) {
@@ -1626,7 +1596,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             }
             this.textures.clear();
 
-            if (this.dummySet != 0L) vkDestroyDescriptorPool(this.device, this.dummyPool, null); // FREES THE SET
+            if (this.dummyPool != 0L) vkDestroyDescriptorPool(this.device, this.dummyPool, null); // FREES THE SET
             if (this.dummyView != 0L) vkDestroyImageView(this.device, this.dummyView, null);
             if (this.dummyImg != 0L) vkDestroyImage(this.device, this.dummyImg, null);
             if (this.dummyMem != 0L) vkFreeMemory(this.device, this.dummyMem, null);
@@ -1643,7 +1613,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             if (this.sampler != 0L) vkDestroySampler(this.device, this.sampler, null);
             if (this.uploadFence != 0L) vkDestroyFence(this.device, this.uploadFence, null);
             if (this.uploadPool != 0L) vkDestroyCommandPool(this.device, this.uploadPool, null); // FREES uploadCmd
-            if (this.cmdPool != 0L) vkDestroyCommandPool(this.device, this.cmdPool, null);        // FREES FRAME CMD BUFFERS
+            if (this.cmdPool != 0L) vkDestroyCommandPool(this.device, this.cmdPool, null); // FREES THE FRAME COMMAND BUFFERS
             this.coreReady = false;
         }
 
@@ -1661,6 +1631,19 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // ==========================================================================
     // VKContext
     // ==========================================================================
+    @Override
+    public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
+        // VKEngine BORROWS THIS BACKEND'S DEVICE (THIS IS THE VKContext); THE THREAD AND EXECUTOR ARE UNUSED
+        return () -> PlayerAPI.vkEngine(this);
+    }
+
+    @Override
+    public void retire(final Runnable destroy) {
+        // STAMPED A FEW FRAMES AHEAD (+1 ABSORBS THE frameCounter READ/WRITE RACE WITH beginFrame); A BACKGROUND
+        // RELEASE THREAD MAY CALL THIS, SO THE QUEUE IS CONCURRENT
+        this.retireQueue.add(new Retire(this.frameCounter + MAX_FRAMES_IN_FLIGHT + 1, destroy));
+    }
+
     @Override
     public VkInstance vkInstance() {
         return this.instance;
@@ -1726,14 +1709,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         return new VKContext.DeviceInfo(this.features, List.copyOf(this.instanceExtensions), List.copyOf(this.deviceExtensions), this.queueCounts.clone());
     }
 
-    private static void check(final int result, final String op) {
-        if (result != VK_SUCCESS) throw new IllegalStateException("VulkanRenderBackend: " + op + " failed (VkResult " + result + ")");
-    }
-
     // ==========================================================================
     // STATE HOLDERS
     // ==========================================================================
-    // ONE FRAME-IN-FLIGHT: ITS COMMAND BUFFER, SYNC PRIMITIVES, GROWABLE VERTEX BUFFER AND DESCRIPTOR POOLS.
+    // ONE FRAME IN FLIGHT: ITS COMMAND BUFFER, SYNC PRIMITIVES, GROWABLE VERTEX BUFFER AND DESCRIPTOR POOLS
     private static final class Frame {
         VkCommandBuffer cmd;
         long imageAvailable;
@@ -1741,7 +1720,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         long vbo, vboMem, vboMapped;
         int vboCapVerts;
         int vertexOffset;
-        final List<long[]> retired = new ArrayList<>();      // {buffer, memory} RETIRED ON GROWTH, FREED AFTER THE FENCE
+        final List<long[]> retired = new ArrayList<>(); // {buffer, memory} RETIRED ON GROWTH, FREED AFTER THE FENCE
         final List<Long> descPools = new ArrayList<>();
         int descPoolIndex;
         int descPoolUsed;
@@ -1752,4 +1731,17 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     // AN APP TEXTURE: ITS IMAGE, BACKING MEMORY AND SAMPLEABLE VIEW
     private record TextureRecord(long image, long memory, long view) {}
+
+    // AN ENGINE DESTRUCTOR AND THE FRAME AFTER WHICH IT MAY RUN
+    private record Retire(long due, Runnable run) {}
+
+    // UTILITY
+
+    private static void check(final int result, final String op) {
+        if (result != VK_SUCCESS) throw new IllegalStateException("VulkanRenderBackend: " + op + " failed (VkResult " + result + ")");
+    }
+
+    private static void putSoftVertex(final FloatBuffer dst, final float x, final float y) {
+        dst.put(x).put(y).put(0f).put(0f).put(0f).put(0f).put(0f).put(0f);
+    }
 }

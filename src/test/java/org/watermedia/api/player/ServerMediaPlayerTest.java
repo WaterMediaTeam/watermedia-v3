@@ -16,16 +16,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies {@link ServerMediaPlayer}, the headless wall clock whose snapshots players follow. Its contract
- * (start/pause/seek/speed/repeat, snapshots, release and the shared-ticker ENDED transition) is pure-Java
- * and deterministic; a regression here desyncs every player that follows it.
- */
+/** Verifies {@link ServerMediaPlayer}, the headless wall clock whose snapshots players follow: a regression desyncs them all. */
 @DisplayName("ServerMediaPlayer")
 public class ServerMediaPlayerTest {
 
     // TICK IS 50ms; GIVE THE SHARED TICKER A FEW CYCLES OF SLACK BEFORE ASSERTING A TRANSITION
-    private static final long ENDED_TIMEOUT_MS = 2000L;
+    private static final long ENDED_TIMEOUT_MS = 2_000L;
 
     private ServerMediaPlayer player;
 

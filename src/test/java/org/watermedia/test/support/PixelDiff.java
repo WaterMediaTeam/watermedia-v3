@@ -1,18 +1,9 @@
 package org.watermedia.test.support;
 
-/**
- * Channel-wise difference report between two equally-sized byte arrays.
- * Returned by {@link #compare(byte[], byte[], int)} as an immutable record.
- *
- * <p>Tests with strict tolerances use this struct directly so assertions can
- * read each metric (max, mean, percent-over-threshold) without recomputing.
- */
+/** Channel-wise difference report between two equally-sized byte arrays. */
 public record PixelDiff(int maxDiff, double meanDiff, int valuesAboveSmall, int totalValues) {
 
-    /**
-     * Compares with an explicit "small-diff" threshold (used by lossy codecs
-     * to report the fraction of bytes that drifted noticeably).
-     */
+    /** Compares two arrays, counting the values that drift more than {@code smallDiffThreshold} (lossy codecs). */
     public static PixelDiff compare(final byte[] reference, final byte[] actual, final int smallDiffThreshold) {
         if (reference.length != actual.length)
             throw new IllegalArgumentException("Length mismatch: ref=" + reference.length + " actual=" + actual.length);
@@ -29,7 +20,7 @@ public record PixelDiff(int maxDiff, double meanDiff, int valuesAboveSmall, int 
         return new PixelDiff(maxDiff, mean, aboveSmall, reference.length);
     }
 
-    /** Percentage of byte values whose absolute difference exceeded the small-diff threshold. */
+    /** Returns the percentage of values whose difference exceeds the small-diff threshold. */
     public double percentAboveSmall() {
         return this.totalValues == 0 ? 0.0 : (this.valuesAboveSmall * 100.0) / this.totalValues;
     }

@@ -106,9 +106,9 @@ public final class Button extends Element<Button> {
         return LEFT_PAD + iconW + labelW + (chipW == 0 ? 0 : subtextSpacing + chipW) + RIGHT_PAD;
     }
 
-    // BUTTON BOX SHARED WITH IconButton: EVERY STATE DERIVES FROM accent, SO EACH BUTTON HOVERS IN ITS OWN HUE
     static void box(final Canvas canvas, final int x, final int y, final int w, final int h,
                     final Color accent, final boolean filled, final boolean hover, final boolean enabled) {
+        // SHARED WITH IconButton: EVERY STATE DERIVES FROM accent, SO EACH BUTTON HOVERS IN ITS OWN HUE
         if (filled) {
             canvas.fill(x, y, w, h, hover && enabled ? accent : AppTheme.alpha(accent, 210));
         } else {
@@ -154,10 +154,8 @@ public final class Button extends Element<Button> {
 
         if (label != null && !label.isEmpty()) {
             final int avail = Math.max(0, (chipW == 0 ? x + w - RIGHT_PAD : chipX - subtextSpacing) - cx);
-            String draw = label;
-            if (text.widthBold(label, AppTheme.TEXT_BUTTON) > avail) {
-                draw = text.truncateToWidth(label, avail, AppTheme.TEXT_BUTTON, Font.BOLD);
-            }
+            final String draw = text.widthBold(label, AppTheme.TEXT_BUTTON) > avail
+                    ? text.truncateToWidth(label, avail, AppTheme.TEXT_BUTTON, Font.BOLD) : label;
             canvas.text(draw, cx, cy - text.glyphHeightBold(AppTheme.TEXT_BUTTON) / 2f, tc, AppTheme.TEXT_BUTTON, true);
         }
     }

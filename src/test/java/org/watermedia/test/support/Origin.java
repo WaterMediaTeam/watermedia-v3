@@ -8,10 +8,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Loopback origin serving one body under every path, whose {@link #hold()} parks later requests before their headers until
- * {@link #release()}, so a player or a download stays in flight as long as a test needs.
- */
+/** Loopback origin serving one body under every path; {@link #hold()} keeps later requests in flight until {@link #release()}. */
 public final class Origin implements AutoCloseable {
     private static final long HOLD_LIMIT_MS = 30_000L; // A HELD REQUEST NEVER OUTLIVES A FAILED TEST BY MORE
 

@@ -32,7 +32,7 @@ public final class CacheCleaner {
     /** Counts the files and bytes in the media cache, as {@code {files, bytes}}. */
     public static long[] scan() throws IOException {
         final long[] stats = new long[2];
-        final Path cache = dir();
+        final Path cache = WaterMedia.tmp().resolve("cache");
         if (!Files.exists(cache)) return stats;
         try (final Stream<Path> files = Files.walk(cache)) {
             files.filter(Files::isRegularFile).forEach(path -> {
@@ -50,8 +50,14 @@ public final class CacheCleaner {
     // A STAGE STILL WORKING JUST KEEPS THE DIALOG OPEN
     void step() {
         if (!this.visible) {
-            // SCANNED ON A WORKER: scan() WALKS THE WHOLE MEDIA CACHE, POSSIBLY THOUSANDS OF FILES
-            this.reset();
+            // BACK TO THE FIRST STAGE, SCANNED ON A WORKER: scan() WALKS THE WHOLE MEDIA CACHE, POSSIBLY THOUSANDS OF FILES
+            this.done = false;
+            this.error = false;
+            this.stage = 1;
+            this.state = "SCAN";
+            this.fileCount = 0;
+            this.sizeLabel = "0 B";
+            this.progress = 0;
             this.visible = true;
             this.working = true;
             ThreadTool.thread("CacheCleaner-Scan", this::count);
@@ -66,7 +72,7 @@ public final class CacheCleaner {
             this.working = true;
             ThreadTool.thread("CacheCleaner-Wipe", this::clean);
         } else {
-            // DIALOG ALREADY HIDDEN — REFRESH THE COUNTS FOR THE NEXT OPEN OFF THE RENDER THREAD
+            // HIDE THE DIALOG AND REFRESH THE COUNTS FOR THE NEXT OPEN OFF THE RENDER THREAD
             this.visible = false;
             ThreadTool.thread("CacheCleaner-Scan", this::count);
         }
@@ -101,7 +107,7 @@ public final class CacheCleaner {
             this.progress = 12;
             this.repaint.run();
 
-            final Path cache = dir();
+            final Path cache = WaterMedia.tmp().resolve("cache");
             if (Files.exists(cache)) IOTool.deleteTree(cache);
             Files.createDirectories(cache);
 
@@ -116,24 +122,5 @@ public final class CacheCleaner {
             this.working = false;
             this.repaint.run();
         }
-    }
-
-    // RETURNS THE DIALOG TO ITS FIRST STAGE, BEFORE A NEW SCAN
-    private void reset() {
-        this.working = false;
-        this.done = false;
-        this.error = false;
-        this.stage = 1;
-        this.state = "SCAN";
-        this.fileCount = 0;
-        this.sizeLabel = "0 B";
-        this.progress = 0;
-    }
-
-    // UTILITY
-
-    // THE MEDIA CACHE FOLDER THE DIALOG COUNTS AND WIPES
-    private static Path dir() {
-        return WaterMedia.tmp().resolve("cache");
     }
 }

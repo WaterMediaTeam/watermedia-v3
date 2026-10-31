@@ -3,12 +3,8 @@ package org.watermedia.api.codecs.readers.svg;
 import org.watermedia.api.codecs.CodecException;
 
 /**
- * Parses the SVG {@code <path d="...">} grammar into a {@link Path}. Supports every command
- * ({@code M L H V C S Q T A Z}, absolute and relative), the implicit-{@code lineto} repeat after a
- * {@code moveto}, smooth reflection for {@code S}/{@code T}, and elliptical-arc-to-cubic conversion.
- *
- * <p>The number scanner tolerates the compact forms SVG allows: numbers separated only by a sign or
- * decimal point ({@code "10-20"}, {@code "1.5.5"}), commas, or whitespace.
+ * Parses the full SVG {@code d} grammar ({@code M L H V C S Q T A Z}, absolute and relative, implicit lineto,
+ * smooth reflection, arcs as cubics) into a {@link Path}, tolerating compact numbers such as {@code "10-20"}.
  */
 final class PathParser {
     private final String d;
@@ -149,7 +145,7 @@ final class PathParser {
     private void arc(final Path path, double rx, double ry, final double rotDeg,
                      final boolean large, final boolean sweep, final double x, final double y) throws CodecException {
         final double x0 = this.cx, y0 = this.cy;
-        if ((x0 == x && y0 == y)) return;
+        if (x0 == x && y0 == y) return;
         if (rx == 0 || ry == 0) { path.lineTo(x, y); return; }
         rx = Math.abs(rx); ry = Math.abs(ry);
 
@@ -214,8 +210,9 @@ final class PathParser {
         return (ux * vy - uy * vx) < 0 ? -ang : ang;
     }
 
-    // ----- TOKENIZER -----
-
+    // ==========================================================================
+    // TOKENIZER
+    // ==========================================================================
     private void skipSep() {
         while (this.pos < this.len) {
             final char ch = this.d.charAt(this.pos);
@@ -265,11 +262,8 @@ final class PathParser {
             return 0;
         }
         final double v;
-        try {
-            v = Double.parseDouble(this.d.substring(start, this.pos));
-        } catch (final NumberFormatException e) {
-            return 0;
-        }
+        try { v = Double.parseDouble(this.d.substring(start, this.pos)); }
+        catch (final NumberFormatException e) { return 0; }
         // NaN IS THE "COMMAND RAN OUT OF OPERANDS" SENTINEL ABOVE AND THE SCANNER CANNOT SPELL IT HERE.
         // AN INFINITY ("1e999") CAN BE SPELLED, AND IT POISONS FLATNESS AND SCANLINE MATH ALIKE
         if (Double.isInfinite(v)) throw new CodecException("Non-finite path coordinate");

@@ -12,11 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the {@link TxMediaPlayer} frame-step semantics: stepping is refused while playing, and while paused
- * {@code nextFrame()} advances {@code time()} and {@code previousFrame()} rewinds it, the player staying in
- * {@link Status#PAUSED} throughout.
- */
+/** Verifies that {@link TxMediaPlayer} steps frames both ways only while paused, staying {@link Status#PAUSED}. */
 @DisplayName("TxMediaPlayer frame step")
 public class TxFrameStepTest {
 

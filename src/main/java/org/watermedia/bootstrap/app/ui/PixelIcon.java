@@ -47,7 +47,7 @@ public final class PixelIcon {
             Map.entry("arrow-right", new String[]{"0100", "0110", "1111", "0110", "0100"}),
             Map.entry("check", new String[]{"00001", "00010", "10100", "01000", "00000"}),
             Map.entry("arrows", new String[]{"00100", "01110", "10101", "01110", "00100"}),
-            // RESET — CIRCULAR CLOCKWISE ARROW (RING BROKEN ON THE RIGHT, ARROWHEAD AT TOP-RIGHT) WITH A CENTER DOT
+            // RESET: CIRCULAR CLOCKWISE ARROW (RING BROKEN ON THE RIGHT, ARROWHEAD AT TOP-RIGHT) WITH A CENTER DOT
             Map.entry("reset", new String[]{
                     "001111110",
                     "010000110",
@@ -59,7 +59,7 @@ public final class PixelIcon {
                     "010000010",
                     "001111100"
             }),
-            // EXIT — DOOR FRAME OPEN ON THE RIGHT WITH AN ARROW LEAVING THROUGH IT
+            // EXIT: DOOR FRAME OPEN ON THE RIGHT WITH AN ARROW LEAVING THROUGH IT
             Map.entry("exit", new String[]{
                     "1111100000",
                     "1000100000",
@@ -77,8 +77,7 @@ public final class PixelIcon {
             Map.entry("restore", new String[]{"001111", "001001", "111101", "101101", "100100", "111100"})
     );
 
-    private PixelIcon() {
-    }
+    private PixelIcon() {}
 
     public static void draw(final String name, final int x, final int y, final int size, final Color color) {
         final String[] mask = ICONS.getOrDefault(name, ICONS.get("info"));

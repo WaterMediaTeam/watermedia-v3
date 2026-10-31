@@ -15,7 +15,7 @@ public record NetpbmHeader(int version, int width, int height, Integer depth, In
 
     // TUPLTYPE IS THE ONLY FREE-FORM HEADER VALUE AND IT REACHES EXCEPTION MESSAGES — AND THE LOG —
     // VERBATIM. A REAL PAM HEADER IS UNDER 200 BYTES IN TOTAL, SO THIS IS ALREADY GENEROUS
-    private static final int MAX_TUPLTYPE = 256;
+    private static final int MAX_TUPLTYPE_CHARS = 256;
 
     /**
      * Parses an ASCII Netpbm header starting at the {@code Pn} version token and validates it.
@@ -46,7 +46,6 @@ public record NetpbmHeader(int version, int width, int height, Integer depth, In
 
             switch (version) {
                 case 1, 4 -> {
-                    // EXPECT WIDTH AND HEIGHT IN ORDER
                     switch (tokenIndex) {
                         case 2 -> width = parseInt(token);
                         case 3 -> {
@@ -56,7 +55,6 @@ public record NetpbmHeader(int version, int width, int height, Integer depth, In
                     }
                 }
                 case 2, 3, 5, 6 -> {
-                    // EXPECT WIDTH, HEIGHT, MAXVAL IN ORDER
                     switch (tokenIndex) {
                         case 2 -> width = parseInt(token);
                         case 3 -> height = parseInt(token);
@@ -67,7 +65,7 @@ public record NetpbmHeader(int version, int width, int height, Integer depth, In
                     }
                 }
                 case 7 -> {
-                    // EXPECT KEY-VALUE PAIRS UNTIL ENDHDR
+                    // PAM: KEY-VALUE PAIRS UNTIL ENDHDR
                     switch (token) {
                         case "WIDTH" -> width = nextTokenInt(data);
                         case "HEIGHT" -> height = nextTokenInt(data);
@@ -121,10 +119,7 @@ public record NetpbmHeader(int version, int width, int height, Integer depth, In
         return new NetpbmHeader(version, width, height, depth, maxVal, tuplType);
     }
 
-    /**
-     * Netpbm header whitespace, matching C {@code isspace()} — the raster begins right after one.
-     * Shared with the reader's header pre-scanner: both parsers must agree on where tokens end.
-     */
+    /** Returns whether {@code c} is Netpbm header whitespace (C {@code isspace()}); the reader's pre-scanner shares it so both agree on token ends. */
     public static boolean whitespace(final int c) {
         return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C;
     }
@@ -172,7 +167,7 @@ public record NetpbmHeader(int version, int width, int height, Integer depth, In
         while (buf.hasRemaining()) {
             final char c = (char) (buf.get() & 0xFF);
             if (c == '\n') break;
-            if (sb.length() >= MAX_TUPLTYPE) throw new CodecException("PAM TUPLTYPE too long");
+            if (sb.length() >= MAX_TUPLTYPE_CHARS) throw new CodecException("PAM TUPLTYPE too long");
             sb.append(c >= 0x20 && c < 0x7F ? c : ' ');
         }
         return sb.toString();

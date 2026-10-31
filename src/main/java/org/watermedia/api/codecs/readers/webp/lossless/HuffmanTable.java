@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.readers.webp.lossless;
 
 import org.watermedia.api.codecs.CodecException;
 
+/** Canonical LSB-first VP8L prefix code: a 7-bit lookup resolves short codes, a per-length scan the longer ones. */
 public final class HuffmanTable {
     private static final int LOOKUP_BITS = 7;
     private static final int LOOKUP_SIZE = 1 << LOOKUP_BITS;
@@ -14,8 +15,8 @@ public final class HuffmanTable {
     // LOOKUP TABLE: LOW 8 BITS = LENGTH, HIGH 24 BITS = SYMBOL. NULL FOR SINGLE-SYMBOL TABLES,
     // WHICH RESOLVE WITHOUT READING BITS AND THEREFORE NEVER TOUCH IT
     private final int[] lookup;
-    // PRE-COMPUTED REVERSED LONG CODES (len > LOOKUP_BITS) FOR FAST SLOW-PATH LINEAR SCAN
-    private final int[] longCodes;   // ALREADY REVERSED FOR LSB-FIRST COMPARE
+    // LONG CODES (len > LOOKUP_BITS), PRE-REVERSED FOR THE LSB-FIRST COMPARE OF THE LINEAR SCAN
+    private final int[] longCodes;
     private final int[] longSymbols;
     // PER-LENGTH START INDICES: LONG ENTRIES OF LENGTH len OCCUPY [longStart[len], longStart[len+1])
     private final int[] longStart;
@@ -42,54 +43,42 @@ public final class HuffmanTable {
 
     // DECODES THE NEXT SYMBOL FROM THE LSB-FIRST BITSTREAM, OR RETURNS THE SOLE SYMBOL WITHOUT CONSUMING BITS
     int read(final BitReader reader) throws CodecException {
-        // CHECK FOR SINGLE SYMBOL TABLE (NO BITS NEEDED)
-        if (this.isSingleSymbol) {
-            return this.singleSymbolValue;
-        }
+        if (this.isSingleSymbol) return this.singleSymbolValue;
 
         final int idx = reader.peek(LOOKUP_BITS);
         if (reader.bitsAvail() >= LOOKUP_BITS) {
-            // FAST PATH: PEEK LOOKUP_BITS, RESOLVE IN O(1) FROM THE PREFILLED LOOKUP TABLE.
+            // FAST PATH: PEEK LOOKUP_BITS, RESOLVE IN O(1) FROM THE PREFILLED LOOKUP TABLE
             final int entry = this.lookup[idx];
             final int len = entry & 0xFF;
             if (len > 0) {
                 reader.consume(len);
                 return entry >>> 8;
             }
-            // LONG CODE: PEELED 7 BITS, KEEP EXTENDING ONE AT A TIME AND COMPARE AGAINST
-            // PRE-COMPUTED REVERSED CODES.
+            // LONG CODE: PAST THE 7 PEEKED BITS, EXTEND ONE BIT AT A TIME AND COMPARE AGAINST THE PRE-REVERSED CODES
             int code = idx;
             reader.consume(LOOKUP_BITS);
             for (int curLen = LOOKUP_BITS + 1; curLen <= this.longMaxLen; curLen++) {
                 final int bit = reader.read(1);
                 code |= bit << (curLen - 1);
                 // SCAN ONLY THE CONTIGUOUS RANGE OF ENTRIES OF THIS LENGTH (LENGTH ALREADY MATCHES)
-                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++) {
-                    if (this.longCodes[j] == code) {
-                        return this.longSymbols[j];
-                    }
-                }
+                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++)
+                    if (this.longCodes[j] == code) return this.longSymbols[j];
             }
             throw new CodecException("Invalid huffman code (code=" + code + ")");
         }
 
-        // SLOW SAFE PATH: NEAR EOF, READ BIT-BY-BIT WHILE PROPAGATING EOF EXCEPTIONS.
+        // SLOW SAFE PATH: NEAR EOF, READ BIT-BY-BIT WHILE PROPAGATING EOF EXCEPTIONS
         int code = 0;
         for (int curLen = 1; curLen <= 15; curLen++) {
             final int bit = reader.read(1);
             code |= bit << (curLen - 1);
             if (curLen <= LOOKUP_BITS) {
                 final int entry = this.lookup[code];
-                if ((entry & 0xFF) == curLen) {
-                    return entry >>> 8;
-                }
+                if ((entry & 0xFF) == curLen) return entry >>> 8;
             } else if (curLen <= this.longMaxLen) {
                 // SCAN ONLY THE CONTIGUOUS RANGE OF ENTRIES OF THIS LENGTH (LENGTH ALREADY MATCHES)
-                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++) {
-                    if (this.longCodes[j] == code) {
-                        return this.longSymbols[j];
-                    }
-                }
+                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++)
+                    if (this.longCodes[j] == code) return this.longSymbols[j];
             }
         }
         throw new CodecException("Invalid huffman code (code=" + code + ")");
@@ -145,15 +134,11 @@ public final class HuffmanTable {
             }
         }
 
-        // BUILD LOOKUP TABLE FOR SHORT CODES
-        // CODES ARE STORED REVERSED BECAUSE BITS ARE READ LSB-FIRST
+        // CODES ARE STORED REVERSED BECAUSE BITS ARE READ LSB-FIRST: A SHORT CODE FILLS EVERY LOOKUP ENTRY
+        // SHARING ITS PREFIX, A LONG ONE (len > LOOKUP_BITS) GOES TO THE COMPACT LONG-CODE TABLES
         final int[] lookup = new int[LOOKUP_SIZE];
-
-        // BUILD COMPACT LONG-CODE TABLES FOR len > LOOKUP_BITS
         int longCount = 0;
-        for (int sym = 0; sym < alphabetSize; sym++) {
-            if (lengths[sym] > LOOKUP_BITS) longCount++;
-        }
+        for (int sym = 0; sym < alphabetSize; sym++) if (lengths[sym] > LOOKUP_BITS) longCount++;
         final int[] longLens = new int[longCount];
         final int[] longCodes = new int[longCount];
         final int[] longSymbols = new int[longCount];
@@ -163,15 +148,11 @@ public final class HuffmanTable {
         for (int sym = 0; sym < alphabetSize; sym++) {
             final int len = lengths[sym];
             if (len == 0) continue;
-            final int c = codes[sym];
-            final int reversed = reverseBits(c, len);
+            final int reversed = reverseBits(codes[sym], len);
             if (len <= LOOKUP_BITS) {
-                // FILL ALL ENTRIES THAT MATCH THIS PREFIX
                 final int step = 1 << len;
                 final int packed = (sym << 8) | len;
-                for (int i = reversed; i < LOOKUP_SIZE; i += step) {
-                    lookup[i] = packed;
-                }
+                for (int i = reversed; i < LOOKUP_SIZE; i += step) lookup[i] = packed;
             } else {
                 longLens[longIdx] = len;
                 longCodes[longIdx] = reversed;
@@ -212,15 +193,11 @@ public final class HuffmanTable {
 
     /** Builds a one-symbol zero-bit table or a two-symbol one-bit table. */
     public static HuffmanTable simple(final int numSymbols, final int sym0, final int sym1) {
-        if (numSymbols == 1) {
-            return singleSymbolTable(sym0);
-        }
+        if (numSymbols == 1) return singleSymbolTable(sym0);
 
         // TWO SYMBOLS, LENGTH 1 EACH. BIT 0 = sym0, BIT 1 = sym1
         final int[] lookup = new int[LOOKUP_SIZE];
-        for (int i = 0; i < LOOKUP_SIZE; i++) {
-            lookup[i] = ((i & 1) == 0 ? (sym0 << 8) : (sym1 << 8)) | 1;
-        }
+        for (int i = 0; i < LOOKUP_SIZE; i++) lookup[i] = ((i & 1) == 0 ? (sym0 << 8) : (sym1 << 8)) | 1;
         return new HuffmanTable(lookup, NO_LONG, NO_LONG, NO_LONG_START, 0, false, 0);
     }
 

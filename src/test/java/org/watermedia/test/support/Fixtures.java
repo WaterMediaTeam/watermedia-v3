@@ -19,14 +19,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/**
- * Central catalog of on-disk test fixtures. Every test that needs a sample
- * file pulls it from here so paths stay consistent and renames stay cheap.
- *
- * <p>All paths are resolved against the working directory (Gradle runs tests
- * from the module root, so {@code src/test/resources/...} works without
- * classpath tricks).
- */
+/** Catalog of on-disk test fixtures, resolved against the working directory (Gradle runs tests from the module root). */
 public final class Fixtures {
 
     public static final Path RESOURCES = Path.of("src", "test", "resources");
@@ -56,13 +49,10 @@ public final class Fixtures {
 
     private Fixtures() {}
 
-    /** Reads a fixture file, wrapping IO failures as unchecked for tidy {@code @TestFactory} sites. */
+    /** Reads a fixture file, rethrowing IO failures unchecked for {@code @TestFactory} sites. */
     public static byte[] readAll(final Path path) {
-        try {
-            return Files.readAllBytes(path);
-        } catch (final IOException e) {
-            throw new UncheckedIOException("Failed to read fixture " + path, e);
-        }
+        try { return Files.readAllBytes(path); }
+        catch (final IOException e) { throw new UncheckedIOException("Failed to read fixture " + path, e); }
     }
 
     /** Returns a {@code file://} URI for a fixture, suitable for {@code MRL}/PlayerAPI. */

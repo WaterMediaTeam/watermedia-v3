@@ -5,7 +5,6 @@ import org.watermedia.bootstrap.app.element.Element;
 
 /** Paints the app backdrop: a deep vertical gradient, a glow band across the top and 1px scanlines every 3px. */
 final class Background extends Element<Background> {
-
     public Background() {
         this.width = MAX_PARENT;
         this.height = MAX_PARENT;

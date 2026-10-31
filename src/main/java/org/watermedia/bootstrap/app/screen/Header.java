@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.util.MathUtil;
+import org.watermedia.bootstrap.app.Assets;
 import org.watermedia.bootstrap.app.element.Canvas;
 import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
@@ -14,7 +15,6 @@ import java.util.Locale;
  * and right tag, over a gradient band closed by a neon rule. A right slot hosts screen-specific controls.
  */
 public final class Header extends Group<Header> {
-
     /** Fixed header height in pixels. */
     public static final int H = 124;
     private static final int BANNER_H = 100;
@@ -90,21 +90,26 @@ public final class Header extends Group<Header> {
         canvas.lineH(x, y + H - 2, w, AppTheme.NEON_DARK, 1f);
         canvas.glow(x, y + H - 8, w, 4, 0f, AppTheme.NEON, 0.16f);
 
+        // THE BANNER FITS bannerW x BANNER_H; WITHOUT ITS TEXTURE THE SEPARATOR STILL SITS AFTER THE FULL bannerW
+        final Assets assets = this.ctx.assets;
+        final boolean banner = assets.bannerId > 0 && assets.bannerWidth > 0 && assets.bannerHeight > 0;
         final int bannerX = x + 18;
         final int bannerW = MathUtil.clamp((int) (w * 0.40f), 430, 665);
-        final int actualBannerW = this.bannerWidth(bannerW);
-        final int sepX = bannerX + actualBannerW + 14;
+        final float bannerScale = banner ? Math.min((float) bannerW / assets.bannerWidth, (float) BANNER_H / assets.bannerHeight) : 0f;
+        final int drawnW = banner ? (int) (assets.bannerWidth * bannerScale) : bannerW;
+        final int sepX = bannerX + drawnW + 14;
         canvas.fill(sepX, y + 38, 4, 42, AppTheme.AMBER);
         canvas.glow(sepX - 1, y + 38, 6, 42, 0f, AppTheme.AMBER, 0.24f);
-        this.drawBanner(canvas, bannerX, y + 10, bannerW);
+        if (banner) {
+            final int drawnH = (int) (assets.bannerHeight * bannerScale);
+            canvas.image(assets.bannerId, bannerX, y + 10 + (BANNER_H - drawnH) / 2f, drawnW, drawnH, null);
+        }
 
         final int titleX = sepX + 24;
         int rightReserve = this.right != null && !this.right.isEmpty()
                 ? this.tagWidth(this.right) + 52
                 : 24;
-        if (this.extra != null && this.extra.visible()) {
-            rightReserve = Math.max(rightReserve, this.extra.measuredWidth() + 52);
-        }
+        if (this.extra != null && this.extra.visible()) rightReserve = Math.max(rightReserve, this.extra.measuredWidth() + 52);
         final float titleScale = AppTheme.TEXT_SECTION;
         final float subScale = AppTheme.TEXT_BODY;
         final int titleMaxW = Math.max(120, x + w - titleX - rightReserve);
@@ -137,19 +142,5 @@ public final class Header extends Group<Header> {
 
     private int tagWidth(final String label) {
         return this.ctx.text.width(label.toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY) + 28;
-    }
-
-    private void drawBanner(final Canvas canvas, final int x, final int y, final int maxW) {
-        if (this.ctx.assets.bannerId <= 0 || this.ctx.assets.bannerWidth <= 0 || this.ctx.assets.bannerHeight <= 0) return;
-        final float scale = Math.min((float) maxW / this.ctx.assets.bannerWidth, (float) BANNER_H / this.ctx.assets.bannerHeight);
-        final int w = (int) (this.ctx.assets.bannerWidth * scale);
-        final int h = (int) (this.ctx.assets.bannerHeight * scale);
-        canvas.image(this.ctx.assets.bannerId, x, y + (BANNER_H - h) / 2f, w, h, null);
-    }
-
-    private int bannerWidth(final int maxW) {
-        if (this.ctx.assets.bannerId <= 0 || this.ctx.assets.bannerWidth <= 0 || this.ctx.assets.bannerHeight <= 0) return maxW;
-        final float scale = Math.min((float) maxW / this.ctx.assets.bannerWidth, (float) BANNER_H / this.ctx.assets.bannerHeight);
-        return (int) (this.ctx.assets.bannerWidth * scale);
     }
 }

@@ -7,7 +7,7 @@ public final class Limits {
 
     private Limits() {}
 
-    /** Whether a canvas of the given size stays within both ceilings. */
+    /** Returns whether a canvas of the given size stays within both ceilings. */
     public static boolean fits(final int width, final int height) {
         return width > 0 && height > 0 && width <= MAX_DIM && height <= MAX_DIM && (long) width * height <= MAX_PIXELS;
     }

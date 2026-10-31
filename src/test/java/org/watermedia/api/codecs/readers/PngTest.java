@@ -12,8 +12,8 @@ import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.util.PixelFormat;
-import org.watermedia.test.support.FrameReplay;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.FrameReplay;
 import org.watermedia.test.support.ImageBytes;
 import org.watermedia.test.support.PamImage;
 import org.watermedia.test.support.PixelDiff;
@@ -263,6 +263,7 @@ public class PngTest {
         }
     }
 
+    // UTILITY
     // fcTL FOR A 1x1 FRAME AT THE ORIGIN WITH A 1/10 S DELAY, DISPOSE NONE AND BLEND SOURCE
     private static byte[] fctl(final int sequence) {
         return new ImageBytes().be32(sequence).be32(1).be32(1).be32(0).be32(0).be16(1).be16(10).u8(0).u8(0).bytes();

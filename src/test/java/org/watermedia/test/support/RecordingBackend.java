@@ -16,10 +16,7 @@ import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
-/**
- * A {@link RenderBackend} without a GPU that records the layer, clip and draw calls the app's render engine makes, and
- * can stand behind {@link RenderSystem} so element code draws into it.
- */
+/** GPU-less {@link RenderBackend} recording the render engine's layer, clip and draw calls; it can stand behind {@link RenderSystem}. */
 public final class RecordingBackend implements RenderBackend {
     public final List<Integer> begun = new ArrayList<>();
     public final List<Integer> bound = new ArrayList<>();

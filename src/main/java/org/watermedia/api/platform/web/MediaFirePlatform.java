@@ -20,9 +20,10 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves MediaFire file pages to the direct download link their markup carries. */
 public final class MediaFirePlatform implements Platform {
-    public static final String NAME = "MediaFire";
     private static final Marker IT = MarkerManager.getMarker(MediaFirePlatform.class.getSimpleName());
+    public static final String NAME = "MediaFire";
     private static final Pattern PATTERN_POPSOK = Pattern.compile("<a\\s+class=\"input\\s+popsok\"\\s+aria-label=\"Download\\s+file\"\\s+href=\"([^\"]+)\"[^>]*>");
     private static final Pattern PATTERN_DATA_SCRAMBLED = Pattern.compile("data-scrambled-url=\"([^\"]+)\"");
     private static final String[] HOSTS = { "mediafire.com", "www.mediafire.com" };
@@ -45,8 +46,8 @@ public final class MediaFirePlatform implements Platform {
             final Matcher popsokMatcher = PATTERN_POPSOK.matcher(html);
             final Matcher dataScrambledMatcher = PATTERN_DATA_SCRAMBLED.matcher(html);
 
-            // MEDIAFIRE EXPOSES THE DIRECT LINK EITHER AS A PLAIN "popsok" ANCHOR OR, WHEN OBFUSCATED,
-            // AS A BASE64 "data-scrambled-url" ATTRIBUTE — TRY THE PLAIN ONE FIRST
+            // THE DIRECT LINK IS EITHER A PLAIN "popsok" ANCHOR OR, WHEN OBFUSCATED, A BASE64 "data-scrambled-url"
+            // ATTRIBUTE; THE PLAIN ONE WINS
             final String link;
             if (popsokMatcher.find()) {
                 link = popsokMatcher.group(1);

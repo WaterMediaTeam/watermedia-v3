@@ -7,8 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * acTL - Animation Control Chunk
- * Indicates that the PNG is an animated image and contains information about the animation
+ * acTL (animation control) chunk: marks the PNG as animated and declares its frame and play counts.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#acTL-chunk">PNG Specification - acTL</a>
  */
@@ -23,25 +22,18 @@ public record ACTL(int frameCount, int repeat) implements IChunk {
 
     /** Converts a generic chunk to acTL. */
     public static ACTL convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for acTL: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for acTL: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("acTL data must be 8 bytes, got " + data.length);
-        }
+        if (data.length != LENGTH) throw new CodecException("acTL data must be 8 bytes, got " + data.length);
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         final int frameCount = buffer.getInt();
         final int repeat = buffer.getInt();
-
         return new ACTL(frameCount, repeat);
     }
 
-    /**
-     * Returns whether the animation repeats forever
-     */
+    /** Returns whether the animation repeats forever. */
     public boolean repeatsForever() {
         return this.repeat == 0;
     }

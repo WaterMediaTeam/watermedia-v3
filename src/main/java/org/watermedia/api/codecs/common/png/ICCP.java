@@ -7,15 +7,14 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 /**
- * iCCP - Embedded ICC Profile Chunk
- * Contains an embedded ICC color profile for precise color space definition
+ * iCCP (embedded ICC profile) chunk: a compressed ICC color profile that defines the image color space.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11iCCP">PNG Specification - iCCP</a>
  */
 public record ICCP(String profileName, int compressionMethod, byte[] compressedProfile) implements IChunk {
     public static final int SIGNATURE = 0x69_43_43_50; // "iCCP"
     // CAP DECOMPRESSED PROFILE: A TINY iCCP CHUNK CAN INFLATE TO GIGABYTES (ZLIB BOMB); LEGIT ICC PROFILES ARE WELL UNDER THIS
-    private static final int MAX_DECOMPRESSED_BYTES = 16 * 1024 * 1024; // 16 MB
+    private static final int MAX_DECOMPRESSED_BYTES = 16 * 1_024 * 1_024;
 
     /** Reads a complete iCCP chunk (length, type, data and CRC) from the buffer. */
     public static ICCP read(final ByteBuffer buffer) throws IOException {
@@ -24,13 +23,10 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
 
     /** Converts a generic chunk to iCCP. */
     public static ICCP convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-
-        // FIND NULL SEPARATOR AFTER PROFILE NAME (1-79 BYTES + NULL)
+        // THE PROFILE NAME TAKES 1-79 BYTES AND ENDS AT A NUL
         int nullIndex = -1;
         for (int i = 0; i < Math.min(80, data.length); i++) {
             if (data[i] == 0) {
@@ -38,28 +34,17 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
                 break;
             }
         }
-
-        if (nullIndex < 1) {
-            throw new CodecException("Invalid iCCP: missing or empty profile name");
-        }
-
+        if (nullIndex < 1) throw new CodecException("Invalid iCCP: missing or empty profile name");
         // NEED THE COMPRESSION-METHOD BYTE AFTER THE NAME NUL; A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
-        if (data.length < nullIndex + 2) {
-            throw new CodecException("Truncated iCCP: missing compression method");
-        }
+        if (data.length < nullIndex + 2) throw new CodecException("Truncated iCCP: missing compression method");
 
         final String profileName = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);
         final int compressionMethod = data[nullIndex + 1] & 0xFF;
+        if (compressionMethod != 0) throw new CodecException("Unknown iCCP compression method: " + compressionMethod);
 
-        if (compressionMethod != 0) {
-            throw new CodecException("Unknown iCCP compression method: " + compressionMethod);
-        }
-
-        // REMAINING DATA IS COMPRESSED PROFILE
         final int profileStart = nullIndex + 2;
         final byte[] compressedProfile = new byte[data.length - profileStart];
         System.arraycopy(data, profileStart, compressedProfile, 0, compressedProfile.length);
-
         return new ICCP(profileName, compressionMethod, compressedProfile);
     }
 

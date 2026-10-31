@@ -17,24 +17,14 @@ import java.util.List;
 import static org.watermedia.WaterMedia.LOGGER;
 
 /**
- * Resolves Medal.tv game clips. A clip page such as
- * {@code https://medal.tv/es/games/gta-v/clips/<id>} is resolved through Medal's public
- * content endpoint {@code https://medal.tv/api/content/<id>}, which needs no authentication
- * for public clips and returns every rendition plus metadata. The locale prefix ({@code /es/},
- * {@code /en/}, …) is irrelevant — only the clip id feeds the API.
- * <p>
- * Playback prefers the adaptive HLS ladder ({@code contentUrlHls}) expanded into per-rendition
- * quality variants, exactly like {@link KickPlatform}. The progressive source MP4
- * ({@code contentUrl}) and the pre-rendered social-share MP4 ({@code socialMediaVideo}) are
- * ordered fallbacks for clips Medal never packaged as HLS. The {@code contentUrl<height>p} rungs
- * are deliberately ignored: when Medal has not transcoded a real ladder it hands back the source
- * file for every one of them (identical bytes, differing only by a {@code &t=<height>p&…&missing}
- * marker), so they are duplicates rather than genuine qualities — the HLS master is Medal's only
- * trustworthy quality ladder.
+ * Resolves Medal.tv clips through the public, unauthenticated {@code https://medal.tv/api/content/<id>} endpoint.
+ * Playback prefers the HLS ladder ({@code contentUrlHls}), then the source MP4 ({@code contentUrl}), then the
+ * social-share MP4 ({@code socialMediaVideo}). The {@code contentUrl<height>p} rungs are ignored: without a real
+ * transcode Medal hands back the source file for each of them, so they are duplicates rather than qualities.
  */
 public final class MedalPlatform implements Platform {
-    public static final String NAME = "Medal";
     private static final Marker IT = MarkerManager.getMarker(MedalPlatform.class.getSimpleName());
+    public static final String NAME = "Medal";
     private static final String API_URL = "https://medal.tv/api/content/%s";
     // MEDAL SWAPS THE REAL CLIP FOR THIS PLACEHOLDER FILE WHEN A GUEST IS NOT ALLOWED TO WATCH IT
     private static final String PRIVACY_PROTECTED = "video/privacy-protected-guest";
@@ -55,14 +45,14 @@ public final class MedalPlatform implements Platform {
         // A REMOVED, PRIVATE OR MALFORMED ID ANSWERS 4xx (BAD IDS COME BACK AS 400, NOT 404)
         final Content content = WebRequests.fetchJson(NAME, String.format(API_URL, clipId), Content.class);
 
-        // GATE ON AVAILABILITY BEFORE TOUCHING URLS — A TAKEN-DOWN OR LOGIN-WALLED CLIP ONLY EXPOSES PLACEHOLDERS
+        // A TAKEN-DOWN OR LOGIN-WALLED CLIP ONLY EXPOSES PLACEHOLDERS
         if (content.dmcaTakedown)
             throw new PlatformException(NAME, "Clip '" + clipId + "' was removed by a DMCA takedown");
         if (content.requireLogin)
             throw new PlatformException(NAME, "Clip '" + clipId + "' requires login (private or restricted)");
 
-        // PREFERRED: THE HLS MASTER IS MEDAL'S ONLY REAL LADDER (source/540p/360p/240p). THE LADDER NEVER THROWS —
-        // ON A FETCH/PARSE HICCUP IT FALLS BACK TO THE MASTER URL ITSELF SO FFmpeg CAN STILL PROBE IT.
+        // PREFERRED: THE HLS MASTER IS MEDAL'S ONLY REAL LADDER (source/540p/360p/240p); A FAILED FETCH OR PARSE
+        // FALLS BACK TO THE MASTER URL ITSELF SO FFmpeg CAN STILL PROBE IT
         final HttpHeaders headers = HttpHeaders.defaults(uri);
         final URI hls = DataTool.uri(content.contentUrlHls);
         final List<Quality> variants = hls == null ? new ArrayList<>() : new ArrayList<>(WebRequests.hls(hls, headers));
@@ -85,7 +75,7 @@ public final class MedalPlatform implements Platform {
         final String title = content.contentTitle != null && !content.contentTitle.isBlank() ? content.contentTitle : null;
         final String desc = content.contentDescription != null && !content.contentDescription.isBlank() ? content.contentDescription : null;
         final Instant postedAt = content.created > 0 ? Instant.ofEpochMilli(content.created) : null;
-        final long durationMs = (long) Math.max(0d, content.videoLengthSeconds * 1000d);
+        final long durationMs = (long) Math.max(0d, content.videoLengthSeconds * 1_000d);
         final String author = content.poster != null
                 ? (content.poster.displayName != null ? content.poster.displayName : content.poster.userName)
                 : null;
@@ -128,9 +118,6 @@ public final class MedalPlatform implements Platform {
     private record Content(String contentTitle, String contentDescription, String contentUrl, String contentUrlHls,
                            String socialMediaVideo, String thumbnailUrl, int sourceWidth, int sourceHeight,
                            double videoLengthSeconds, long created, long urlsExpireAt, boolean requireLogin,
-                           boolean dmcaTakedown, Poster poster) {
-    }
-
-    private record Poster(String displayName, String userName) {
-    }
+                           boolean dmcaTakedown, Poster poster) {}
+    private record Poster(String displayName, String userName) {}
 }

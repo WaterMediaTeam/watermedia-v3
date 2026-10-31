@@ -1,15 +1,16 @@
 package org.watermedia;
 
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.platform.PlatformAPI;
+
 import java.io.File;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.nio.file.Path;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import org.watermedia.api.codecs.CodecsAPI;
-import org.watermedia.api.platform.PlatformAPI;
 
 /** Verifies client and server bootstrap without the optional binaries module. */
 public final class WithoutBinariesProbe {

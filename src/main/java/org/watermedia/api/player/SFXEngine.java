@@ -51,9 +51,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
             this(channels, types.length == 0 ? EnumSet.noneOf(SampleType.class) : EnumSet.copyOf(List.of(types)));
         }
 
-        /**
-         * Whether {@code type} is playable at this channel count.
-         */
+        /** Whether {@code type} is playable at this channel count. */
         public boolean supports(final SampleType type) {
             return type != null && this.types.contains(type);
         }
@@ -73,26 +71,13 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         WaterMedia.checkIsClientSideOrThrow(this.getClass());
     }
 
-    /**
-     * Returns the channel-support table, one entry per supported channel count: the only
-     * combinations the engine plays. Callers pick an exact passthrough combination or fall back to
-     * the {@link #closestChannelSupport(int) closest} supported channel count.
-     * @return a defensive copy of the channel-support entries
-     */
+    /** Returns a copy of the channel-support table, one entry per supported channel count: the only combinations the engine plays. */
     public abstract ChannelSupport[] supportedChannels();
 
-    /**
-     * Returns the canonical sample types this backend can play directly for at least one channel
-     * count. A type appearing here is not guaranteed to work at every channel count — consult
-     * {@link ChannelSupport#supports(SampleType)} to confirm.
-     * @return a defensive copy of the supported sample types
-     */
+    /** Returns a copy of the sample types playable at one channel count at least; confirm each count with {@link ChannelSupport#supports(SampleType)}. */
     public abstract SampleType[] supportedTypes();
 
-    /**
-     * Support entry for exactly {@code channels}, or {@code null} when this backend does not
-     * expose that channel count.
-     */
+    /** Support entry for exactly {@code channels}, or {@code null} when this backend does not expose that channel count. */
     public final ChannelSupport channelSupport(final int channels) {
         for (final ChannelSupport entry: this.supportedChannels()) {
             if (entry.channels() == channels) return entry;
@@ -100,15 +85,13 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         return null;
     }
 
-    /**
-     * Support entry with the channel count closest to {@code channels}; ties prefer the lower
-     * count (downmix is more predictable than upmix). Returns {@code null} on an empty table.
-     */
+    /** Support entry with the channel count closest to {@code channels}, ties preferring the lower count, or {@code null} on an empty table. */
     public final ChannelSupport closestChannelSupport(final int channels) {
         ChannelSupport best = null;
         int bestDiff = Integer.MAX_VALUE;
         for (final ChannelSupport entry: this.supportedChannels()) {
             final int diff = Math.abs(entry.channels() - channels);
+            // TIES PREFER THE LOWER COUNT: A DOWNMIX IS MORE PREDICTABLE THAN AN UPMIX
             if (diff < bestDiff || (diff == bestDiff && best != null && entry.channels() < best.channels())) {
                 best = entry;
                 bestDiff = diff;
@@ -140,11 +123,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Last applied spatial state, or {@code null} for a dry listener-relative source. */
     public SpatialAudio spatialAudio() { return null; }
 
-    /**
-     * Applies a host sound-thread update, or clears spatial effects when {@code audio} is null.
-     * The source's OpenAL context must be current; processors are never called by decoder threads.
-     * @return false when spatial audio is unsupported or the engine has been released
-     */
+    /** Applies a host sound-thread update (null clears spatial effects) with the OpenAL context current; false when unsupported or released. */
     public boolean spatialAudio(final SpatialAudio audio) { return false; }
 
     /** Current sample type, or {@code null} before the player configures the first format. */
@@ -168,10 +147,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     // STARTS OR RESUMES PLAYBACK
     abstract void play();
 
-    /**
-     * Returns whether the player can change the playback rate through this backend. A pure query: it
-     * makes no native calls and needs no audio context, so any thread can ask it every frame.
-     */
+    /** Whether the player can change the playback rate through this backend; a pure query any thread can ask every frame. */
     public abstract boolean canSpeed();
 
     // SETS THE PLAYBACK RATE (PITCH); FALSE WHEN THE BACKEND CANNOT CHANGE SPEED, PLAYBACK THEN STAYS AT 1.0x AND THE
@@ -189,10 +165,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     // APPLIES volume TO THE BACKEND; IT ALWAYS READS THE LATEST VALUE, SO CONCURRENT CALLS SETTLE ON THE LAST WRITE
     abstract void gain();
 
-    /**
-     * Releases all resources associated with the source. The engine is unusable after this call;
-     * later calls are no-ops. OpenAL needs its original context current here as well.
-     */
+    /** Releases all resources of the source; later calls are no-ops. OpenAL needs its original context current here as well. */
     public final void release() {
         // THE TEST-AND-SET IS ATOMIC SO A CONCURRENT format() CANNOT REOPEN A LINE BEHIND THE TEARDOWN
         synchronized (this) {
@@ -258,10 +231,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
                 throw new IllegalArgumentException("Reflected-only audio requires an environment processor");
         }
 
-        /**
-         * Host adapter for effects such as Sound Physics Remastered. Calls are synchronous on the caller's
-         * sound thread; the adapter must not retain the source, delete it, or change the current context.
-         */
+        /** Host adapter for effects such as Sound Physics Remastered, called on the host's sound thread; it must not retain or delete the source nor switch context. */
         public interface Environment {
             /** Applies the complete environment after the original world position and dry sound are restored. */
             void process(int source, SpatialAudio audio);

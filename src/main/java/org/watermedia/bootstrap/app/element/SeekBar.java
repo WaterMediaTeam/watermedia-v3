@@ -16,7 +16,7 @@ public final class SeekBar extends Element<SeekBar> {
     private float buffered;
     private Color accent = AppTheme.NEON;
     private int trackHeight = 5;
-    private boolean dragging; // POINTER CAPTURED — BRIGHTENS THE THUMB LIKE hovered DOES
+    private boolean dragging; // POINTER CAPTURED: BRIGHTENS THE THUMB LIKE hovered DOES
     private Consumer<Float> onChange;
 
     public SeekBar() {
@@ -49,9 +49,7 @@ public final class SeekBar extends Element<SeekBar> {
         return this;
     }
 
-    public float value() {
-        return this.value;
-    }
+    public float value() { return this.value; }
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
@@ -95,14 +93,9 @@ public final class SeekBar extends Element<SeekBar> {
     }
 
     private void apply(final double mx) {
-        this.value = this.valueFromX(mx);
+        final int w = this.innerWidth();
+        this.value = w <= 0 ? 0f : (float) MathUtil.clamp((mx - this.innerLeft()) / w, 0d, 1d);
         this.invalidate();
         if (this.onChange != null) this.onChange.accept(this.value);
-    }
-
-    private float valueFromX(final double mx) {
-        final int w = this.innerWidth();
-        if (w <= 0) return 0f;
-        return (float) MathUtil.clamp((mx - this.innerLeft()) / w, 0d, 1d);
     }
 }

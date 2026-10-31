@@ -24,18 +24,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the {@link AWTEngine} software sink and the {@link SWEngine} logic it shares with JavaFX:
- * BGRA/RGBA byte order lands as {@code 0xAARRGGBB} in the {@code BufferedImage}, strides are honored,
- * resize reallocates, format declines steer the producer to BGRA, refused sizes leave no surface and
- * a failing frame callback never reaches the decoder.
- */
+/** Verifies the {@link AWTEngine} software sink and the {@link SWEngine} logic it shares with JavaFX: byte order, strides and refusals. */
 @DisplayName("AWTEngine")
 public class AWTEngineTest {
 
     @BeforeAll
     static void boot() {
-        // ENGINE CONSTRUCTION IS CLIENT-GATED BY THE GFXEngine BASE — BOOT A CLIENT ENVIRONMENT ONCE
+        // ENGINE CONSTRUCTION IS CLIENT-GATED BY THE GFXEngine BASE
         MediaBootstrap.client();
     }
 

@@ -91,7 +91,8 @@ public class DefensiveCheckTest {
             final CountDownLatch release = new CountDownLatch(1), running = new CountDownLatch(1);
             final Thread thread = new Thread(() -> {
                 running.countDown();
-                try { release.await(10, TimeUnit.SECONDS); } catch (final InterruptedException ignored) {}
+                try { release.await(10, TimeUnit.SECONDS); }
+                catch (final InterruptedException ignored) {}
             }, "TLSkinCape-probe");
             thread.setDaemon(true);
             thread.start();

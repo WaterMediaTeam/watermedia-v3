@@ -40,9 +40,9 @@ public final class MathUtil {
 
     /** Formats a byte count as a human-readable string with a dot decimal separator in every locale, scaling from B to KB, MB and GB at 1024 boundaries. */
     public static String displayBytes(final long bytes) {
-        if (bytes < 1024L) return bytes + " B";
-        if (bytes < 1024L * 1024) return String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0);
-        if (bytes < 1024L * 1024 * 1024) return String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024));
-        return String.format(Locale.ROOT, "%.1f GB", bytes / (1024.0 * 1024 * 1024));
+        if (bytes < 1_024L) return bytes + " B";
+        if (bytes < 1_024L * 1_024) return String.format(Locale.ROOT, "%.1f KB", bytes / 1_024.0);
+        if (bytes < 1_024L * 1_024 * 1_024) return String.format(Locale.ROOT, "%.1f MB", bytes / (1_024.0 * 1_024));
+        return String.format(Locale.ROOT, "%.1f GB", bytes / (1_024.0 * 1_024 * 1_024));
     }
 }

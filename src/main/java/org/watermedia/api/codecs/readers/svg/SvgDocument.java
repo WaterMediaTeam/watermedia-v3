@@ -13,14 +13,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * A parsed SVG document ready to rasterize: it resolves the intrinsic size and {@code viewBox},
- * pre-builds the gradient paints declared under {@code <defs>}, and walks the element tree once per
- * render, deriving {@link RenderState} down the hierarchy and emitting fills/strokes to a
- * {@link RasterOutput}.
- *
- * <p>Non-rendered containers ({@code defs}, gradients, filters, masks, ...) are skipped during the
- * render walk; gradients are collected up front so {@code fill="url(#id)"} resolves regardless of
- * document order.
+ * A parsed SVG document ready to rasterize: resolves the intrinsic size and {@code viewBox}, builds every gradient
+ * up front (so {@code url(#id)} resolves in any document order) and walks the element tree per render, deriving
+ * {@link RenderState} down the hierarchy into a {@link RasterOutput}; non-rendered containers are skipped.
  */
 final class SvgDocument {
     // SVG FALLBACK INTRINSIC SIZE WHEN NEITHER width/height NOR viewBox GIVE ONE
@@ -35,7 +30,7 @@ final class SvgDocument {
     private static final int MAX_STOPS = 256;
     // <switch> CHILDREN THAT NEVER TAKE PART IN ITS SELECTION
     private static final Set<String> SWITCH_IGNORED = Set.of("title", "desc", "metadata", "defs", "style", "script",
-            "linearGradient", "radialGradient", "pattern", "clipPath", "mask", "symbol", "marker", "filter");
+            "lineargradient", "radialgradient", "pattern", "clippath", "mask", "symbol", "marker", "filter");
 
     private final SvgNode root;
     private final Map<String, SvgPaint> gradients;
@@ -94,17 +89,13 @@ final class SvgDocument {
         final Affine view = this.viewTransform(out.width(), out.height());
         // THE ROOT <svg> ITSELF CAN CARRY PRESENTATION ATTRS (e.g. fill="#000000") THAT CASCADE DOWN
         final RenderState base = RenderState.root(view).derive(this.root, this.gradients, this.refD);
-        for (final SvgNode child: this.root.children()) {
-            this.renderNode(child, base, out, 1);
-        }
+        for (final SvgNode child: this.root.children()) this.renderNode(child, base, out, 1);
     }
 
     private Affine viewTransform(final int outW, final int outH) {
         if (this.hasViewBox) {
             final double sx = outW / this.vbW, sy = outH / this.vbH;
-            if (this.aspectNone) {
-                return new Affine(sx, 0, 0, sy, -this.vbX * sx, -this.vbY * sy);
-            }
+            if (this.aspectNone) return new Affine(sx, 0, 0, sy, -this.vbX * sx, -this.vbY * sy);
             final double s = Math.min(sx, sy); // xMidYMid meet
             final double tx = (outW - this.vbW * s) / 2 - this.vbX * s;
             final double ty = (outH - this.vbH * s) / 2 - this.vbY * s;
@@ -154,8 +145,8 @@ final class SvgDocument {
                 if (!s.visible()) return;
                 final Path geo = this.geometry(node);
                 if (geo == null || geo.isEmpty()) return;
-                if (s.fill() != null) out.fill(geo, s.ctm(), s.evenOdd(), s.fill(), s.fillEff());
-                if (s.stroke() != null && s.strokeWidth() > 0) out.stroke(geo, s.ctm(), s.strokeWidth(), s.stroke(), s.strokeEff());
+                if (s.fill() != null) out.fill(geo, s.ctm(), s.evenOdd(), s.fill(), s.fillOpacity() * s.opacity());
+                if (s.stroke() != null && s.strokeWidth() > 0) out.stroke(geo, s.ctm(), s.strokeWidth(), s.stroke(), s.strokeOpacity() * s.opacity());
             }
         }
     }
@@ -211,8 +202,9 @@ final class SvgDocument {
         return p;
     }
 
-    // ----- GRADIENTS -----
-
+    // ==========================================================================
+    // GRADIENTS
+    // ==========================================================================
     private void collectGradients(final SvgNode node) throws CodecException {
         // FIRST INDEX ALL GRADIENT NODES BY id (FOR href TEMPLATE RESOLUTION), THEN BUILD PAINTS
         final Map<String, SvgNode> nodes = new HashMap<>();
@@ -250,7 +242,6 @@ final class SvgDocument {
         final double x2 = coord(attr(chain, "x2"), 1.0, userSpace, this.refW);
         final double y2 = coord(attr(chain, "y2"), 0.0, userSpace, this.refH);
 
-        // STOP COUNT IS KNOWN UP FRONT, SO FILL PRIMITIVE ARRAYS DIRECTLY (NO PER-STOP WRAPPER ARRAYS)
         final List<SvgNode> stopNodes = stopsOf(chain);
         final float[] offs = new float[stopNodes.size()];
         final int[] cols = new int[stopNodes.size()];
@@ -267,7 +258,7 @@ final class SvgDocument {
         return new SvgPaint.Linear(x1, y1, x2, y2, userSpace, gt, offs, cols);
     }
 
-    // PARSES A <stop>: stop-color (default black) WITH stop-opacity FOLDED INTO THE ALPHA
+    // PARSES A <stop>: stop-color (BLACK BY DEFAULT) WITH stop-opacity FOLDED INTO THE ALPHA
     private static int stopColor(final SvgNode stop) throws CodecException {
         final String sc = stop.attr("stop-color");
         final long parsed = sc == null ? SvgColor.INVALID : SvgColor.parse(sc, 0xFF000000);
@@ -294,10 +285,8 @@ final class SvgDocument {
         return SvgPaint.solid((int) ((a / n) << 24 | (r / n) << 16 | (g / n) << 8 | (b / n)));
     }
 
-    // FOLLOWS THE href/xlink:href TEMPLATE CHAIN (SELF FIRST) WITH AN IDENTITY-BASED CYCLE GUARD.
-    // SVG ALLOWS ARBITRARY-DEPTH CHAINS, SO ATTRIBUTES/STOPS MAY LIVE ON ANY ANCESTOR, NOT JUST ONE HOP.
-    // THE CYCLE GUARD STOPS LOOPS BUT NOT LENGTH, HENCE MAX_CHAIN: EVERY GRADIENT WALKS ITS CHAIN ONCE
-    // PER BUILD AND ONCE PER ATTRIBUTE LOOKUP, SO M CHAINED GRADIENTS WOULD COST Theta(M^2)
+    // FOLLOWS THE href/xlink:href TEMPLATE CHAIN (SELF FIRST), WHERE ATTRIBUTES AND STOPS MAY LIVE ON ANY ANCESTOR.
+    // THE IDENTITY GUARD STOPS CYCLES; MAX_CHAIN BOUNDS THE LENGTH (SEE THE CONSTANT)
     private static List<SvgNode> resolveChain(final SvgNode node, final Map<String, SvgNode> nodes) throws CodecException {
         final List<SvgNode> chain = new ArrayList<>();
         final Set<SvgNode> seen = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -338,9 +327,7 @@ final class SvgDocument {
     // GRADIENT COORDINATE: OBB → FRACTION; userSpaceOnUse → USER UNITS (PERCENT SCALES BY VIEWPORT)
     private static double coord(final String value, final double defFraction, final boolean userSpace, final double ref) throws CodecException {
         if (value == null) return userSpace ? defFraction * ref : defFraction;
-        if (userSpace) {
-            return SvgParser.isPercent(value) ? SvgParser.ratioOrNumber(value, defFraction) * ref : SvgParser.length(value, defFraction);
-        }
+        if (userSpace) return SvgParser.isPercent(value) ? SvgParser.ratioOrNumber(value, defFraction) * ref : SvgParser.length(value, defFraction);
         return SvgParser.ratioOrNumber(value, defFraction);
     }
 }

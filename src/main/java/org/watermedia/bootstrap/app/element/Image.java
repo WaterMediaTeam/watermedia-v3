@@ -71,7 +71,7 @@ public final class Image extends Element<Image> {
             }
             canvas.image(this.textureId, bx + (bw - w) / 2, by + (bh - h) / 2, w, h, this.tint);
         } else {
-            // COVER — FILL THE BOX AND CENTER-CROP THE OVERFLOWING AXIS THROUGH THE SAMPLED UV RANGE
+            // COVER: FILL THE BOX AND CENTER-CROP THE OVERFLOWING AXIS THROUGH THE SAMPLED UV RANGE
             float u0 = 0f;
             float v0 = 0f;
             float u1 = 1f;

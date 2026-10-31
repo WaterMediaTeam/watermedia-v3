@@ -52,10 +52,7 @@ public final class RootScreen {
         this.tree.attach(ctx);
     }
 
-    /**
-     * Runs update, measure, layout and draw for one frame in logical pixels ({@code physical / uiScale}); with
-     * {@code cache} the tree goes to the render engine's layers, then composites like {@link #composite}.
-     */
+    /** Updates, measures, lays out and draws the tree in logical pixels; with {@code cache} it fills the engine's layers and composites them. */
     public void render(final int logicalW, final int logicalH, final boolean cache) {
         // BINDINGS FIRST — onUpdate HOOKS PULL LIVE STATE INTO THE TREE BEFORE IT IS MEASURED
         this.tree.update();
@@ -133,17 +130,13 @@ public final class RootScreen {
         return false;
     }
 
-    /**
-     * Whether a pointer capture (slider drag, window move, modal hold) is in progress. The main loop then
-     * paces frames like a continuous screen so drags do not trail the cursor by a frame.
-     */
+    /** Whether a pointer capture (slider, window move, modal hold) is active; the main loop then paces frames so drags track the cursor. */
     public boolean dragging() {
         return this.captured != null;
     }
 
-    // ==========================================================================
-    // INPUT ENTRY POINTS: A PRESS CAPTURES THE POINTER AND A REAL DRAG SUPPRESSES THE NEXT CLICK
-    // ==========================================================================
+    // ==== INPUT ENTRY POINTS ====
+    // A PRESS CAPTURES THE POINTER AND A REAL DRAG SUPPRESSES THE NEXT CLICK
 
     public boolean press(final double mx, final double my) {
         this.captured = this.tree.dispatchPress(mx, my);

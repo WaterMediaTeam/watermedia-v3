@@ -8,12 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies that the {@link ALEngine} channel-support table built from OpenAL extensions lists only
- * the native formats of each extension mix, with spatial sources limited to mono. Needs no device.
- */
+/** Verifies that the {@link ALEngine} channel table lists only the native formats of each OpenAL extension mix, without a device. */
 @DisplayName("ALEngine capability table")
 public class ALCapabilitiesTest {
+
     @Test
     @DisplayName("Extension-limited contexts advertise only their native formats")
     void extensionLimitedContextsAdvertiseOnlyTheirNativeFormats() throws Exception {

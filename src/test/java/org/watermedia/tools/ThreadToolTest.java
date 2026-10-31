@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class ThreadToolTest {
 
     @Nested
-    @DisplayName("naming")
+    @DisplayName("Naming")
     class NamingTests {
 
         @Test
@@ -49,7 +49,7 @@ public class ThreadToolTest {
     }
 
     @Nested
-    @DisplayName("worker mark")
+    @DisplayName("Worker mark")
     class WorkerTests {
 
         @Test

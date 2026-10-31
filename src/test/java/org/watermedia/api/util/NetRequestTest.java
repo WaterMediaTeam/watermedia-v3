@@ -93,18 +93,18 @@ public class NetRequestTest {
             try (final LocalHttp server = LocalHttp.start("/data", exchange -> LocalHttp.respond(exchange, "text/plain", body, 0))) {
                 final URI uri = server.uri("/data");
                 try (final NetRequest request = new NetRequest(uri).maxBytes(64).send()) { assertThrows(IOException.class, request::text); }
-                try (final NetRequest request = new NetRequest(uri).maxBytes(1024).send()) { assertEquals(new String(body, StandardCharsets.UTF_8), request.text()); }
+                try (final NetRequest request = new NetRequest(uri).maxBytes(1_024).send()) { assertEquals(new String(body, StandardCharsets.UTF_8), request.text()); }
                 final Path output = directory.resolve("data");
                 try (final NetRequest request = new NetRequest(uri).maxBytes(64).send()) {
                     assertThrows(IOException.class, () -> request.download(output, "0".repeat(64)));
                 }
                 assertFalse(Files.exists(output));
-                try (final NetRequest request = new NetRequest(uri).maxBytes(1024).send()) {
+                try (final NetRequest request = new NetRequest(uri).maxBytes(1_024).send()) {
                     assertThrows(IOException.class, () -> request.download(output, "0".repeat(64)), "a wrong digest fails");
                 }
                 assertFalse(Files.exists(output), "a failed download leaves no file behind");
                 final String digest = HexFormat.of().formatHex(DataTool.sha256(body));
-                try (final NetRequest request = new NetRequest(uri).maxBytes(1024).deadline(10_000L).send()) { request.download(output, digest); }
+                try (final NetRequest request = new NetRequest(uri).maxBytes(1_024).deadline(10_000L).send()) { request.download(output, digest); }
                 assertArrayEquals(body, Files.readAllBytes(output));
             }
         }

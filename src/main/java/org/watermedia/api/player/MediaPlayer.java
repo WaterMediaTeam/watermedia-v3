@@ -41,7 +41,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /** Sentinel for an unknown media duration. */
     public static final long NO_DURATION = 0L;
 
-    // === SHARED 50ms TICKER — DRIVES SERVER CLOCKS AND FOLLOWER CORRECTIONS ===
+    // FOLLOWER CORRECTION CONSTANTS
+    private static final long SEEK_COOLDOWN_NS = 1_000_000_000L; // 1s BETWEEN SEEKS WHILE THE PIPELINE RESETTLES
+    private static final long SKIP_STEP_MS = 5_000L;             // forward()/rewind() DISTANCE FOR VIDEO AND MUSIC
+
+    // ==== SHARED 50 MS TICKER: DRIVES SERVER CLOCKS AND FOLLOWER CORRECTIONS ====
     // ONE DAEMON THREAD TICKS EVERY REGISTERED PLAYER, SO ALL CORRECTION STATE IS SINGLE-THREADED AND OFF THE GAME THREAD
     private static final long TICK_MS = 50;
     private static final Set<MediaPlayer> TICKING = ConcurrentHashMap.newKeySet();
@@ -56,24 +60,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     static {
         TICKER.scheduleAtFixedRate(MediaPlayer::tickAll, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS);
     }
-
-    private static void tickAll() {
-        for (final MediaPlayer player: TICKING) {
-            try {
-                if (player.armed) player.tick();
-            } catch (final Throwable t) {
-                if (player.tickWarned) continue;
-                player.tickWarned = true;
-                // A SERVER CLOCK CARRIES NO MRL
-                final Object subject = player.mrl != null ? player.mrl.uri() : player.getClass().getSimpleName();
-                LOGGER.error(IT, "Sync tick failed for {}", subject, t);
-            }
-        }
-    }
-
-    // FOLLOWER CORRECTION CONSTANTS
-    private static final long SEEK_COOLDOWN_NS = 1_000_000_000L; // 1s BETWEEN SEEKS WHILE THE PIPELINE RESETTLES
-    private static final long SKIP_STEP_MS = 5_000L;             // forward()/rewind() DISTANCE FOR VIDEO AND MUSIC
 
     // BASIC PROPERTIES
     final MRL mrl;
@@ -138,7 +124,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (sfx == null)
             LOGGER.debug(IT, "SFXEngine is null — there will be no audio output");
 
-        // INIT PROPERTIES
         this.mrl = mrl;
         this.sourceIndex = sourceIndex;
         this.source = resolved;
@@ -178,6 +163,21 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         synchronized (this.tickLock) {
             if (on && this.armed) TICKING.add(this);
             else if (this.heard == null) TICKING.remove(this);
+        }
+    }
+
+    // SHARED-TICKER PASS OVER EVERY REGISTERED PLAYER; A FAILING TICK IS LOGGED ONCE PER PLAYER
+    private static void tickAll() {
+        for (final MediaPlayer player: TICKING) {
+            try {
+                if (player.armed) player.tick();
+            } catch (final Throwable t) {
+                if (player.tickWarned) continue;
+                player.tickWarned = true;
+                // A SERVER CLOCK CARRIES NO MRL
+                final Object subject = player.mrl != null ? player.mrl.uri() : player.getClass().getSimpleName();
+                LOGGER.error(IT, "Sync tick failed for {}", subject, t);
+            }
         }
     }
 
@@ -270,10 +270,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         final Sync target = heard.snapshot();
         long drift = authorityTime(heard) - this.time();
         final long d = target.duration();
-        if (target.repeat() && d > 0 && !target.live()) {
-            // LOOPING TIMELINES ARE CIRCULAR — MAP INTO [-d/2, d/2) SO THE WRAP NEVER FAKES A HUGE DRIFT
-            drift = Math.floorMod(drift + d / 2, d) - d / 2;
-        }
+        // LOOPING TIMELINES ARE CIRCULAR — MAP INTO [-d/2, d/2) SO THE WRAP NEVER FAKES A HUGE DRIFT
+        if (target.repeat() && d > 0 && !target.live()) drift = Math.floorMod(drift + d / 2, d) - d / 2;
         return drift;
     }
 
@@ -309,13 +307,12 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         switch (target) {
             case PLAYING -> {
                 if (dormant) {
-                    // START ONCE PER DORMANCY — FF PIPELINES PUBLISH STATUS ASYNC, RE-CALLING START
-                    // EVERY TICK WOULD RESTART THE LIFECYCLE FOREVER. SKIP THE TAIL: WITH LESS THAN
-                    // THE TOLERANCE OF NON-REPEAT MEDIA LEFT, THE SESSION ENDS BEFORE WE FINISH LOADING.
-                    // A PLAYER THAT ALREADY ENDED RESTARTS ONLY WHEN THE SESSION SITS MEANINGFULLY
-                    // BEFORE ITS OWN MEDIA'S END — GATING ON THE SESSION DURATION REPLAYED IT FOREVER
-                    // WHENEVER THE TWO DIVERGED (BAD LATCH, MIXED VARIANTS).
+                    // START ONCE PER DORMANCY: FF PIPELINES PUBLISH STATUS ASYNC, SO RE-CALLING start() EVERY TICK WOULD
+                    // RESTART THE LIFECYCLE FOREVER. NON-REPEAT MEDIA WITH LESS THAN THE TOLERANCE LEFT IS SKIPPED: THE
+                    // SESSION ENDS BEFORE IT FINISHES LOADING
                     final boolean go;
+                    // AN ENDED PLAYER RESTARTS ONLY WHILE THE SESSION SITS BEFORE ITS OWN MEDIA'S END: THE SESSION DURATION
+                    // MAY DIVERGE (BAD LATCH, MIXED VARIANTS) AND WOULD REPLAY IT FOREVER
                     if (current == Status.ENDED) {
                         final long end = this.duration() > 0 ? this.duration() : authority.duration();
                         go = end > 0 && authorityTime(heard) < Math.max(end - this.toleranceMs, this.toleranceMs);
@@ -360,11 +357,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (current == Status.LOADING || current == Status.BUFFERING) return;
         if (current != Status.PLAYING && current != Status.PAUSED) return;
 
-        // ONE CORRECTION, ONE THRESHOLD: PAST THE TOLERANCE, JUMP TO WHERE THE SESSION IS. TRIMMING
-        // THE PLAYBACK RATE TO CONVERGE SMOOTHLY WAS TRIED AND DROPPED — IT READS AS THE VIDEO
-        // RANDOMLY RUNNING SLOW, AND THE CLIENT ONLY EVER FALLS BEHIND ANYWAY (THE AUTHORITY IS A
-        // BARE CLOCK: NO DECODING, NO BUFFERS), SO SMOOTHING THE OTHER DIRECTION BOUGHT NOTHING.
-        // RATE-LIMITED SO A RESETTLING PIPELINE ISN'T SEEKED AGAIN BEFORE IT REPORTS ITS POSITION.
+        // ONE CORRECTION, ONE THRESHOLD: PAST THE TOLERANCE, JUMP TO THE SESSION. NO RATE TRIMMING: IT READS AS THE VIDEO
+        // RANDOMLY RUNNING SLOW, AND A CLIENT ONLY FALLS BEHIND A BARE CLOCK. THE COOLDOWN LETS A RESETTLING PIPELINE
+        // REPORT ITS POSITION BEFORE THE NEXT SEEK
         if (Math.abs(this.drift(heard)) > this.toleranceMs && now - this.lastSeekNanos >= SEEK_COOLDOWN_NS) {
             this.seekQuick(authorityTime(heard));
             this.lastSeekNanos = now;
@@ -388,10 +383,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.quality = quality;
     }
 
-    /**
-     * Returns the currently selected quality. It may be {@link MediaQuality#UNKNOWN} until source dimensions are known.
-     * @return the selected quality
-     */
+    /** Returns the selected quality, possibly {@link MediaQuality#UNKNOWN} until the source dimensions are known. */
     public MediaQuality quality() { return this.quality; }
 
     // RESOLVES A STILL-UNKNOWN QUALITY ONCE THE DECODED SIZE IS KNOWN, RELABELING THE URI IN THE SHARED MRL (OR FINDING IT ALREADY
@@ -407,51 +399,24 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /** The media reference this player renders. */
     public MRL mrl() { return this.mrl; }
-
     /** Index of the {@link MRL.Source} within {@link #mrl()} this player renders. */
     public int sourceIndex() { return this.sourceIndex; }
-
     /** The resolved source within {@link #mrl()} this player renders. */
     public MRL.Source source() { return this.source; }
 
-    /**
-     * Indicates if the media player has video support enabled.
-     * @return true if video support is enabled, false otherwise.
-     */
+    /** Whether this player has video output. */
     public boolean video() { return this.gfx != null; }
-
-    /**
-     * Indicates if the media player has audio support enabled.
-     * @return true if audio support is enabled, false otherwise.
-     */
+    /** Whether this player has audio output. */
     public boolean audio() { return this.sfx != null; }
 
-    /**
-     * Returns the width of the video in pixels, as uploaded to the GPU
-     * (after any {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale).
-     * @return the width of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
-     */
+    /** Returns the uploaded video width in pixels, after any {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale, or {@link #NO_SIZE}. */
     public final int width() { return this.gfx == null ? NO_SIZE : this.gfx.width(); }
-
-    /**
-     * Returns the height of the video in pixels, as uploaded to the GPU
-     * (after any {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale).
-     * @return the height of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
-     */
+    /** Returns the uploaded video height in pixels, after any {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale, or {@link #NO_SIZE}. */
     public final int height() { return this.gfx == null ? NO_SIZE : this.gfx.height(); }
 
-    /**
-     * Returns the native width of the source video in pixels, before any
-     * {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale is applied.
-     * @return the source width, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not yet known.
-     */
+    /** Returns the native source width in pixels, before any downscale, or {@link #NO_SIZE} until known. */
     public final int sourceWidth() { return this.sourceWidth; }
-
-    /**
-     * Returns the native height of the source video in pixels, before any
-     * {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale is applied.
-     * @return the source height, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not yet known.
-     */
+    /** Returns the native source height in pixels, before any downscale, or {@link #NO_SIZE} until known. */
     public final int sourceHeight() { return this.sourceHeight; }
 
     /**
@@ -475,16 +440,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.scaleHeight = height;
     }
 
-    /**
-     * Returns the maximum upload width set by {@link #scale(int, int)}.
-     * @return the maximum width in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} when unlimited.
-     */
+    /** Returns the maximum upload width set by {@link #scale(int, int)}, or {@link #NO_SIZE} when unlimited. */
     public int scaleWidth() { return this.scaleWidth; }
-
-    /**
-     * Returns the maximum upload height set by {@link #scale(int, int)}.
-     * @return the maximum height in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} when unlimited.
-     */
+    /** Returns the maximum upload height set by {@link #scale(int, int)}, or {@link #NO_SIZE} when unlimited. */
     public int scaleHeight() { return this.scaleHeight; }
 
     /**
@@ -502,10 +460,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.lod = lod;
     }
 
-    /**
-     * Returns the current level of detail. Always starts at {@link LodLevel#MAX MAX}.
-     * @return the current level of detail
-     */
+    /** Returns the current level of detail, {@link LodLevel#MAX MAX} until changed. */
     public LodLevel lod() { return this.lod; }
 
     /**
@@ -526,12 +481,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public long texture() { return this.gfx == null ? NO_TEXTURE : this.gfx.texture(); }
 
-    /**
-     * Returns the audio source handle exposed by the backing {@link SFXEngine}.
-     * The concrete handle type depends on the engine (an OpenAL source ID for OpenAL,
-     * zero for Java Sound).
-     * @return the audio source handle, or {@link MediaPlayer#NO_SOURCE NO_SOURCE} if audio is not supported.
-     */
+    /** Returns the audio source handle of the {@link SFXEngine} (an OpenAL source id, 0 on Java Sound), or {@link #NO_SOURCE} without audio. */
     public int audioSource() { return this.sfx != null ? this.sfx.source() : NO_SOURCE; }
 
     /** Whether the audio engine was created for mono spatial playback. */
@@ -574,10 +524,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (this.sfx != null) this.sfx.volume(this.muted ? 0.0f : this.volume);
     }
 
-    /**
-     * Returns the current volume level as a percentage (0-100).
-     * @return the current volume level (0-100), mute state doesn't affect the volume level
-     */
+    /** Returns the volume as a percentage (0-100); muting never changes it. */
     public int volume() { return Math.round(this.volume * 100); }
 
     /**
@@ -590,11 +537,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (this.sfx != null) this.sfx.volume(mute ? 0.0f : this.volume);
     }
 
-    /**
-     * Returns the current mute status of the audio playback.
-     * @see MediaPlayer#mute(boolean)
-     * @return true if the audio is muted, false otherwise.
-     */
+    /** Whether the audio is muted; see {@link #mute(boolean)}. */
     public boolean mute() { return this.muted; }
 
     // ==========================================================================
@@ -675,11 +618,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public abstract boolean seek(long time);
 
-    /**
-     * Returns the current playback time in milliseconds: 0 before the first frame and after
-     * {@link #stop()}, the duration after the media ended.
-     * @return the current playback time in milliseconds
-     */
+    /** Returns the playback time in milliseconds: 0 before the first frame and after {@link #stop()}, the duration once ended. */
     public abstract long time();
 
     /**
@@ -716,27 +655,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public boolean rewind() { return this.skipTime(-SKIP_STEP_MS); }
 
-    /**
-     * Frame rate of the video stream being played, a float because 29.97 exists.
-     * @return the frames per second, or 0 until the rate is known or when the media has no video
-     */
+    /** Frame rate of the video stream (a float because 29.97 exists), or 0 until known or without video. */
     public abstract float fps();
 
-    /**
-     * Returns the current playback speed.
-     * A speed of 1.0f indicates normal playback speed.
-     * A speed greater than 1.0f indicates faster playback,
-     * while a speed less than 1.0f indicates slower playback.
-     * @return the current playback speed.
-     */
+    /** Returns the playback speed factor; 1.0 is normal speed. */
     public float speed() { return this.speed; }
 
     /**
-     * Sets the playback speed.
-     * A speed of 1.0f indicates normal playback speed.
-     * A speed greater than 1.0f indicates faster playback,
-     * while a speed less than 1.0f indicates slower playback.
-     * The speed must be within the range (0.0f, 4.0f].
+     * Sets the playback speed factor, within (0.0, 4.0]; 1.0 is normal speed.
      * @param speed the desired playback speed.
      * @return true if the speed applies, false when the value is out of range, the player cannot
      *         change speed ({@link #canSpeed()}), the audio engine refused the new rate or the player was released.
@@ -752,16 +678,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         return true;
     }
 
-    /**
-     * Returns the total duration of the media in milliseconds.
-     * @return the total duration in milliseconds, or {@link MediaPlayer#NO_DURATION NO_DURATION}
-     *         when unknown or not applicable (e.g. a live stream).
-     */
+    /** Returns the media duration in milliseconds, or {@link #NO_DURATION} when unknown or not applicable (e.g. a live stream). */
     public abstract long duration();
 
-    /**
-     * Indicates whether the media should repeat playback when it reaches the end.
-     */
+    /** Whether playback repeats when it reaches the end of the media. */
     public boolean repeat() { return this.repeat; }
 
     /**
@@ -776,10 +696,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         return true;
     }
 
-    /**
-     * Returns the current status of the media player.
-     * @return the current status of the media player.
-     */
+    /** Returns the current status of the media player. */
     public abstract Status status();
 
     /**
@@ -892,29 +809,25 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public void displayTime(final long ms) {}
 
-    /**
-     * Returns the display duration configured via {@link #displayTime(long)}.
-     * @return the display duration in milliseconds, or 0 when unlimited or not applicable
-     */
+    /** Returns the display duration set by {@link #displayTime(long)} in milliseconds, or 0 when unlimited or not applicable. */
     public long displayTime() { return 0; }
 
-    /**
-     * Check if the media player equals to {@link Status#WAITING WAITING}
-     * @return true if the media player is in WAITING status, false otherwise.
-     */
+    /** Whether the player is {@link Status#WAITING WAITING}. */
     public boolean waiting() { return this.status() == Status.WAITING; }
-
-    /**
-     * Check if the media player equals to {@link Status#LOADING LOADING}
-     * @return true if the media player is in LOADING status, false otherwise.
-     */
+    /** Whether the player is {@link Status#LOADING LOADING}. */
     public boolean loading() { return this.status() == Status.LOADING; }
-
-    /**
-     * Check if the media player equals to {@link Status#BUFFERING BUFFERING}
-     * @return true if the media player is in BUFFERING status, false otherwise.
-     */
+    /** Whether the player is {@link Status#BUFFERING BUFFERING}. */
     public boolean buffering() { return this.status() == Status.BUFFERING; }
+    /** Whether the player is {@link Status#PAUSED PAUSED}. */
+    public boolean paused() { return this.status() == Status.PAUSED; }
+    /** Whether the player is {@link Status#PLAYING PLAYING}. */
+    public boolean playing() { return this.status() == Status.PLAYING; }
+    /** Whether the player is {@link Status#STOPPED STOPPED}. */
+    public boolean stopped() { return this.status() == Status.STOPPED; }
+    /** Whether the player is {@link Status#ENDED ENDED}. */
+    public boolean ended() { return this.status() == Status.ENDED; }
+    /** Whether the player is {@link Status#ERROR ERROR}. */
+    public boolean error() { return this.status() == Status.ERROR; }
 
     /**
      * Best-effort fill of the playback read-ahead buffers as a percentage (0-100).
@@ -926,69 +839,20 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public int buffered() { return this.canPlay() ? 100 : 0; }
 
-    /**
-     * Check if the media player equals to {@link Status#PAUSED PAUSED}
-     * @return true if the media player is in PAUSED status, false otherwise.
-     */
-    public boolean paused() { return this.status() == Status.PAUSED; }
-
-    /**
-     * Check if the media player equals to {@link Status#PLAYING PLAYING}
-     * @return true if the media player is in PLAYING status, false otherwise.
-     */
-    public boolean playing() { return this.status() == Status.PLAYING; }
-
-    /**
-     * Check if the media player equals to {@link Status#STOPPED STOPPED}
-     * @return true if the media player is in STOPPED status, false otherwise.
-     */
-    public boolean stopped() { return this.status() == Status.STOPPED; }
-
-    /**
-     * Check if the media player equals to {@link Status#ENDED ENDED}
-     * @return true if the media player is in ENDED status, false otherwise.
-     */
-    public boolean ended() { return this.status() == Status.ENDED; }
-
-    /**
-     * Check if the media player equals to {@link Status#ERROR ERROR}
-     * @return true if the media player is in ERROR status, false otherwise.
-     */
-    public boolean error() { return this.status() == Status.ERROR; }
-
-    /**
-     * Indicates if the media uri is a live stream. Live streams do not support seeking and have
-     * an indefinite duration. False until the source is open and says otherwise.
-     * @return true if the media uri is a live stream, false otherwise.
-     */
+    /** Whether the source is a live stream (no seeking, open-ended duration); false until the source is open and says so. */
     public abstract boolean live();
 
-    /**
-     * Indicates if the media player supports seeking operations: false until the source is open,
-     * on live streams and on still images.
-     * @return true if seeking is supported, false otherwise.
-     */
+    /** Whether the player can seek: false until the source is open, on live streams and on still images. */
     public abstract boolean canSeek();
 
-    /**
-     * Indicates if the media is loadable and playable: true from the first successful load of the
-     * source, through ended and stopped states (where {@link #start()} plays it again), until the
-     * player fails or is released.
-     * @return true if the media can be played, false otherwise.
-     */
+    /** Whether the media is playable: true from the first successful load, through ended and stopped, until it fails or is released. */
     public abstract boolean canPlay();
 
-    /**
-     * Indicates if the playback speed can be changed. A pure query without native calls, safe on
-     * any thread and every frame. Live streams cannot change speed, and neither can media whose
-     * audio engine reports {@link SFXEngine#canSpeed()} false — scaling the timeline against
-     * audio stuck at 1.0× would desync the playback clock.
-     * @return true if {@link #speed(float)} can take effect, false otherwise.
-     */
+    /** Whether {@link #speed(float)} can take effect: never on live streams nor over audio stuck at 1.0×; a pure query for any thread. */
     public boolean canSpeed() {
+        // SCALING THE TIMELINE AGAINST AUDIO THAT CANNOT CHANGE RATE WOULD DESYNC THE PLAYBACK CLOCK
         return !this.live() && (this.sfx == null || this.sfx.canSpeed());
     }
-
 
     /**
      * Releases all resources associated with the media player, including the GPU and audio
@@ -1044,53 +908,28 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         return Math.max(2, size & ~1);
     }
 
-    /**
-     * Represents the various states of the media player during its lifecycle.
-     * Each state indicates a specific phase of media playback or an error condition.
-     * @see MediaPlayer#status()
-     */
+    /** Lifecycle states of a media player; see {@link MediaPlayer#status()}. */
     public enum Status {
-        /**
-         * The media player is waiting for resources or conditions to start loading the media.
-         */
+        /** The media player is waiting for resources or conditions to start loading the media. */
         WAITING,
-        /**
-         * The media player is in the process of loading the media.
-         */
+        /** The media player is in the process of loading the media. */
         LOADING,
-        /**
-         * The media player is buffering data to ensure smooth playback.
-         */
+        /** The media player is buffering data to ensure smooth playback. */
         BUFFERING,
-        /**
-         * The media player is currently playing the media.
-         */
+        /** The media player is currently playing the media. */
         PLAYING,
-        /**
-         * The media player is paused and can be resumed.
-         */
+        /** The media player is paused and can be resumed. */
         PAUSED,
-        /**
-         * The media player is stopped and can be started from the beginning.
-         */
+        /** The media player is stopped and can be started from the beginning. */
         STOPPED,
-        /**
-         * The media player has reached the end of the media.
-         */
+        /** The media player has reached the end of the media. */
         ENDED,
-        /**
-         * The media player has encountered an error and cannot continue playback.
-         */
+        /** The media player has encountered an error and cannot continue playback. */
         ERROR;
 
-        private static final MediaPlayer.Status[] VALUES = values();
+        private static final Status[] VALUES = values();
 
-        /**
-         * Returns the Status corresponding to the given ordinal value (0 to {@code values().length - 1}).
-         * @param value the ordinal of the status (0-7)
-         * @return the corresponding Status enum value
-         * @throws IllegalArgumentException if the value is out of range
-         */
+        /** Returns the status with this ordinal; throws {@link IllegalArgumentException} when it is out of range. */
         public static Status of(final int value) {
             if (value < 0 || value >= VALUES.length) throw new IllegalArgumentException("Invalid status ordinal: " + value);
             return VALUES[value];
@@ -1098,12 +937,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     /**
-     * Level of detail applied to video uploads.
-     * Each level keeps a percentage of the effective maximum video dimensions
-     * ({@link #scale(int, int)} when set, otherwise the source size), reducing the
-     * amount of pixel data scaled and uploaded to the GPU. Useful to tie media
-     * resolution to the viewer distance. Playback always starts at {@link #MAX}.
-     * @see MediaPlayer#lod(LodLevel)
+     * Level of detail applied to video uploads, to tie media resolution to the viewer distance: each level keeps a
+     * percentage of the maximum video dimensions ({@link #scale(int, int)} when set, else the source size).
+     * Playback always starts at {@link #MAX}; see {@link MediaPlayer#lod(LodLevel)}.
      */
     public enum LodLevel {
         /** Full resolution — no LOD reduction. */
@@ -1121,10 +957,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
         LodLevel(final int percent) { this.percent = percent; }
 
-        /**
-         * Returns the percentage of the maximum video dimensions this level keeps.
-         * @return the percentage (1-100)
-         */
+        /** Returns the percentage (1-100) of the maximum video dimensions this level keeps. */
         public int percent() { return this.percent; }
     }
 }

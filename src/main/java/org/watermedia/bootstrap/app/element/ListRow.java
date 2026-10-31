@@ -81,8 +81,7 @@ public class ListRow extends Group<ListRow> {
     private boolean separator = true;
 
     // A CHILD AND WHERE IT SITS: x FROM THE LEFT EDGE, OR FROM THE RIGHT ONE WHEN NEGATIVE
-    private record Placement(Element<?> child, int x, int y) {
-    }
+    private record Placement(Element<?> child, int x, int y) {}
 
     /** Sets the fill at rest, while hovered and while selected; a null one falls back to the rest fill or to none. */
     public ListRow fill(final Color normal, final Color hovered, final Color selected) {
@@ -294,8 +293,8 @@ public class ListRow extends Group<ListRow> {
         }
     }
 
-    // TITLE (WITH ITS PREFIX), SUBTITLE AND DETAIL; THE TITLE AND SUBTITLE SHARE ONE WIDTH BUDGET
     private void paintTexts(final Canvas canvas, final boolean sel, final int x, final int y, final int w, final int h) {
+        // TITLE (WITH ITS PREFIX), SUBTITLE AND DETAIL; THE TITLE AND SUBTITLE SHARE ONE WIDTH BUDGET
         final int maxW = Math.max(this.titleMin, w - this.titleRight - this.textX);
         final String text = this.title.get();
         this.titleEnd = x + this.textX;
@@ -319,10 +318,9 @@ public class ListRow extends Group<ListRow> {
         }
         if (this.subtitle != null) {
             final String sub = this.subtitle.get();
-            if (sub != null && !sub.isEmpty()) {
+            if (sub != null && !sub.isEmpty())
                 canvas.text(canvas.text().truncateToWidth(sub, maxW, this.subtitleScale), x + this.textX, y + this.subtitleY,
                         this.subtitleColor, this.subtitleScale, false);
-            }
         }
         if (this.detail != null) {
             final String value = this.detail.get();

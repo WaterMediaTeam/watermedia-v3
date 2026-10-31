@@ -7,8 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * hIST - Palette Histogram Chunk
- * Gives the approximate usage frequency of each color in the palette
+ * hIST (palette histogram) chunk: the approximate usage frequency of each palette color.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11hIST">PNG Specification - hIST</a>
  */
@@ -24,24 +23,16 @@ public record HIST(int[] frequencies) implements IChunk {
 
     /** Converts a generic chunk to hIST for a palette of the given size. */
     public static HIST convert(final PngChunk chunk, final int paletteSize) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for hIST: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for hIST: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length > MAX_LENGTH) {
-            throw new CodecException("hIST holds more than 256 entries: " + (data.length / 2));
-        }
-        if (data.length != paletteSize * 2) {
-            throw new CodecException("hIST data must have " + paletteSize + " entries (" +
-                    (paletteSize * 2) + " bytes), got " + data.length + " bytes");
-        }
+        if (data.length > MAX_LENGTH) throw new CodecException("hIST holds more than 256 entries: " + (data.length / 2));
+        if (data.length != paletteSize * 2)
+            throw new CodecException("hIST data must have " + paletteSize + " entries (" + (paletteSize * 2) + " bytes), got " + data.length + " bytes");
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         final int[] frequencies = new int[paletteSize];
-        for (int i = 0; i < paletteSize; i++) {
-            frequencies[i] = buffer.getShort() & 0xFFFF;
-        }
+        for (int i = 0; i < paletteSize; i++) frequencies[i] = buffer.getShort() & 0xFFFF;
         return new HIST(frequencies);
     }
 
@@ -50,9 +41,7 @@ public record HIST(int[] frequencies) implements IChunk {
         return this.frequencies[index];
     }
 
-    /**
-     * Returns the number of entries
-     */
+    /** Returns the number of entries. */
     public int size() {
         return this.frequencies.length;
     }
@@ -60,9 +49,7 @@ public record HIST(int[] frequencies) implements IChunk {
     @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(this.frequencies.length * 2).order(ByteOrder.BIG_ENDIAN);
-        for (final int freq: this.frequencies) {
-            buf.putShort((short) freq);
-        }
+        for (final int freq: this.frequencies) buf.putShort((short) freq);
         return buf.array();
     }
 

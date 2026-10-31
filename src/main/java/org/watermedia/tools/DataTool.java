@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/** Byte reads, lenient parsing, log redaction and pixel helpers shared across WaterMedia. */
 public final class DataTool {
     // SENSITIVE ELEMENTS: URIS, JWTS (eyJ<header>.<payload>.<signature>), MINECRAFT SESSION ARGUMENTS AND TRIPLES,
     // Authorization VALUES AND SECRET-LOOKING key=value, key: value OR "key":"value" PAIRS
@@ -142,8 +143,15 @@ public final class DataTool {
 
     public static boolean equalsAnyIgnoreCase(final String o, final String... arr) {
         for (final String element: arr)
-            if (element != null && element.equalsIgnoreCase(o)) return true; // CASE-INSENSITIVE EQUALITY CHECK
+            if (element != null && element.equalsIgnoreCase(o)) return true;
         return false;
+    }
+
+    // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
+    public static boolean equalsIgnoreCase(final String a, final String b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        return a.equalsIgnoreCase(b);
     }
 
     /** Jaro-Winkler similarity of two texts from 0 (nothing in common) to 1 (equal ignoring case); one keystroke apart scores above 0.8. */
@@ -195,21 +203,16 @@ public final class DataTool {
                 final int u = uP[i] & 0xFF;
                 final int v = vP[i] & 0xFF;
                 final int c = y - 16, d = u - 128, e = v - 128;
-                int r = (298 * c + 409 * e + 128) >> 8;
-                int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
-                int b = (298 * c + 516 * d + 128) >> 8;
-
-                r = MathUtil.clip255(r);
-                g = MathUtil.clip255(g);
-                b = MathUtil.clip255(b);
-
+                final int r = MathUtil.clip255((298 * c + 409 * e + 128) >> 8);
+                final int g = MathUtil.clip255((298 * c - 100 * d - 208 * e + 128) >> 8);
+                final int b = MathUtil.clip255((298 * c + 516 * d + 128) >> 8);
                 bgra[dstRow + px] = (0xFF << 24) | (r << 16) | (g << 8) | b;
             }
         }
         return bgra;
     }
 
-    // THIS IS THE MOST EFFICIENT WAY TO CONVERT INT[] CANVAS TO BYTEBUFFER
+    // ONE BULK PUT OF THE PACKED ARGB CANVAS INTO A LITTLE-ENDIAN DIRECT BUFFER, SO EACH PIXEL LANDS AS [B,G,R,A] BYTES
     public static ByteBuffer bgraToBuffer(final int[] bgra) {
         final ByteBuffer buffer = ByteBuffer.allocateDirect(bgra.length * 4).order(ByteOrder.LITTLE_ENDIAN);
         buffer.asIntBuffer().put(bgra);
@@ -308,9 +311,7 @@ public final class DataTool {
         }
     }
 
-    // ============================================================
-    // PIXEL-PLANE AREA SCALING — SHARED BY TxMediaPlayer AND DownscaleFilter
-    // ============================================================
+    // ==== PIXEL-PLANE AREA SCALING (TxMediaPlayer, DownscaleFilter) ====
 
     // FORMATS THE AREA SCALER UNDERSTANDS — PACKED YUYV (PIXEL PAIRS SHARE CHROMA) AND
     // COMPRESSED BCn (GPU-SIDE BLOCKS) CANNOT BE AVERAGED BYTE-WISE.
@@ -355,12 +356,5 @@ public final class DataTool {
                 for (int c = 0; c < ch; c++) dst.put((byte) (acc[c] / count));
             }
         }
-    }
-
-    // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
-    public static boolean equalsIgnoreCase(final String a, final String b) {
-        if (a == b) return true;
-        if (a == null || b == null) return false;
-        return a.equalsIgnoreCase(b);
     }
 }

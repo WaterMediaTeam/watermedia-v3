@@ -8,28 +8,20 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 
 /**
- * sPLT - Suggested Palette Chunk
- * Contains a suggested palette for use when the display device has limited colors
+ * sPLT (suggested palette) chunk: a palette for display devices with a limited number of colors.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11sPLT">PNG Specification - sPLT</a>
  */
 public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) implements IChunk {
     public static final int SIGNATURE = 0x73_50_4C_54; // "sPLT"
 
-    /**
-     * A single entry in the suggested palette
-     */
+    /** A single entry in the suggested palette. */
     public record SPLTEntry(int red, int green, int blue, int alpha, int frequency) {
-        /**
-         * Returns the entry as packed ARGB (scaled to 8-bit if necessary)
-         */
+        /** Returns the entry as packed ARGB, scaled to 8 bits when the samples are 16-bit. */
         public int toARGB(final int sampleDepth) {
-            if (sampleDepth == 8) {
-                return (this.alpha << 24) | (this.red << 16) | (this.green << 8) | this.blue;
-            } else { // 16-BIT
-                return ((this.alpha >> 8) << 24) | ((this.red >> 8) << 16) |
-                        ((this.green >> 8) << 8) | (this.blue >> 8);
-            }
+            if (sampleDepth == 8) return (this.alpha << 24) | (this.red << 16) | (this.green << 8) | this.blue;
+            // 16-BIT SAMPLES KEEP THEIR HIGH BYTE
+            return ((this.alpha >> 8) << 24) | ((this.red >> 8) << 16) | ((this.green >> 8) << 8) | (this.blue >> 8);
         }
     }
 
@@ -40,13 +32,10 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
 
     /** Converts a generic chunk to sPLT. */
     public static SPLT convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for sPLT: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for sPLT: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-
-        // FIND NULL SEPARATOR AFTER PALETTE NAME
+        // THE PALETTE NAME TAKES 1-79 BYTES AND ENDS AT A NUL
         int nullIndex = -1;
         for (int i = 0; i < Math.min(80, data.length); i++) {
             if (data[i] == 0) {
@@ -54,36 +43,22 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
                 break;
             }
         }
-
-        if (nullIndex < 1) {
-            throw new CodecException("Invalid sPLT: missing or empty palette name");
-        }
-
+        if (nullIndex < 1) throw new CodecException("Invalid sPLT: missing or empty palette name");
         // NEED THE SAMPLE-DEPTH BYTE AFTER THE NAME NUL; A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
-        if (data.length < nullIndex + 2) {
-            throw new CodecException("Truncated sPLT: missing sample depth");
-        }
+        if (data.length < nullIndex + 2) throw new CodecException("Truncated sPLT: missing sample depth");
 
         final String paletteName = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);
         final int sampleDepth = data[nullIndex + 1] & 0xFF;
+        if (sampleDepth != 8 && sampleDepth != 16) throw new CodecException("Invalid sPLT sample depth: " + sampleDepth);
 
-        if (sampleDepth != 8 && sampleDepth != 16) {
-            throw new CodecException("Invalid sPLT sample depth: " + sampleDepth);
-        }
-
-        // CALCULATE ENTRY SIZE AND COUNT
         final int entrySize = (sampleDepth == 8) ? 6 : 10; // RGBA + FREQUENCY
         final int entryDataStart = nullIndex + 2;
         final int entryDataLength = data.length - entryDataStart;
-
-        if (entryDataLength % entrySize != 0) {
-            throw new CodecException("Invalid sPLT entry data length");
-        }
+        if (entryDataLength % entrySize != 0) throw new CodecException("Invalid sPLT entry data length");
 
         final int entryCount = entryDataLength / entrySize;
         final SPLTEntry[] entries = new SPLTEntry[entryCount];
         final ByteBuffer buffer = ByteBuffer.wrap(data, entryDataStart, entryDataLength).order(ByteOrder.BIG_ENDIAN);
-
         for (int i = 0; i < entryCount; i++) {
             final int red, green, blue, alpha;
             if (sampleDepth == 8) {
@@ -101,13 +76,10 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
             final int frequency = buffer.getShort() & 0xFFFF;
             entries[i] = new SPLTEntry(red, green, blue, alpha, frequency);
         }
-
         return new SPLT(paletteName, sampleDepth, entries);
     }
 
-    /**
-     * Returns the number of entries
-     */
+    /** Returns the number of entries. */
     public int size() {
         return this.entries.length;
     }

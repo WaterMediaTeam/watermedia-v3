@@ -14,13 +14,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the pre-uploaded frame-texture mode of {@link TxMediaPlayer}: a capped animation is
- * decoded through a {@code DownscaleFilter}, so every preloaded frame already has the target size
- * and no per-frame upload ever happens.
- */
+/** Verifies the {@link TxMediaPlayer} frame-texture mode: a capped animation preloads every frame at the target size. */
 @DisplayName("TxMediaPlayer frame textures")
 public class TxFrameTexturesTest {
+
     private static final long MRL_TIMEOUT_MS = 2_000L;
     private static final long PLAYER_TIMEOUT_MS = 3_000L;
     private static final int CAP = 16;

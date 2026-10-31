@@ -605,7 +605,9 @@ public class NetworkServerTest {
         // A DROPPED CONNECTION EITHER READS EOF OR IS RESET BY THE SERVER
         private void assertDropped(final Socket socket) throws IOException {
             try { assertEquals(-1, socket.getInputStream().read()); }
-            catch (final SocketException reset) { /* THE SERVER RESET IT INSTEAD OF CLOSING IT */ }
+            catch (final SocketException reset) {
+                // A CONNECTION THE SERVER RESET IS DROPPED TOO
+            }
         }
     }
 

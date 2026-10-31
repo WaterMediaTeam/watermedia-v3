@@ -35,9 +35,11 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.*;
 
+/** Resolves Twitch live streams, VODs and clips through GQL and the Usher playlists, gated by the mature classification, and searches its channels. */
 public final class TwitchPlatform implements Platform {
-    public static final String NAME = "Twitch";
     private static final Marker IT = MarkerManager.getMarker(TwitchPlatform.class.getSimpleName());
+    public static final String NAME = "Twitch";
+
     // TWITCH GQL ENDPOINT AND USHER CDN URLS
     private static final URI GQL = URI.create("https://gql.twitch.tv/gql");
     private static final String LIVE_URL = "https://usher.ttvnw.net/api/channel/hls/%s.m3u8";
@@ -99,7 +101,7 @@ public final class TwitchPlatform implements Platform {
         final Map<String, String> query = NetRequest.query(uri);
 
         try {
-            // CLIPS.TWITCH.TV/{SLUG} OR CLIPS.TWITCH.TV/EMBED?CLIP={SLUG}
+            // clips.twitch.tv/{slug} OR clips.twitch.tv/embed?clip={slug}
             if ("clips.twitch.tv".equalsIgnoreCase(host)) {
                 final String[] segments = path == null ? new String[0] : path.split("/");
                 final String slug = "/embed".equals(path) ? query.get("clip") : segments.length == 0 ? null : segments[segments.length - 1];
@@ -107,7 +109,7 @@ public final class TwitchPlatform implements Platform {
                 return this.resolveClip(slug);
             }
 
-            // PLAYER.TWITCH.TV/?VIDEO={ID} OR ?CHANNEL={NAME}
+            // player.twitch.tv/?video={id} OR ?channel={name}
             if ("player.twitch.tv".equalsIgnoreCase(host)) {
                 final String videoId = query.get("video");
                 if (videoId != null) return this.resolveVod(videoId.replaceFirst("^v", ""));
@@ -118,19 +120,19 @@ public final class TwitchPlatform implements Platform {
 
             if (path == null || path.length() <= 1) throw PlatformException.unsupported(NAME, uri);
 
-            // VOD: /VIDEOS/{ID}, /{USER}/V/{ID}, /{USER}/VIDEO/{ID}
+            // VOD: /videos/{id}, /{user}/v/{id}, /{user}/video/{id}
             Matcher m = VOD_PATH.matcher(path);
             if (m.find()) return this.resolveVod(m.group(1));
 
-            // SCHEDULE: ?VODID={ID}
+            // SCHEDULE: ?vodID={id}
             final String vodId = query.get("vodID");
             if (vodId != null) return this.resolveVod(vodId);
 
-            // CLIP: /{USER}/CLIP/{SLUG}
+            // CLIP: /{user}/clip/{slug}
             m = CLIP_PATH.matcher(path);
             if (m.find()) return this.resolveClip(m.group(1));
 
-            // STREAM: /{CHANNEL}
+            // STREAM: /{channel}
             m = CHANNEL_PATH.matcher(path);
             if (m.find()) return this.resolveStream(m.group(1).toLowerCase(Locale.ROOT));
 
@@ -164,9 +166,10 @@ public final class TwitchPlatform implements Platform {
             final JsonObject item = obj(edge, "item");
             if (item == null) continue;
 
+            // THE PAGE URL NEEDS THE CHANNEL LOGIN
             final String login = str(item, "login");
             final URI page = login == null ? null : DataTool.uri(SITE + login);
-            if (page == null) continue; // CAN'T BUILD A PAGE URL WITHOUT THE CHANNEL LOGIN
+            if (page == null) continue;
 
             // PREFER THE STREAM TITLE; FALL BACK TO THE CHANNEL NAME WHEN THE CHANNEL HAS NEVER SET ONE
             String title = str(obj(item, "broadcastSettings"), "title");
@@ -182,7 +185,7 @@ public final class TwitchPlatform implements Platform {
         return out;
     }
 
-    // --- CONTENT-TYPE HANDLERS ---
+    // ==== CONTENT-TYPE HANDLERS ====
 
     private Resolution resolveStream(final String channel) throws IOException {
         ensureNotMature(ContentKind.STREAM, channel);
@@ -264,7 +267,7 @@ public final class TwitchPlatform implements Platform {
         if (clipVariants.isEmpty()) throw new PlatformException(NAME, "No video qualities found for clip: " + slug);
 
         // TWITCH REPORTS clip durationSeconds IN SECONDS; Metadata IS MILLISECONDS
-        final long durationMs = Math.max(0, intOr(clip, "durationSeconds", 0)) * 1000L;
+        final long durationMs = Math.max(0, intOr(clip, "durationSeconds", 0)) * 1_000L;
         final String author = str(obj(clip, "broadcaster"), "displayName");
 
         Instant publishedAt = null;
@@ -282,7 +285,7 @@ public final class TwitchPlatform implements Platform {
                         clipVariants, null, null));
     }
 
-    // --- HLS PLAYLIST ---
+    // ==== HLS PLAYLIST ====
 
     // USHER MASTER PLAYLIST URL SIGNED WITH A FRESH PLAYBACK ACCESS TOKEN
     private static URI playlist(final String id, final boolean isVod) throws IOException {
@@ -317,10 +320,10 @@ public final class TwitchPlatform implements Platform {
                 "&token=" + URLEncoder.encode(value, StandardCharsets.UTF_8));
     }
 
+    // ==== METADATA ====
+
     // online IS STREAM-ONLY (user.stream != null); IT IS ALWAYS true FOR A RESOLVED VOD
     private record MetadataWithThumbnail(Metadata metadata, URI thumbnail, boolean online) {}
-
-    // --- METADATA ---
 
     // null MEANS THE CHANNEL DOES NOT EXIST; TRANSPORT AND SHAPE FAILURES PROPAGATE TO THE CALLER
     private static MetadataWithThumbnail fetchStreamMetadata(final String channel) throws IOException {
@@ -382,9 +385,9 @@ public final class TwitchPlatform implements Platform {
 
         final String title = str(video, "title");
         // TWITCH REPORTS VOD lengthSeconds IN SECONDS; Metadata IS MILLISECONDS
-        final long durationMs = Math.max(0, intOr(video, "lengthSeconds", 0)) * 1000L;
+        final long durationMs = Math.max(0, intOr(video, "lengthSeconds", 0)) * 1_000L;
 
-        // FULL-SIZE THUMBNAIL: REPLACE DIMENSION PLACEHOLDER (E.G. 640x480.jpg → 0x0.jpg)
+        // FULL-SIZE THUMBNAIL: THE DIMENSION PLACEHOLDER BECOMES 0x0 (640x480.jpg → 0x0.jpg)
         final String thumbUrl = str(video, "previewThumbnailURL");
         final URI thumbnailUri = thumbUrl == null ? null : DataTool.uri(thumbUrl.replaceAll("\\d+x\\d+(\\.\\w+)($|(?=[?#]))", "0x0$1$2"));
 
@@ -395,15 +398,12 @@ public final class TwitchPlatform implements Platform {
             catch (final DateTimeParseException e) { LOGGER.warn(IT, "Twitch unparseable postedAt '{}' for VOD '{}'", publishedStr, vodId, e); }
         }
 
-        return new MetadataWithThumbnail(
-                new Metadata(title != null ? title : "Untitled Broadcast", str(video, "description"), publishedAt, durationMs,
-                        str(obj(video, "owner"), "displayName")),
-                thumbnailUri,
-                true // VOD METADATA RESOLVED ⇒ AVAILABLE; online IS UNUSED FOR VODs
-        );
+        final Metadata metadata = new Metadata(title != null ? title : "Untitled Broadcast", str(video, "description"), publishedAt, durationMs,
+                str(obj(video, "owner"), "displayName"));
+        return new MetadataWithThumbnail(metadata, thumbnailUri, true);
     }
 
-    // --- MATURE CONTENT ---
+    // ==== MATURE CONTENT ====
 
     private enum ContentKind { STREAM, VOD, CLIP }
 
@@ -435,7 +435,7 @@ public final class TwitchPlatform implements Platform {
             throw new MatureContentException(NAME, kind.name().toLowerCase(Locale.ROOT) + " '" + id + "' is marked as mature content");
     }
 
-    // --- GQL HELPERS ---
+    // ==== GQL HELPERS ====
 
     // POSTS ONE GQL OPERATION (AN OBJECT ANSWER) OR A BATCH (AN ARRAY ANSWER)
     private static <T> T gql(final Object body, final Class<T> type) throws PlatformException {

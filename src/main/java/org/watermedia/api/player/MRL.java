@@ -42,7 +42,7 @@ public final class MRL {
     // THE CACHE AND ITS LOADERS, CREATED WHEN THE PLAYER MODULE LOADS AND KEPT FOR THE LIFE OF THE PROCESS; THE
     // SESSION MONITOR ORDERS THE CACHE SWEEP AGAINST get() AND reload()
     private static final class Session {
-        final Map<URI, MRL> loaded = new ConcurrentHashMap<>(1024);
+        final Map<URI, MRL> loaded = new ConcurrentHashMap<>(1_024);
         final ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()), ThreadTool.workerFactory("MRL-Loader", Thread.NORM_PRIORITY - 1));
         volatile long nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.player.mrlCleanupInterval);
     }
@@ -95,9 +95,7 @@ public final class MRL {
 
     static MRL[] preload(final URI... uris) {
         final MRL[] result = new MRL[uris.length];
-        for (int i = 0; i < uris.length; i++) {
-            result[i] = get(uris[i]); // WILL START ASYNC LOAD IF NOT CACHED
-        }
+        for (int i = 0; i < uris.length; i++) result[i] = get(uris[i]); // STARTS AN ASYNC LOAD WHEN NOT CACHED
         return result;
     }
 
@@ -114,13 +112,7 @@ public final class MRL {
         return mrl;
     }
 
-    /**
-     * Restarts the async platform lookup for this MRL, clearing the previous sources and error
-     * state. If a load is already in flight, the refresh is deferred until it finishes rather than
-     * wiping state mid-fetch, so concurrent reloads never race or duplicate the lookup.
-     * @return the active resource handle; a forgotten handle is replaced rather than revived and an
-     *         MRL born in {@link Status#ERROR} from unparseable input returns itself unchanged
-     */
+    /** Restarts the async lookup (deferred while a load runs) and returns the active handle: a fresh one when forgotten, itself when born unparseable. */
     public MRL reload() {
         if (this.owner == null) return this; // BORN IN ERROR FROM UNPARSEABLE INPUT: THERE IS NOTHING TO REFETCH
         synchronized (this.owner) {
@@ -202,10 +194,8 @@ public final class MRL {
                 try (final NetRequest req = new NetRequest(this.uri).accept(NetRequest.ACCEPT_MEDIA).send()) {
                     LOGGER.debug(IT, "Connected to {} with content type {}", this.uri, req.contentType());
 
-                    // FAIL FAST ON NON-2xx
-                    if (req.statusCode() >= 400) {
-                        throw new IOException("HTTP " + req.statusCode() + " for " + this.uri);
-                    }
+                    // FAIL FAST ON HTTP ERRORS
+                    if (req.statusCode() >= 400) throw new IOException("HTTP " + req.statusCode() + " for " + this.uri);
 
                     // ONLY DOCUMENT TYPES (HTML, JSON, SCRIPTS) ARE REJECTED, WHATEVER THEIR CASING OR PARAMETERS; text/plain
                     // AND XML PASS BECAUSE MISCONFIGURED HOSTS SERVE MEDIA UNDER THEM AND THE BYTE SNIFF SETTLES THE TYPE
@@ -214,9 +204,8 @@ public final class MRL {
                     if (mime.equals("text/html") || mime.equals("text/css") || mime.equals("text/javascript")
                             || mime.equals("application/xhtml+xml") || mime.equals("application/javascript")
                             || mime.equals("application/x-javascript") || mime.equals("application/ecmascript")
-                            || mime.equals("application/json") || mime.endsWith("+json")) {
+                            || mime.equals("application/json") || mime.endsWith("+json"))
                         throw new IOException("Content is not multimedia (received content-type '" + contentType + "'): " + this.uri);
-                    }
 
                     // DETECT HLS/IPTV AND PARSE IT
                     final String pathLower = this.uri.getPath() == null ? "" : this.uri.getPath().toLowerCase(Locale.ROOT);
@@ -272,46 +261,41 @@ public final class MRL {
                 final URI target = entry.qualities().get(0).uri();
                 try (final NetRequest req = new NetRequest(target).headers(entry.headers()).accept(NetRequest.ACCEPT_MEDIA).send()) {
                     final MediaType type = req.statusCode() >= 400 ? MediaType.UNKNOWN : sniffType(req, target);
-                    if (type != MediaType.UNKNOWN) {
+                    if (type != MediaType.UNKNOWN)
                         data = new Platform.Resolution(data.expires(), new Platform.Source(type, entry.thumbnail(), entry.metadata(),
                                 entry.headers(), entry.qualities(), entry.audioTracks(), entry.subtitleTracks()));
-                    }
                 } catch (final IOException e) {
                     LOGGER.warn(IT, "Failed to classify {} resolved from {}: {}", target, this.uri, e.getMessage());
                 }
             }
 
-            if (data.sourceCount() > 0) {
-                final List<Platform.Source> entries = data.sources();
-                final Source[] sources = new Source[entries.size()];
-                for (int i = 0; i < entries.size(); i++) {
-                    final Platform.Source entry = entries.get(i);
-                    if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
-                    // ONE URL PER BUCKET: THE WIDEST RENDITION WINS, THEN THE TALLEST, THEN THE HIGHER FRAME RATE, THEN THE FIRST
-                    final EnumMap<MediaQuality, Platform.Quality> best = new EnumMap<>(MediaQuality.class);
-                    for (final Platform.Quality v: entry.qualities()) {
-                        best.merge(MediaQuality.of(v.width(), v.height()), v, (kept, next) -> next.width() > kept.width()
-                                || next.width() == kept.width() && (next.height() > kept.height()
-                                || next.height() == kept.height() && next.fps() > kept.fps()) ? next : kept);
-                    }
-                    final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
-                    best.forEach((bucket, v) -> qualities.put(bucket, v.uri()));
-
-                    sources[i] = new Source(entry.type(), entry.thumbnail(), entry.metadata(),
-                            entry.headers(), qualities, entry.audioTracks(), entry.subtitleTracks());
+            if (data.sourceCount() <= 0) throw new IllegalStateException("[INTERNAL] Platform resolution has no sources for " + this.uri);
+            final List<Platform.Source> entries = data.sources();
+            final Source[] sources = new Source[entries.size()];
+            for (int i = 0; i < entries.size(); i++) {
+                final Platform.Source entry = entries.get(i);
+                if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
+                // ONE URL PER BUCKET: THE WIDEST RENDITION WINS, THEN THE TALLEST, THEN THE HIGHER FRAME RATE, THEN THE FIRST
+                final EnumMap<MediaQuality, Platform.Quality> best = new EnumMap<>(MediaQuality.class);
+                for (final Platform.Quality v: entry.qualities()) {
+                    best.merge(MediaQuality.of(v.width(), v.height()), v, (kept, next) -> next.width() > kept.width()
+                            || next.width() == kept.width() && (next.height() > kept.height()
+                            || next.height() == kept.height() && next.fps() > kept.fps()) ? next : kept);
                 }
+                final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
+                best.forEach((bucket, v) -> qualities.put(bucket, v.uri()));
 
-
-                synchronized (this.loadLock) {
-                    this.sources = sources;
-                    this.expiresAt = data.expires();
-                    this.status = Status.LOADED;
-                }
-                this.fireListeners();
-                LOGGER.info(IT, "Loaded {} uri(s) for: {}", data.sourceCount(), this.uri);
-            } else {
-                throw new IllegalStateException("[INTERNAL] Platform resolution has no sources for " + this.uri);
+                sources[i] = new Source(entry.type(), entry.thumbnail(), entry.metadata(),
+                        entry.headers(), qualities, entry.audioTracks(), entry.subtitleTracks());
             }
+
+            synchronized (this.loadLock) {
+                this.sources = sources;
+                this.expiresAt = data.expires();
+                this.status = Status.LOADED;
+            }
+            this.fireListeners();
+            LOGGER.info(IT, "Loaded {} uri(s) for: {}", data.sourceCount(), this.uri);
         } catch (final Throwable t) {
             // STORE THE FAILURE VERBATIM SO exception() EXPOSES THE REAL MESSAGE, CAUSE AND STACK TO DEVS.
             synchronized (this.loadLock) {
@@ -352,14 +336,7 @@ public final class MRL {
         }
     }
 
-    /**
-     * Blocks until loading reaches a terminal state or the timeout elapses. Discouraged in
-     * tick-based game environments: prefer polling {@link #status()} every tick instead.
-     *
-     * @param timeoutMs maximum wait time in milliseconds
-     * @return {@code true} once loading finished in any terminal state (inspect {@link #status()}
-     *         for the outcome — it may be a failure), {@code false} if it timed out while still fetching
-     */
+    /** Blocks until loading ends in any terminal state (true, inspect {@link #status()}) or times out fetching (false); tick loops poll instead. */
     public boolean await(final long timeoutMs) {
         final long started = System.nanoTime();
         final long budget = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
@@ -371,17 +348,7 @@ public final class MRL {
         return true;
     }
 
-    /**
-     * Registers a new listener, triggered once loading completes OR fails.
-     * If the MRL has already reached a terminal state when this is called, the
-     * listener fires immediately on the calling thread; otherwise it fires on the
-     * loader thread once loading finishes. After firing, all listeners are dropped
-     * — re-subscribe across reloads.
-     * <p>
-     * Discouraged in tick-based game environments: prefer polling {@link #status()} every tick instead.
-     * </p>
-     * @param listener consumer invoked with this MRL once it reaches a terminal state (success or failure)
-     */
+    /** Registers a one-shot listener fired on the loader thread when loading completes or fails, at once when already terminal; tick loops poll instead. */
     public void subscribe(final Consumer<MRL> listener) {
         if (this.status == Status.FETCHING) {
             this.listeners.add(listener);
@@ -399,60 +366,36 @@ public final class MRL {
     /** Returns the current state, marking expired loaded sources as EXPIRED. */
     public Status status() {
         synchronized (this.loadLock) {
-            if (this.status == Status.LOADED && this.expiresAt != null && this.expiresAt.isBefore(Instant.now())) {
-                this.status = Status.EXPIRED;
-            }
+            if (this.status == Status.LOADED && this.expiresAt != null && this.expiresAt.isBefore(Instant.now())) this.status = Status.EXPIRED;
             return this.status;
         }
     }
 
-    /**
-     * Returns the failure captured while loading this MRL, or {@code null} when it loaded
-     * successfully or is still loading. The throwable is self-describing: a
-     * {@link MatureContentException} when blocked, a {@link PlatformException} for platform
-     * or I/O failures, otherwise the raw internal error. Inspect {@link Throwable#getCause()}
-     * for the underlying cause. Cleared on {@link #reload()}.
-     */
+    /** Returns the load failure, cleared on {@link #reload()}: a {@link MatureContentException} when blocked, a {@link PlatformException} for platform or I/O failures, else the raw error. */
     public Throwable exception() {
         return this.exception;
     }
 
-    /**
-     * Returns all {@link Source} instances, or an empty list when none are available.
-     */
+    /** Returns all {@link Source} instances, or an empty list when none are available. */
     public List<Source> sources() {
         final Source[] s = this.sources;
         return s != null ? List.of(s) : List.of();
     }
 
-    /**
-     * Returns the available number of {@link Source} instances.
-     */
+    /** Returns the available number of {@link Source} instances. */
     public int sourceCount() {
         final Source[] s = this.sources;
         return s != null ? s.length : 0;
     }
 
-    /**
-     * Gets the {@link Source} by index.
-     *
-     * @param index the source index
-     * @return the {@link Source}, or null if invalid index or not ready
-     */
+    /** Returns the {@link Source} at {@code index}, or null when the index is invalid or the MRL is not ready. */
     public Source source(final int index) {
         final Source[] s = this.sources;
-        if (s == null || index < 0 || index >= s.length) {
-            return null;
-        }
+        if (s == null || index < 0 || index >= s.length) return null;
         return s[index];
     }
 
-    /**
-     * Gets the first {@link Source} of a specific type.
-     *
-     * @param type the media type to find
-     * @return the first matching {@link Source}, or null if none found
-     */
+    /** Returns the first {@link Source} of {@code type}, or null when none matches. */
     public Source sourceByType(final MediaType type) {
         final Source[] s = this.sources;
         if (s == null) return null;
@@ -463,12 +406,7 @@ public final class MRL {
         return null;
     }
 
-    /**
-     * Gets all {@link Source} instances of a specific type.
-     *
-     * @param type the media type to filter by
-     * @return List of matching {@link Source} (not null)
-     */
+    /** Returns every {@link Source} of {@code type}, never null. */
     public List<Source> sourcesByType(final MediaType type) {
         final Source[] s = this.sources;
         if (s == null) return List.of();
@@ -496,8 +434,6 @@ public final class MRL {
             return true;
         }
     }
-
-
 
     @Override
     public boolean equals(final Object o) {
@@ -538,13 +474,9 @@ public final class MRL {
             headers = new HttpHeaders(headers).freeze();
         }
 
-        /**
-         * Gets the URI for a specific quality, falling back to closest available.
-         */
+        /** Returns the URI of {@code quality}, falling back to the closest available one. */
         public URI uri(final MediaQuality quality) {
-            if (this.qualities.containsKey(quality)) {
-                return this.qualities.get(quality);
-            }
+            if (this.qualities.containsKey(quality)) return this.qualities.get(quality);
             final MediaQuality closest = MediaQuality.closest(this.qualities.keySet(), quality);
 
             if (closest == null)
@@ -553,15 +485,11 @@ public final class MRL {
             return this.qualities.get(closest);
         }
 
-        /**
-         * Gets the first quality, in enum order, whose URI equals {@code uri}, or null when none does.
-         */
+        /** Returns the first quality, in enum order, whose URI equals {@code uri}, or null when none does. */
         public MediaQuality qualityOf(final URI uri) {
             if (uri == null) return null;
             for (final var q: this.qualities.entrySet()) {
-                if (uri.equals(q.getValue())) {
-                    return q.getKey();
-                }
+                if (uri.equals(q.getValue())) return q.getKey();
             }
             return null;
         }
@@ -576,29 +504,15 @@ public final class MRL {
         FORGOTTEN;
 
         /** Sources are loaded and usable. */
-        public boolean loaded() {
-            return this == LOADED;
-        }
-
+        public boolean loaded() { return this == LOADED; }
         /** Loading failed — either a plain error or a platform block. */
-        public boolean failed() {
-            return this == ERROR || this == BLOCKED;
-        }
+        public boolean failed() { return this == ERROR || this == BLOCKED; }
+        /** A terminal, non-loaded state the user must regenerate from: load failures (ERROR/BLOCKED) plus stale instances (EXPIRED/FORGOTTEN). */
+        public boolean regenerable() { return this == ERROR || this == BLOCKED || this == EXPIRED || this == FORGOTTEN; }
 
-        /**
-         * A terminal, non-loaded state the user must regenerate from:
-         * load failures (ERROR/BLOCKED) plus stale instances (EXPIRED/FORGOTTEN).
-         */
-        public boolean regenerable() {
-            return this == ERROR || this == BLOCKED || this == EXPIRED || this == FORGOTTEN;
-        }
-
-        /**
-         * A terminal state the cleanup pass may evict from the cache. Covers every failure
-         * (ERROR/BLOCKED) plus stale successes (EXPIRED); without BLOCKED, blocked entries would
-         * accumulate in the cache for the JVM lifetime.
-         */
+        /** A terminal state the cleanup pass may evict from the cache: every failure (ERROR/BLOCKED) plus stale successes (EXPIRED). */
         public boolean disposable() {
+            // WITHOUT BLOCKED, BLOCKED ENTRIES WOULD PILE UP IN THE CACHE FOR THE JVM LIFETIME
             return this == ERROR || this == BLOCKED || this == EXPIRED;
         }
     }

@@ -6,9 +6,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
-/**
- * Media types supported by {@link MRL.Source}.
- */
+/** Media types supported by {@link MRL.Source}. */
 public enum MediaType {
     IMAGE,
     VIDEO,
@@ -16,12 +14,8 @@ public enum MediaType {
     SUBTITLES,
     UNKNOWN;
 
-    /**
-     * Extension-to-MIME table for every format WaterMedia consumes (codecs API + FFmpeg).
-     * Single source of truth: {@link #ofExtension(String)} classifies through it and
-     * {@link NetRequest#contentTypeOf(String)} consults it before the JDK's table — the bundled
-     * {@code content-types.properties} misses most of these.
-     */
+    // EXTENSION TO MIME FOR EVERY FORMAT THE CODECS AND FFMPEG CONSUME; NetRequest.contentTypeOf ASKS IT BEFORE THE
+    // JDK'S content-types.properties, WHICH MISSES MOST OF THEM
     private static final Map<String, String> MIMES = table(new String[] {
             // IMAGE
             "png",  "image/png",
@@ -96,19 +90,7 @@ public enum MediaType {
             "sub",  "text/x-microdvd",
     });
 
-    // PAIRS EACH EXTENSION WITH ITS MIME TYPE FROM THE FLAT TABLE ABOVE
-    private static Map<String, String> table(final String[] keyValue) {
-        final Map<String, String> map = new HashMap<>(keyValue.length / 2);
-        for (int i = 0; i < keyValue.length; i += 2) map.put(keyValue[i], keyValue[i + 1]);
-        return Map.copyOf(map);
-    }
-
-    /**
-     * Parses a MIME type string into MediaType, ignoring parameters such as {@code ; charset=utf-8}
-     * and surrounding whitespace. Streaming manifests and containers hiding behind
-     * {@code application/*} (HLS, DASH, RealMedia, SubRip) are classified too.
-     * @return the matching type, or {@link #UNKNOWN} for null, empty or unsupported input
-     */
+    /** Classifies a MIME type by its essence, ignoring parameters and whitespace, including the HLS, DASH, RealMedia and SubRip {@code application/*} types; {@link #UNKNOWN} otherwise. */
     public static MediaType of(final String mimeType) {
         if (mimeType == null || mimeType.isEmpty()) return UNKNOWN;
 
@@ -132,24 +114,12 @@ public enum MediaType {
         };
     }
 
-    /**
-     * Known MIME type for a bare file extension (no dot, any case), or {@code null} when unmapped.
-     */
+    /** Returns the MIME type of a bare file extension (no dot, any case), or null when unmapped. */
     public static String mime(final String extension) {
         return extension == null ? null : MIMES.get(extension.toLowerCase(Locale.ROOT));
     }
 
-    /**
-     * Resolves a MediaType from a file path/URL extension through the shared MIME table. Used
-     * as a fallback when the server reports an ambiguous MIME type (e.g.
-     * {@code application/octet-stream}), which many CDNs do for files like {@code .webp} thumbnails.
-     *
-     * <p>Only the file name is inspected (dots in parent directories are ignored) and its
-     * extensions are scanned right-to-left, returning the first recognized one. This handles
-     * stacked extensions where a platform appends the real container instead of renaming
-     * (e.g. {@code video.m3u8.mp4}), and tolerates a trailing non-media suffix masking an
-     * earlier media one (e.g. {@code clip.mp4.download}).
-     */
+    /** Classifies a path or URL by its file name's extensions, scanned right to left, so {@code video.m3u8.mp4} and {@code clip.mp4.download} resolve; the fallback for vague server types. */
     public static MediaType ofExtension(final String path) {
         if (path == null) return UNKNOWN;
         final String name = path.substring(path.lastIndexOf('/') + 1);
@@ -159,5 +129,13 @@ public enum MediaType {
             if (type != UNKNOWN) return type;
         }
         return UNKNOWN;
+    }
+
+    // UTILITY
+    // PAIRS EACH EXTENSION WITH ITS MIME TYPE FROM A FLAT TABLE
+    private static Map<String, String> table(final String[] keyValue) {
+        final Map<String, String> map = new HashMap<>(keyValue.length / 2);
+        for (int i = 0; i < keyValue.length; i += 2) map.put(keyValue[i], keyValue[i + 1]);
+        return Map.copyOf(map);
     }
 }

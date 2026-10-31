@@ -56,9 +56,7 @@ public final class Badge extends Element<Badge> {
     protected void onDraw(final Canvas canvas) {
         canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight,
                 this.filled ? this.color : AppTheme.alpha(this.color, 36));
-        if (!this.filled) {
-            canvas.stroke(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.alpha(this.color, 120), 1f);
-        }
+        if (!this.filled) canvas.stroke(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.alpha(this.color, 120), 1f);
         if (!this.label.isEmpty()) {
             final Color tc = this.filled ? AppTheme.BG_0 : this.color;
             final int tw = canvas.textWidth(this.label, SCALE, false);

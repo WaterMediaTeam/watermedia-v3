@@ -44,8 +44,6 @@ public final class ProgressBar extends Element<ProgressBar> {
     protected void onDraw(final Canvas canvas) {
         canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.alpha(AppTheme.NEON_DARK, 90));
         final int fillW = Math.round(this.measuredWidth * this.progress);
-        if (fillW > 0) {
-            canvas.fill(this.left, this.top, fillW, this.measuredHeight, this.accent);
-        }
+        if (fillW > 0) canvas.fill(this.left, this.top, fillW, this.measuredHeight, this.accent);
     }
 }

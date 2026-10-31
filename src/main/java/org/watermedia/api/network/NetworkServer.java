@@ -44,7 +44,7 @@ public final class NetworkServer {
     private static final long INVALID_RANGE = -1L;
     // EACH WRITTEN CHUNK TOUCHES THE IDLE WATCHDOG AND BLOCKS UNTIL SENT: SMALL ENOUGH THAT A SLOW PEER STILL MOVES ONE PER TIMEOUT,
     // AND THAT A CANCELLED UPLOAD STOPS WITHIN ONE CHUNK
-    static final int CHUNK_BYTES = 8 * 1024;
+    static final int CHUNK_BYTES = 8 * 1_024;
     private static final SecureRandom RANDOM = new SecureRandom();
     // THE IDLE WATCHDOG OF THE REQUEST THE CURRENT WORKER IS SERVING; TRANSFERS TOUCH IT PER CHUNK
     private static final ThreadLocal<Watchdog> WATCHDOG = new ThreadLocal<>();
@@ -131,7 +131,7 @@ public final class NetworkServer {
                         ThreadTool.factory("NetworkServer-Deadline", Thread.NORM_PRIORITY));
                 deadlines.setRemoveOnCancelPolicy(true);
                 final Running state = new Running(server, executor, deadlines, storage, storageChannel, token.getBytes(StandardCharsets.UTF_8),
-                        config.maxUploadSize * 1024L * 1024L, config.maxStorageSize * 1024L * 1024L, used, config.serverTimeout, config.maxServerRequests);
+                        config.maxUploadSize * 1_024L * 1_024L, config.maxStorageSize * 1_024L * 1_024L, used, config.serverTimeout, config.maxServerRequests);
                 final Filter admission = new Filter() {
                     @Override
                     public void doFilter(final HttpExchange exchange, final Chain chain) throws IOException {
@@ -520,9 +520,7 @@ public final class NetworkServer {
 
         void touch() { this.touched = System.nanoTime(); }
 
-        synchronized void arm() {
-            this.schedule(this.timeoutNs);
-        }
+        synchronized void arm() { this.schedule(this.timeoutNs); }
 
         synchronized void finish() {
             this.finished = true;
@@ -544,5 +542,4 @@ public final class NetworkServer {
             catch (final RejectedExecutionException stopping) { this.finished = true; }
         }
     }
-
 }

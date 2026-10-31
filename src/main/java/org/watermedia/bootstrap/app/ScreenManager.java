@@ -14,7 +14,6 @@ import java.util.function.BiConsumer;
  * center slot, over the underlay it declares through {@link Screen#under()}.
  */
 final class ScreenManager {
-
     private final Map<String, Screen> screens = new HashMap<>();
     private RootScreen root;
     private Screen current;
@@ -50,27 +49,19 @@ final class ScreenManager {
         this.currentName = screenName;
         this.current = next;
         this.current.onEnter();
-        this.mountCurrent();
-        if (this.onNavigate != null) {
-            this.onNavigate.accept(previous, screenName);
+        // A SCREEN DECLARING under() KEEPS THAT SCREEN MOUNTED (AND ANIMATING) BENEATH IT; THE TOP
+        // MOUNT'S FULL-SLOT HIT BOX BLOCKS EVERY POINTER EVENT FROM REACHING THE UNDERLAY
+        if (this.root != null) {
+            final Screen under = this.current.under() != null ? this.screens.get(this.current.under()) : null;
+            if (under != null && under != this.current) this.root.mountUnder(under, this.current);
+            else this.root.mount(this.current);
         }
+        if (this.onNavigate != null) this.onNavigate.accept(previous, screenName);
     }
 
     public void backToHome() {
         // THROUGH navigate() SO A BACK WHILE ON HOME HITS THE SAME-SCREEN GUARD AND KEEPS ITS STATE
         this.navigate("home");
-    }
-
-    private void mountCurrent() {
-        if (this.root == null || this.current == null) return;
-        // A SCREEN DECLARING under() KEEPS THAT SCREEN MOUNTED (AND ANIMATING) BENEATH IT; THE TOP
-        // MOUNT'S FULL-SLOT HIT BOX BLOCKS EVERY POINTER EVENT FROM REACHING THE UNDERLAY
-        final Screen under = this.current.under() != null ? this.screens.get(this.current.under()) : null;
-        if (under != null && under != this.current) {
-            this.root.mountUnder(under, this.current);
-        } else {
-            this.root.mount(this.current);
-        }
     }
 
     public String currentName() {

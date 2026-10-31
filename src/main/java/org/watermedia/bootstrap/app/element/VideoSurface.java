@@ -21,11 +21,11 @@ public final class VideoSurface extends Element<VideoSurface> {
         final int boxH = this.measuredHeight;
         if (boxW <= 0 || boxH <= 0) return;
 
-        // BLACK BACKDROP — ALSO THE PLACEHOLDER WHEN NO FRAME IS READY
+        // BLACK BACKDROP, ALSO THE PLACEHOLDER WHEN NO FRAME IS READY
         canvas.fill(this.left, this.top, boxW, boxH, Color.BLACK);
 
         final MediaPlayer player = this.ctx != null ? this.ctx.media.player : null;
-        // 0 = NO FRAME READY. THE HANDLE IS A GL TEXTURE NAME OR A 64-BIT VULKAN VkImageView, SO TEST == 0 (NOT <= 0)
+        // 0 = NO FRAME READY; THE HANDLE IS A GL TEXTURE NAME OR A 64-BIT VULKAN VkImageView, SO THE TEST IS == 0, NOT <= 0
         if (player == null || player.ended() || player.stopped() || player.error() || player.texture() == 0) return;
 
         final int videoW = player.width();

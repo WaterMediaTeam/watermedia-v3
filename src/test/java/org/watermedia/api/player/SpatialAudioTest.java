@@ -37,13 +37,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-/**
- * Verifies {@link SFXEngine.SpatialAudio} validation and the spatial {@link ALEngine}: world
- * positioning, environment processor isolation, context guards and release ordering with the
- * player. The OpenAL cases skip when no output device opens.
- */
+/** Verifies {@link SFXEngine.SpatialAudio} validation and the spatial {@link ALEngine}; the OpenAL cases skip without an output device. */
 @DisplayName("Spatial audio")
 public class SpatialAudioTest {
+
     // AN ENVIRONMENT ADAPTER WHOSE DETACH FAILS, AS A BROKEN HOST EFFECT MOD WOULD
     private static final SFXEngine.SpatialAudio.Environment RESET_FAILURE = new SFXEngine.SpatialAudio.Environment() {
         @Override
@@ -142,7 +139,7 @@ public class SpatialAudioTest {
                 engine.spatialAudio(audio);
                 engine.spatialAudio(audio);
                 assertEquals(List.of(Thread.currentThread(), Thread.currentThread()), callers);
-                // A DISABLED PROCESSOR CAN RETURN WITHOUT TOUCHING AL; OLD EFFECTS MUST NOT SURVIVE.
+                // A DISABLED PROCESSOR CAN RETURN WITHOUT TOUCHING AL; OLD EFFECTS MUST NOT SURVIVE
                 engine.spatialAudio(new SFXEngine.SpatialAudio(10, 20, 30, 1, 32, 1, false, (source, state) -> {}));
                 assertEquals(0, AL10.alGetSourcef(engine.source(), EXTEfx.AL_AIR_ABSORPTION_FACTOR));
                 assertEquals(AL10.AL_NO_ERROR, AL10.alGetError());
@@ -233,7 +230,7 @@ public class SpatialAudioTest {
         @DisplayName("A failing audio reset on release still frees the player's plane pool")
         void failingAudioResetCannotLeakPlayerPlanePool() throws Exception {
             final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
-            assertTrue(mrl.await(3000));
+            assertTrue(mrl.await(3_000));
             final ALEngine engine = PlayerAPI.alEngine(true);
             final HeadlessGFXEngine graphics = new HeadlessGFXEngine();
             final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, graphics, engine);
@@ -269,13 +266,13 @@ public class SpatialAudioTest {
             final int samples = 48_000;
             final ByteBuffer pcm = ByteBuffer.allocate(samples * 4).order(ByteOrder.LITTLE_ENDIAN);
             for (int i = 0; i < samples; i++) {
-                pcm.putShort((short) (4000 * Math.sin(2 * Math.PI * 440 * i / samples)));
-                pcm.putShort((short) (4000 * Math.sin(2 * Math.PI * 880 * i / samples)));
+                pcm.putShort((short) (4_000 * Math.sin(2 * Math.PI * 440 * i / samples)));
+                pcm.putShort((short) (4_000 * Math.sin(2 * Math.PI * 880 * i / samples)));
             }
             final Path wav = directory.resolve("stereo.wav");
             Fixtures.wav(wav, samples, 2, pcm.array());
             final MRL mrl = PlayerAPI.mrl(wav.toUri());
-            assertTrue(mrl.await(3000));
+            assertTrue(mrl.await(3_000));
             final ALEngine engine = PlayerAPI.alEngine(true);
             final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, null, engine);
             try {

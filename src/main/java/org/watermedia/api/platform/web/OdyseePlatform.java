@@ -24,12 +24,11 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.*;
 
+/** Resolves Odysee claims through the JSON-LD {@code VideoObject} of their embed page. */
 public final class OdyseePlatform implements Platform {
-    public static final String NAME = "Odysee";
     private static final Marker IT = MarkerManager.getMarker(OdyseePlatform.class.getSimpleName());
-    private static final Pattern JSON_LD_PATTERN = Pattern.compile(
-            "<script\\s+type=\"application/ld\\+json\"\\s*>\\s*([\\s\\S]*?)\\s*</script>"
-    );
+    public static final String NAME = "Odysee";
+    private static final Pattern JSON_LD_PATTERN = Pattern.compile("<script\\s+type=\"application/ld\\+json\"\\s*>\\s*([\\s\\S]*?)\\s*</script>");
     private static final String[] HOSTS = { "odysee.com", "www.odysee.com" };
 
     @Override

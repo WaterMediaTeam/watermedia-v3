@@ -30,7 +30,7 @@ public class TextFieldTest {
         @DisplayName("typing appends and reports, backspace and delete erase on press and swallow the release")
         void typesAndErases() {
             final List<String> changes = new ArrayList<>();
-            final TextField field = focused(new TextField().onChange(changes::add));
+            final TextField field = new TextField().onChange(changes::add).focused(true);
             assertTrue(field.dispatchChar('a'));
             assertTrue(field.dispatchChar('b'));
             assertTrue(field.dispatchKey(GLFW_KEY_BACKSPACE, GLFW_PRESS));
@@ -43,14 +43,14 @@ public class TextFieldTest {
         @Test
         @DisplayName("plain fields keep printable ASCII under the length cap; unicode ones take any character")
         void filtersCharacters() {
-            final TextField ascii = focused(new TextField().maxLength(2));
+            final TextField ascii = new TextField().maxLength(2).focused(true);
             assertFalse(ascii.dispatchChar('ñ'));
             assertTrue(ascii.dispatchChar('1'));
             assertTrue(ascii.dispatchChar('2'));
             assertFalse(ascii.dispatchChar('3'));
             assertEquals("12", ascii.value());
 
-            final TextField wide = focused(new TextField().unicode(true));
+            final TextField wide = new TextField().unicode(true).focused(true);
             assertTrue(wide.dispatchChar('ñ'));
             assertFalse(wide.dispatchChar(127));
             assertEquals("ñ", wide.value());
@@ -60,7 +60,7 @@ public class TextFieldTest {
         @DisplayName("CTRL+BACKSPACE erases the last word of a link, one part at a time, and CTRL blocks typing")
         void erasesWords() {
             final AppContext ctx = new AppContext();
-            final TextField field = focused(new TextField().unicode(true).value("https://site.com/path name"));
+            final TextField field = new TextField().unicode(true).value("https://site.com/path name").focused(true);
             field.attach(ctx);
             ctx.ctrlDown = true;
             assertFalse(field.dispatchChar('x'), "a CTRL combination is a shortcut, not text");
@@ -74,7 +74,7 @@ public class TextFieldTest {
         @DisplayName("CTRL with ALT is AltGr on Windows: it types characters and erases one at a time")
         void altGr() {
             final AppContext ctx = new AppContext();
-            final TextField field = focused(new TextField().unicode(true).value("a/b"));
+            final TextField field = new TextField().unicode(true).value("a/b").focused(true);
             field.attach(ctx);
             ctx.ctrlDown = true;
             ctx.altDown = true;
@@ -91,7 +91,7 @@ public class TextFieldTest {
             final TextField blurred = new TextField();
             assertFalse(blurred.dispatchChar('a'));
             assertFalse(blurred.dispatchKey(GLFW_KEY_BACKSPACE, GLFW_PRESS));
-            final TextField disabled = focused(new TextField().value("a")).enabled(false);
+            final TextField disabled = new TextField().value("a").focused(true).enabled(false);
             assertFalse(disabled.dispatchKey(GLFW_KEY_BACKSPACE, GLFW_PRESS));
             assertEquals("a", disabled.value());
         }
@@ -104,12 +104,12 @@ public class TextFieldTest {
         @Test
         @DisplayName("ENTER and ESC reach the screen unless the field has actions, which run on release")
         void submitAndEscape() {
-            final TextField plain = focused(new TextField());
+            final TextField plain = new TextField().focused(true);
             assertFalse(plain.dispatchKey(GLFW_KEY_ENTER, GLFW_RELEASE));
             assertFalse(plain.dispatchKey(GLFW_KEY_ESCAPE, GLFW_RELEASE));
 
             final List<String> actions = new ArrayList<>();
-            final TextField wired = focused(new TextField().onSubmit(() -> actions.add("submit")).onEscape(() -> actions.add("escape")));
+            final TextField wired = new TextField().onSubmit(() -> actions.add("submit")).onEscape(() -> actions.add("escape")).focused(true);
             assertTrue(wired.dispatchKey(GLFW_KEY_ENTER, GLFW_PRESS));
             assertTrue(wired.dispatchKey(GLFW_KEY_ENTER, GLFW_RELEASE));
             assertTrue(wired.dispatchKey(GLFW_KEY_ESCAPE, GLFW_RELEASE));
@@ -133,7 +133,7 @@ public class TextFieldTest {
         @Test
         @DisplayName("a click another element takes blurs a plain field, but not one that keeps its focus")
         void clickTakenElsewhere() {
-            final TextField plain = focused(new TextField().size(100, 30));
+            final TextField plain = new TextField().size(100, 30).focused(true);
             final Box button = new Box().size(100, 30).consumeTouch(true);
             final Parent row = Parent.row().size(200, 30).add(plain).add(button);
             row.measure(200, 30);
@@ -141,17 +141,11 @@ public class TextFieldTest {
             assertTrue(row.dispatchClick(150, 15), "the button takes the click");
             assertFalse(plain.focused(), "the consumed click swept the plain field");
 
-            final TextField kept = focused(new TextField().keepFocus(true));
+            final TextField kept = new TextField().keepFocus(true).focused(true);
             kept.clearFocus();
             assertTrue(kept.focused(), "typing goes on after pressing a button or picking a row");
             assertFalse(kept.size(100, 30).dispatchClick(300, 300), "a click that reaches it outside still blurs it");
             assertFalse(kept.focused());
         }
-    }
-
-    // UTILITY
-
-    private static TextField focused(final TextField field) {
-        return field.focused(true);
     }
 }

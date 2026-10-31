@@ -57,9 +57,8 @@ public final class Xmp {
             if (closeStart < 0) break;
             final String clean = closeStart - openEnd - 1 > MAX_VALUE_LENGTH ? null : clean(outer.substring(openEnd + 1, closeStart));
             if (clean != null) values.add(clean);
-            // ADVANCE PAST THE ELEMENT ACTUALLY CONSUMED. ANCHORING ON THE FIRST CLOSE TAG AT OR AFTER pos
-            // INSTEAD RE-FINDS AND RE-RETAINS THE SAME BODY ONCE PER STRAY TERMINATOR, WHICH IS O(L^2) HELD
-            // LIVE FOR AN L-BYTE PACKET, AND IT RUNS IN THE READER CONSTRUCTOR
+            // RESUME PAST THE CONSUMED ELEMENT: ANCHORING ON A CLOSE TAG FOUND FROM pos WOULD RETAIN THE SAME BODY ONCE
+            // PER STRAY TERMINATOR, O(L^2) LIVE BYTES FOR AN L-BYTE PACKET INSIDE THE READER CONSTRUCTOR
             pos = closeStart + innerTag.length() + 3;
         }
         return values;

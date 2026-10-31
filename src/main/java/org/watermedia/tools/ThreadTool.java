@@ -24,19 +24,19 @@ public final class ThreadTool {
     }
 
     public static boolean tryAcquire(final Semaphore semaphore, final long timeout, final TimeUnit unit) {
-        try {
-            return semaphore.tryAcquire(timeout, unit);
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt(); // RESTORE INTERRUPTED STATUS
+        try { return semaphore.tryAcquire(timeout, unit); }
+        catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
-        return false;
     }
 
     /** Creates daemon threads named {@code name-N}; the priority is clamped to the valid range. */
     public static ThreadFactory factory(final String name, final int priority) {
         final int clamped = MathUtil.clamp(priority, Thread.MIN_PRIORITY, Thread.MAX_PRIORITY);
         return task -> {
-            final Thread t = new Thread(task, name + "-" + next(name));
+            // merge IS ATOMIC AND RETURNS THE POST-INCREMENT VALUE, SO THE FIRST THREAD OF A NAME GETS 0
+            final Thread t = new Thread(task, name + "-" + (THREADS.merge(name, 1, Integer::sum) - 1));
             t.setDaemon(true);
             t.setPriority(clamped);
             return t;
@@ -46,7 +46,17 @@ public final class ThreadTool {
     /** Creates owned service workers whose callbacks cannot initiate blocking lifecycle operations. */
     public static ThreadFactory workerFactory(final String name, final int priority) {
         final ThreadFactory factory = factory(name, priority);
-        return task -> factory.newThread(owned(task));
+        // THE MARK HOLDS WHILE THE TASK RUNS; A NESTED run() RESTORES THE PREVIOUS ONE
+        return task -> factory.newThread(() -> {
+            final Boolean previous = WORKER.get();
+            WORKER.set(Boolean.TRUE);
+            try {
+                task.run();
+            } finally {
+                if (previous == null) WORKER.remove();
+                else WORKER.set(previous);
+            }
+        });
     }
 
     /** Whether this thread is executing an owned service worker. */
@@ -71,12 +81,13 @@ public final class ThreadTool {
             Thread.sleep(timeoutMillis);
             return true;
         } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt(); // RESTORE INTERRUPTED STATUS
+            Thread.currentThread().interrupt();
             return false;
         }
     }
 
     public static int processors() { return Runtime.getRuntime().availableProcessors(); }
+
     // A SMALL WORKER COUNT THAT GROWS SLOWLY WITH THE MACHINE, FOR POOLS THAT MUST LEAVE THE HOST ITS OWN CORES
     public static int baseThreads() {
         final int count = processors();
@@ -86,25 +97,5 @@ public final class ThreadTool {
         if (count <= 32) return 4;
         if (count <= 64) return 6;
         return 8;
-    }
-
-    // UTILITY
-    // NEXT SUFFIX FOR name; merge IS ATOMIC AND RETURNS THE POST-INCREMENT VALUE, SO THE FIRST THREAD GETS 0
-    private static int next(final String name) {
-        return THREADS.merge(name, 1, Integer::sum) - 1;
-    }
-
-    // MARKS task AS AN OWNED WORKER WHILE IT RUNS, RESTORING THE PREVIOUS MARK AFTER A NESTED run()
-    private static Runnable owned(final Runnable task) {
-        return () -> {
-            final Boolean previous = WORKER.get();
-            WORKER.set(Boolean.TRUE);
-            try {
-                task.run();
-            } finally {
-                if (previous == null) WORKER.remove();
-                else WORKER.set(previous);
-            }
-        };
     }
 }

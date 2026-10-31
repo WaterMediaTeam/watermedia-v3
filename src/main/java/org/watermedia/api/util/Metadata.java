@@ -18,7 +18,6 @@ import java.time.Instant;
  * @param author      uploader, channel or streamer name
  */
 public record Metadata(String title, String description, Instant postedAt, long durationMs, String author) {
-
     public Metadata {
         if (durationMs < 0) throw new IllegalArgumentException("Duration cannot be negative");
     }

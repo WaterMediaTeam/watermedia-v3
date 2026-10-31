@@ -16,7 +16,7 @@ import org.watermedia.api.util.PixelFormat;
  */
 record Colorimetry(Matrix matrix, boolean full, boolean cositedX, boolean cositedY, Transfer transfer, boolean wide) {
 
-    /** YCbCr matrix, named by its standard and defined by its red and blue luma weights. */
+    // YCBCR MATRIX, NAMED BY ITS STANDARD AND DEFINED BY ITS RED AND BLUE LUMA WEIGHTS
     enum Matrix {
         BT601(0.299f, 0.114f),
         BT709(0.2126f, 0.0722f),
@@ -30,7 +30,7 @@ record Colorimetry(Matrix matrix, boolean full, boolean cositedX, boolean cosite
         }
     }
 
-    /** Transfer curve: standard dynamic range, or HDR through SMPTE ST 2084 (PQ) or ARIB STD-B67 (HLG). */
+    // TRANSFER CURVE: STANDARD DYNAMIC RANGE, OR HDR THROUGH SMPTE ST 2084 (PQ) OR ARIB STD-B67 (HLG)
     enum Transfer { SDR, PQ, HLG }
 
     // WHAT AN UNTAGGED FRAME MOST LIKELY IS, AS MPV GUESSES IT (SWSCALE ALONE ASSUMES BT.601 AT ANY SIZE): BT.601 UP TO 576

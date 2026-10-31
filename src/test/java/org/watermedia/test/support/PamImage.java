@@ -7,14 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/**
- * Parses a PAM (Portable Arbitrary Map, P7) file used as the canonical
- * reference for codec pixel-perfect tests.
- *
- * <p>The decoder under test produces BGRA buffers; PAM stores RGB(A) tightly
- * packed. {@link #bgraToRgba(ByteBuffer, int, int)} converts a single frame
- * once so test bodies stay flat.
- */
+/** PAM (P7) reference image for pixel-exact codec tests, which compare BGRA decoder output through {@link #bgraToRgba}. */
 public record PamImage(int width, int height, int depth, byte[] pixels) {
 
     /** Reads {@code path} and parses the PAM payload. */

@@ -21,13 +21,13 @@ public class MediaQualityTest {
     class OfDimensionsTests {
 
         @Test
-        @DisplayName("1920x1080 maps to HIGHER")
+        @DisplayName("1920x1080 maps to HIGH")
         void hd1080() {
             assertSame(MediaQuality.HIGH, MediaQuality.of(1920, 1080));
         }
 
         @Test
-        @DisplayName("3840x2160 maps to ULTRA")
+        @DisplayName("3840x2160 maps to HIGHEST")
         void uhd2160() {
             assertSame(MediaQuality.HIGHEST, MediaQuality.of(3840, 2160));
         }
@@ -71,7 +71,7 @@ public class MediaQualityTest {
         @Test
         @DisplayName("portrait uses the smaller dimension")
         void portraitUsesSmallerSide() {
-            // MATH.MIN(1080, 1920) == 1080 -> HIGHER
+            // THE SMALLER SIDE, 1080, DECIDES: HIGH
             assertSame(MediaQuality.HIGH, MediaQuality.of(1080, 1920));
         }
 
@@ -97,8 +97,7 @@ public class MediaQualityTest {
         @DisplayName("returns closest available when preferred is missing")
         void picksClosestNeighbour() {
             final Set<MediaQuality> available = EnumSet.of(MediaQuality.MEDIUM, MediaQuality.HIGHER);
-            // PREFERRED HIGHER -> NEIGHBOURS HIGH (LOWER) AND HIGHEST, BOTH ARE 1 STEP AWAY.
-            // LOWER WINS BECAUSE TIES BREAK TOWARD THE LOWER QUALITY.
+            // PREFERRED HIGH: MEDIUM AND HIGHER ARE BOTH ONE STEP AWAY, AND A TIE BREAKS TOWARD THE LOWER QUALITY
             assertSame(MediaQuality.MEDIUM, MediaQuality.closest(available, MediaQuality.HIGH));
         }
 

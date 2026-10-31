@@ -14,34 +14,11 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 
 /**
- * Unified parser for the M3U/M3U8 playlist family. A single {@link #parse(String, URI)}
- * classifies the content and returns the matching {@link Playlist}:
- *
- * <ul>
- *   <li>{@link Master} — HLS master playlist carrying {@code #EXT-X-STREAM-INF} variant
- *       streams (the quality ladder of a single piece of content).</li>
- *   <li>{@link Media} — HLS media playlist carrying {@code #EXT-X-*} tags and {@code #EXTINF}
- *       segments (chunks of a single stream, live or VOD).</li>
- *   <li>{@link Iptv} — flat IPTV playlist: {@code #EXTINF} channels with {@code tvg-*}
- *       attributes and NO {@code #EXT-X-*} tags; each entry is an independent stream.</li>
- * </ul>
- *
- * <p><b>Error contract.</b> {@link #parse} and {@link #fetch} are strict: anything that is
- * not a usable playlist throws {@link IOException}, and every message states <i>where</i>
- * (the source {@link URI}), <i>what</i> failed, and <i>why</i> it cannot continue. Use the
- * convenience {@link #qualities(URI, HttpHeaders)} when you instead want a best-effort result that never
- * fails — it absorbs those exceptions and falls back to the raw URL so FFmpeg can still probe.
- *
- * <p><b>URIs are resolved here.</b> Every {@link Variant}, {@link Segment}, {@link Rendition}
- * and {@link Channel} URL is resolved against the source while parsing, so callers always get
- * absolute {@link URI}s and never repeat the relative-resolution dance themselves. Malformed
- * URLs, relative leftovers and local files or archives named by a remote playlist are skipped
- * (logged) rather than aborting the whole playlist; only a local ({@code file:}) playlist may list local files.
- *
- * <p><b>Classification order is significant:</b> {@code #EXT-X-STREAM-INF} wins (master), then
- * ANY remaining {@code #EXT-X-} tag marks an HLS media playlist, and only a tag-less
- * {@code #EXTINF} list is treated as IPTV. {@link String#indexOf(String)} is JIT-intrinsified
- * and short-circuits, so the classification probe is far cheaper than a parse pass.
+ * Parser of the M3U family: {@link #parse(String, URI)} classifies a body as an HLS {@link Master} (variant ladder), an
+ * HLS {@link Media} playlist (segments, live or VOD) or a flat {@link Iptv} catalog, in that order of precedence.
+ * {@link #parse} and {@link #fetch} throw {@link IOException} naming the source and the defect; {@link #qualities}
+ * never throws and falls back to the raw URL. Entry URLs come back absolute; malformed ones and local files or
+ * archives named by a remote playlist are skipped.
  */
 public final class M3UTool {
     private static final Marker IT = MarkerManager.getMarker(M3UTool.class.getSimpleName());
@@ -53,30 +30,14 @@ public final class M3UTool {
 
     private M3UTool() {}
 
-    // ================================================================================================
-    // ENTRY POINTS
-    // ================================================================================================
+    // ==== ENTRY POINTS ====
 
-    /**
-     * Fetches and parses the playlist at {@code uri} using WaterMedia's User-Agent.
-     *
-     * @throws IOException if the request fails, the server does not answer {@code 200},
-     *                     or the body is not a recognizable playlist (see {@link #parse}).
-     */
+    /** Fetches and parses the playlist at {@code uri} with WaterMedia's User-Agent; see {@link #parse}. */
     public static Playlist fetch(final URI uri) throws IOException {
         return fetch(uri, null);
     }
 
-    /**
-     * Fetches and parses the playlist at {@code uri} with the given request headers (an
-     * authenticated or geo-locked playlist needs the same ones the media request carries).
-     * Every header in the bag, {@code User-Agent} and {@code Accept} included, replaces the
-     * request default.
-     *
-     * @param headers extra request headers, or {@code null} for none
-     * @throws IOException if the request fails, the server does not answer {@code 200},
-     *                     or the body is not a recognizable playlist (see {@link #parse}).
-     */
+    /** Fetches and parses the playlist at {@code uri} with the headers its media request carries, each replacing the request default; a status other than 200 throws. */
     public static Playlist fetch(final URI uri, final HttpHeaders headers) throws IOException {
         // THE CONFIGURED network.timeout APPLIES, LIKE EVERY OTHER REQUEST
         try (final NetRequest req = new NetRequest(uri).headers(headers).send()) {
@@ -87,16 +48,7 @@ public final class M3UTool {
         }
     }
 
-    /**
-     * Parses an already-loaded playlist body.
-     *
-     * @param raw    the full playlist text (a leading UTF-8 BOM is tolerated)
-     * @param source the URI the body came from; relative entry URLs are resolved against it
-     * @throws IOException when the body is empty/blank, is missing the mandatory {@code #EXTM3U}
-     *                     header, or carries no recognizable {@code #EXT-X-STREAM-INF} /
-     *                     {@code #EXT-X-*} / {@code #EXTINF} content. The message names the source,
-     *                     the concrete defect, and why parsing cannot proceed.
-     */
+    /** Parses a playlist body (a leading BOM is tolerated) whose entries resolve against {@code source}; blank text, no {@code #EXTM3U} or no known tag throws. */
     public static Playlist parse(final String raw, final URI source) throws IOException {
         if (raw == null || raw.isBlank())
             throw new IOException("Empty playlist from " + source + ": the response body was null or blank, nothing to parse");
@@ -112,8 +64,7 @@ public final class M3UTool {
                     + preview + "'), so it is not an M3U/M3U8 document");
         }
 
-        // CLASSIFICATION: STREAM-INF WINS (MASTER); ANY OTHER #EXT-X- MARKS A MEDIA PLAYLIST;
-        // A TAG-LESS #EXTINF LIST IS IPTV. indexOf IS INTRINSIFIED AND SHORT-CIRCUITS.
+        // STREAM-INF WINS (MASTER); ANY OTHER #EXT-X- MARKS A MEDIA PLAYLIST; ONLY A TAG-LESS #EXTINF LIST IS IPTV
         if (content.contains("#EXT-X-STREAM-INF")) return parseMaster(content, source);
         if (content.contains("#EXT-X-"))           return parseMedia(content, source);
         if (content.contains("#EXTINF:"))          return parseIptv(content, source);
@@ -122,20 +73,7 @@ public final class M3UTool {
                 + ": has #EXTM3U but none of #EXT-X-STREAM-INF (master), #EXT-X-* (media) or #EXTINF (iptv), so its shape is unknown");
     }
 
-    /**
-     * Best-effort resolution of a single HLS stream URL into its quality ladder, ready to play.
-     * Unlike {@link #fetch}/{@link #parse}, this never throws — it is the resilient path platforms
-     * use so a parse hiccup never breaks playback:
-     *
-     * <ul>
-     *   <li>master playlist  → its variants (URLs already absolute);</li>
-     *   <li>media playlist   → a single variant pointing at the playlist itself;</li>
-     *   <li>IPTV / fetch / parse failure → a single variant pointing at {@code source}, logged,
-     *       so FFmpeg can still probe the raw URL.</li>
-     * </ul>
-     *
-     * @param headers the request headers the stream itself is played with (see {@link #fetch(URI, HttpHeaders)}), or {@code null}
-     */
+    /** Returns the variants of an HLS master fetched with the stream's {@code headers}, or one variant of {@code source} itself for a media playlist or any failure; never throws. */
     public static List<Variant> qualities(final URI source, final HttpHeaders headers) {
         try {
             final Playlist playlist = fetch(source, headers);
@@ -153,10 +91,9 @@ public final class M3UTool {
         }
     }
 
-    // ================================================================================================
-    // PLAYLIST TYPES
-    // ================================================================================================
+    // ==== PLAYLIST TYPES ====
 
+    /** A parsed playlist of one of the three M3U shapes. */
     public sealed interface Playlist permits Master, Media, Iptv {
         /** The URI this playlist was parsed from; entry URLs are already resolved against it. */
         URI source();
@@ -181,9 +118,7 @@ public final class M3UTool {
         @Override public String kind() { return "iptv"; }
     }
 
-    // ================================================================================================
-    // DATA RECORDS
-    // ================================================================================================
+    // ==== DATA RECORDS ====
 
     /** One rendition of a {@link Master}'s quality ladder. URL is absolute. */
     public record Variant(URI uri, long bandwidth, int width, int height, double fps,
@@ -216,9 +151,7 @@ public final class M3UTool {
     public record Channel(String title, URI uri, String tvgId, String tvgName, String tvgLogo,
                           String tvgCountry, String tvgGroup, Map<String, String> attrs) {}
 
-    // ================================================================================================
-    // PARSERS  (single pass each: walk the body once with indexOf, no regex split / no String[] alloc)
-    // ================================================================================================
+    // ==== PARSERS: ONE indexOf PASS OVER THE BODY EACH, NO REGEX SPLIT OR String[] ====
 
     private static Master parseMaster(final String content, final URI source) {
         final List<Variant> variants = new ArrayList<>();
@@ -236,9 +169,7 @@ public final class M3UTool {
             i = nl < 0 ? len : nl + 1;
             if (line.isEmpty()) continue;
 
-            if (line.startsWith("#EXT-X-VERSION:")) {
-                version = DataTool.parseInt(line.substring(15), 1);
-            }
+            if (line.startsWith("#EXT-X-VERSION:")) version = DataTool.parseInt(line.substring(15), 1);
             else if (line.startsWith("#EXT-X-MEDIA:")) {
                 final Map<String, String> a = attributes(line.substring(13), false);
                 final String type = a.get("TYPE");
@@ -254,8 +185,7 @@ public final class M3UTool {
                     renditions.add(r);
                     if ("VIDEO".equalsIgnoreCase(type)) videoGroups.put(groupId, r);
                 }
-            }
-            else if (line.startsWith("#EXT-X-STREAM-INF:")) {
+            } else if (line.startsWith("#EXT-X-STREAM-INF:")) {
                 // PEEK THE FIRST NON-COMMENT, NON-EMPTY LINE AS THE VARIANT URI (NULL IF A TAG IS HIT FIRST);
                 // THE MAIN LOOP THEN SKIPS THAT LINE SINCE IT MATCHES NO TAG
                 String peeked = null;
@@ -332,31 +262,18 @@ public final class M3UTool {
             i = nl < 0 ? len : nl + 1;
             if (line.isEmpty()) continue;
 
-            if (line.startsWith("#EXT-X-VERSION:")) {
-                version = DataTool.parseInt(line.substring(15), 1);
-            }
-            else if (line.startsWith("#EXT-X-TARGETDURATION:")) {
-                targetDuration = DataTool.parseDouble(line.substring(22), 0);
-            }
-            else if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
-                sequence = DataTool.parseLong(line.substring(22), 0);
-            }
-            else if (line.startsWith("#EXT-X-PLAYLIST-TYPE:")) {
-                vod = "VOD".equalsIgnoreCase(line.substring(21).trim());
-            }
-            else if (line.equals("#EXT-X-ENDLIST")) {
-                endList = true;
-            }
-            else if (line.startsWith("#EXT-X-PROGRAM-DATE-TIME:")) {
-                dateTime = line.substring(25).trim();
-            }
+            if (line.startsWith("#EXT-X-VERSION:")) version = DataTool.parseInt(line.substring(15), 1);
+            else if (line.startsWith("#EXT-X-TARGETDURATION:")) targetDuration = DataTool.parseDouble(line.substring(22), 0);
+            else if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) sequence = DataTool.parseLong(line.substring(22), 0);
+            else if (line.startsWith("#EXT-X-PLAYLIST-TYPE:")) vod = "VOD".equalsIgnoreCase(line.substring(21).trim());
+            else if (line.equals("#EXT-X-ENDLIST")) endList = true;
+            else if (line.startsWith("#EXT-X-PROGRAM-DATE-TIME:")) dateTime = line.substring(25).trim();
             else if (line.startsWith("#EXTINF:")) {
                 final String extinf = line.substring(8);
                 final int comma = extinf.indexOf(',');
                 segDuration = DataTool.parseDouble(comma >= 0 ? extinf.substring(0, comma) : extinf, 0);
                 segTitle = comma >= 0 ? extinf.substring(comma + 1).trim() : "";
-            }
-            else if (line.charAt(0) != '#' && segDuration > 0) {
+            } else if (line.charAt(0) != '#' && segDuration > 0) {
                 final URI uri = resolve(source, line, warned);
                 if (uri != null) {
                     segments.add(new Segment(uri, segDuration, segTitle, sequence + segments.size(), dateTime));
@@ -426,10 +343,7 @@ public final class M3UTool {
         return new Iptv(source, List.copyOf(channels));
     }
 
-    // ================================================================================================
-    // UTILITIES
-    // ================================================================================================
-
+    // UTILITY
     // KEY=VALUE / KEY="VALUE" PAIRS OF A TAG BODY; IPTV KEYS ARE LOWER-CASED FOR STABLE tvg-* LOOKUPS
     private static Map<String, String> attributes(final String body, final boolean lower) {
         final Map<String, String> attrs = new HashMap<>();

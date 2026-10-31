@@ -74,7 +74,7 @@ public class FramePlanTest {
         @Test
         @DisplayName("every other plan stands whatever the cache holds")
         void othersStand() {
-            for (final FramePlan plan: new FramePlan[] {FramePlan.IDLE, FramePlan.DIRECT, FramePlan.CACHE}) {
+            for (final FramePlan plan: new FramePlan[] { FramePlan.IDLE, FramePlan.DIRECT, FramePlan.CACHE }) {
                 assertEquals(plan, plan.settle(false));
                 assertEquals(plan, plan.settle(true));
             }

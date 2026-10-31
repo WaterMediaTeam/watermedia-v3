@@ -31,6 +31,7 @@ public final class ImageMetadata {
     private String source;
     private final Map<String, Object> values = new LinkedHashMap<>();
 
+    /** Creates empty, mutable metadata. */
     public ImageMetadata() {
         this(false);
     }
@@ -51,16 +52,6 @@ public final class ImageMetadata {
         this.software = source.software;
         this.source = source.source;
         for (final Map.Entry<String, Object> entry: source.values.entrySet()) this.values.put(entry.getKey(), freeze(entry.getValue()));
-    }
-
-    // READERS PUBLISH LIVE VIEWS OVER THEIR OWN MAPS AND LISTS; A SNAPSHOT COPIES THEM SO NEITHER SIDE CAN CHANGE THE OTHER
-    private static Object freeze(final Object value) {
-        if (value instanceof final Map<?, ?> map) {
-            final Map<Object, Object> copy = new LinkedHashMap<>();
-            for (final Map.Entry<?, ?> entry: map.entrySet()) copy.put(entry.getKey(), freeze(entry.getValue()));
-            return Collections.unmodifiableMap(copy);
-        }
-        return value instanceof final List<?> list ? List.copyOf(list) : value;
     }
 
     /** Returns a read-only snapshot of this metadata; later changes to this instance never reach it. */
@@ -190,9 +181,8 @@ public final class ImageMetadata {
     }
 
     /**
-     * Stores a custom value by reference, replacing any previous value for the unchanged key.
-     * Null/blank keys, null/blank text values and empty byte arrays, lists or maps are ignored.
-     * @return this instance; ignored input does not remove an existing entry
+     * Stores a custom value by reference, replacing any previous value for the unchanged key. Null or blank keys, null or
+     * blank text and empty byte arrays, lists or maps are ignored and leave an existing entry in place. Returns this instance.
      */
     public ImageMetadata put(final String key, final Object value) {
         this.checkMutable();
@@ -207,6 +197,16 @@ public final class ImageMetadata {
 
     private void checkMutable() {
         if (this.readOnly) throw new UnsupportedOperationException("This ImageMetadata is read-only");
+    }
+
+    // READERS PUBLISH LIVE VIEWS OVER THEIR OWN MAPS AND LISTS; A SNAPSHOT COPIES THEM SO NEITHER SIDE CAN CHANGE THE OTHER
+    private static Object freeze(final Object value) {
+        if (value instanceof final Map<?, ?> map) {
+            final Map<Object, Object> copy = new LinkedHashMap<>();
+            for (final Map.Entry<?, ?> entry: map.entrySet()) copy.put(entry.getKey(), freeze(entry.getValue()));
+            return Collections.unmodifiableMap(copy);
+        }
+        return value instanceof final List<?> list ? List.copyOf(list) : value;
     }
 
     private static String clean(final String value) {

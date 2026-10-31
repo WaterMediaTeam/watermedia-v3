@@ -58,6 +58,6 @@ public final class MediaSession {
 
     /** Formats elapsed media time as {@code HH:mm:ss}, wrapping at 24 hours. */
     public static String formatTime(final long ms) {
-        return LocalTime.ofSecondOfDay(Math.max(0L, ms) / 1000L % 86_400L).format(TIME_FORMAT);
+        return LocalTime.ofSecondOfDay(Math.max(0L, ms) / 1_000L % 86_400L).format(TIME_FORMAT);
     }
 }

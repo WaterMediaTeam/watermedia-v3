@@ -17,13 +17,6 @@ public final class ParentScroll extends Group<ParentScroll> {
         return this;
     }
 
-    private Element<?> content() {
-        for (final Element<?> child: this.children) {
-            if (child.visible) return child;
-        }
-        return null;
-    }
-
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         final Element<?> content = this.content();
@@ -50,7 +43,7 @@ public final class ParentScroll extends Group<ParentScroll> {
             this.scroll.clamp(0);
             return;
         }
-        // CLAMP THE OFFSET + MOMENTUM STATE INTO THE NEW RANGE SO A RESIZE/REBUILD NEVER LEAVES A STALE TARGET
+        // THE OFFSET AND MOMENTUM FOLLOW THE NEW RANGE, SO A RESIZE OR REBUILD NEVER LEAVES A STALE TARGET
         this.scroll.clamp(content.measuredHeight - this.innerHeight());
         content.layout(this.innerLeft(), this.innerTop() - this.scroll.offset);
     }
@@ -80,9 +73,8 @@ public final class ParentScroll extends Group<ParentScroll> {
 
     @Override
     public boolean dispatchClick(final double mx, final double my) {
-        // ONLY ROUTE CLICKS THAT LAND INSIDE THE VIEWPORT — SCROLLED-OUT CHILDREN MUST NOT BE CLICKABLE
-        if (!this.contains(mx, my)) return false;
-        return super.dispatchClick(mx, my);
+        // ONLY CLICKS INSIDE THE VIEWPORT ROUTE: SCROLLED-OUT CHILDREN MUST NOT BE CLICKABLE
+        return this.contains(mx, my) && super.dispatchClick(mx, my);
     }
 
     @Override
@@ -96,7 +88,7 @@ public final class ParentScroll extends Group<ParentScroll> {
     }
 
     public ParentScroll scrollTo(final int offset) {
-        // PROGRAMMATIC JUMPS ARE INSTANT AND KILL ANY WHEEL MOMENTUM — CALLERS EXPECT EXACT GEOMETRY
+        // PROGRAMMATIC JUMPS ARE INSTANT AND KILL ANY WHEEL MOMENTUM: CALLERS EXPECT EXACT GEOMETRY
         this.scroll.jump(offset);
         return this;
     }
@@ -104,7 +96,7 @@ public final class ParentScroll extends Group<ParentScroll> {
     /** Scrolls the least amount that shows a laid-out descendant; one taller than the viewport aligns to the top. */
     public ParentScroll ensureVisible(final Element<?> child) {
         if (child == null) return this;
-        // CHILD TOP IN CONTENT SPACE — layout PLACED IT AT ABSOLUTE COORDS SHIFTED BY THE CURRENT OFFSET
+        // CHILD TOP IN CONTENT SPACE: layout PLACED IT AT ABSOLUTE COORDS SHIFTED BY THE CURRENT OFFSET
         final int rel = child.top - this.innerTop() + this.scroll.offset;
         final int viewport = this.innerHeight();
         int next = this.scroll.offset;
@@ -112,14 +104,17 @@ public final class ParentScroll extends Group<ParentScroll> {
         if (rel < next) next = rel;
         next = MathUtil.clamp(next, 0, this.scroll.max);
         final boolean moved = next != this.scroll.offset;
-        // INSTANT (NO ANIMATION) AND KILLS ANY WHEEL MOMENTUM — KEYBOARD NAV AND CALLERS RELY ON THE
-        // CHILD BEING IN VIEW RIGHT AFTER THE CALL, WHICH A COASTING OFFSET WOULD DRIFT BACK OUT
+        // INSTANT AND KILLS ANY WHEEL MOMENTUM: KEYBOARD NAV AND CALLERS RELY ON THE CHILD BEING IN VIEW RIGHT AFTER
+        // THE CALL, WHICH A COASTING OFFSET WOULD DRIFT BACK OUT
         this.scroll.jump(next);
         if (moved) this.invalidate();
         return this;
     }
 
-    public int scrollOffset() {
-        return this.scroll.offset;
+    public int scrollOffset() { return this.scroll.offset; }
+
+    private Element<?> content() {
+        for (final Element<?> child: this.children) if (child.visible) return child;
+        return null;
     }
 }

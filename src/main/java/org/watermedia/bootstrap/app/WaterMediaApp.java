@@ -75,7 +75,7 @@ public class WaterMediaApp {
     static {
         // LWJGL'S DEFAULT 64KB MemoryStack OVERFLOWS WHILE VULKAN ENUMERATES HUNDREDS OF DEVICE EXTENSIONS;
         // IT MUST GROW BEFORE THE FIRST stackPush
-        Configuration.STACK_SIZE.set(1024);
+        Configuration.STACK_SIZE.set(1_024);
         initLogging();
     }
 
@@ -164,7 +164,7 @@ public class WaterMediaApp {
         WaterMedia.LOGGER.info(IT, message);
     }
 
-    // INITIALIZATION
+    // ==== INITIALIZATION ====
     private static void initWindow() {
         GLFWErrorCallback.create((code, description) ->
                 WaterMedia.LOGGER.error(IT, "GLFW error 0x{}: {}", Integer.toHexString(code), GLFWErrorCallback.getDescription(description))).set();
@@ -203,15 +203,21 @@ public class WaterMediaApp {
         glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
         RenderSystem.applyWindowHints();
 
-        ctx.windowHandle = glfwCreateWindow(1280, 720, AppContext.APP_NAME, NULL, NULL);
+        ctx.windowHandle = glfwCreateWindow(1_280, 720, AppContext.APP_NAME, NULL, NULL);
         if (ctx.windowHandle == NULL) throw new RuntimeException("Failed to create the GLFW window");
         maximized = true;
         ctx.windowMaximized = true;
 
         installCallbacks();
-        centerWindow();
-        // WINDOWS ONLY: SUBCLASS THE WIN32 WINDOW SO THE BORDERLESS FRAME GETS NATIVE SNAP/RESIZE/
-        // CAPTION BEHAVIOR. EVERY WINDOW REBUILD PASSES THROUGH HERE, SO THE HOT-SWAP RE-INSTALLS TOO.
+        try (final MemoryStack stack = stackPush()) {
+            final IntBuffer width = stack.mallocInt(1);
+            final IntBuffer height = stack.mallocInt(1);
+            glfwGetWindowSize(ctx.windowHandle, width, height);
+            ctx.windowWidth = width.get(0);
+            ctx.windowHeight = height.get(0);
+        }
+        // WINDOWS ONLY: SUBCLASS THE WIN32 WINDOW SO THE BORDERLESS FRAME GETS NATIVE SNAP/RESIZE/CAPTION BEHAVIOR;
+        // EVERY WINDOW REBUILD PASSES THROUGH HERE, SO THE HOT-SWAP RE-INSTALLS TOO
         WinFrame.install(ctx.windowHandle, ctx);
     }
 
@@ -264,32 +270,12 @@ public class WaterMediaApp {
         });
     }
 
-    private static void centerWindow() {
-        try (final MemoryStack stack = stackPush()) {
-            final IntBuffer pWidth = stack.mallocInt(1);
-            final IntBuffer pHeight = stack.mallocInt(1);
-            glfwGetWindowSize(ctx.windowHandle, pWidth, pHeight);
-            ctx.windowWidth = pWidth.get(0);
-            ctx.windowHeight = pHeight.get(0);
-
-            if (!maximized) {
-                final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-                if (vidmode != null) {
-                    glfwSetWindowPos(ctx.windowHandle,
-                            (vidmode.width() - ctx.windowWidth) / 2,
-                            (vidmode.height() - ctx.windowHeight) / 2);
-                }
-            }
-        }
-    }
-
-    // GLOBAL UI SCALE — RESOLUTION AND LIVE APPLICATION
-    // ==========================================================================
+    // ==== GLOBAL UI SCALE ====
 
     /** Applies {@link AppConfig#scale}; 0 recomputes the factor from the window's monitor. */
     public static void reapplyUiScale() {
         final float factor = AppConfig.scaleFactor(AppConfig.scale);
-        final float s = factor == 0f ? computeAutoUiScale() : factor;
+        final float s = factor == 0f ? autoUiScale() : factor;
         // THE TEXT ATLAS REGENERATES LAZILY AT THE NEW PHYSICAL SIZE AND THE NEXT FRAME RELAYOUTS THE TREE
         ctx.uiScale = s;
         RenderSystem.uiScale(s);
@@ -299,7 +285,7 @@ public class WaterMediaApp {
 
     // AUTO FACTOR: THE LARGER OF THE MONITOR CONTENT SCALE AND height/1080, SNAPPED LIKE A SAVED FACTOR; THE
     // RESOLUTION TERM CATCHES HIGH-RES PANELS THE OS REPORTS AT 100%
-    private static float computeAutoUiScale() {
+    private static float autoUiScale() {
         final float contentScale;
         try (final MemoryStack stack = stackPush()) {
             final FloatBuffer sx = stack.mallocFloat(1);
@@ -308,11 +294,12 @@ public class WaterMediaApp {
             contentScale = Math.max(sx.get(0), sy.get(0));
         }
         final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-        final float heuristic = vidmode != null ? vidmode.height() / 1080f : 1f;
+        final float heuristic = vidmode != null ? vidmode.height() / 1_080f : 1f;
         return AppConfig.scaleFactor(Math.max(contentScale, heuristic));
     }
 
-    // WINDOW SHELL — ROOT TREE, GLOBAL DIALOGS AND THE NAVIGATION BINDINGS THE SHELL NEEDS
+    // ==== WINDOW SHELL ====
+    // ROOT TREE, GLOBAL DIALOGS AND THE NAVIGATION BINDINGS THE SHELL NEEDS
     private static void initShell() {
         root = new RootScreen(ctx, ctx.text, WaterMediaApp::footerKeybinds);
         root.titleBar().close(() -> {
@@ -379,9 +366,8 @@ public class WaterMediaApp {
             if (!message.equals(errorShownMsg)) {
                 errorShownMsg = message;
                 errorLines.clear();
-                for (final String line: message.split("\n")) {
+                for (final String line: message.split("\n"))
                     errorLines.add(new Text(line).scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_SOFT));
-                }
             }
         }
         errorDialog.visible(hasError);
@@ -389,15 +375,12 @@ public class WaterMediaApp {
     }
 
     private static void initScreens() {
-        final HomeScreen homeScreen = new HomeScreen(ctx.text, ctx, WaterMediaApp::navigateAction);
-
-        screens.register("home", homeScreen);
+        screens.register("home", new HomeScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("mrl", new MRLSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("regions", new RegionSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("player", new PlayerScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("multimedia", new OpenMultimediaScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("settings", new SettingsScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
-
         screens.navigate("home");
     }
 
@@ -410,46 +393,28 @@ public class WaterMediaApp {
 
         switch (action) {
             case EXIT -> ctx.exitConfirm = true;
-
             case BACK -> screens.backToHome();
-
-            case OPEN_MULTIMEDIA -> {
-                if (!CodecsAPI.ffmpegLoaded()) {
-                    ctx.showError("Feature Unavailable",
-                            "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
-                            null);
-                    return;
-                }
-                screens.navigate("multimedia");
-            }
-
             case MRL_SELECTOR -> screens.navigate("mrl");
-
             case REGION_SELECTOR -> screens.navigate("regions");
-
+            case UPLOAD_LOGS -> ctx.upload.step();
+            case CLEANUP -> ctx.cleanup.step();
             case SETTINGS -> {
-                if (WaterMedia.LOGGER.isDebugEnabled()) {
-                    screens.navigate("settings");
-                }
+                if (WaterMedia.LOGGER.isDebugEnabled()) screens.navigate("settings");
             }
-
-            case PLAYER -> {
+            case OPEN_MULTIMEDIA, PLAYER -> {
                 if (!CodecsAPI.ffmpegLoaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
                             null);
                     return;
                 }
-                screens.navigate("player");
+                screens.navigate(action == HomeScreen.Action.PLAYER ? "player" : "multimedia");
             }
-
-            case UPLOAD_LOGS -> ctx.upload.step();
-
-            case CLEANUP -> ctx.cleanup.step();
         }
     }
 
-    // MAIN LOOP; THE LOADING PHASE ALREADY CONFIGURED THE FRAME STATE
+    // ==== MAIN LOOP ====
+    // THE LOADING PHASE ALREADY CONFIGURED THE FRAME STATE
     private static void mainLoop() {
         frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
         ctx.requestRender();
@@ -497,9 +462,11 @@ public class WaterMediaApp {
             // A COMPOSITE COSTS A CLEAR, THE BASE LAYER QUAD, TWO GRADIENTS PER VISIBLE CRT BAND AND THE TOP LAYER QUAD
             // WHEN A DIALOG, HUD OR PREVIEW RAISED; LOGICAL DIMS, AS THE TREE SCALES TO PHYSICAL THROUGH THE ORTHO
             final FramePlan frame = plan.settle(RenderSystem.cacheValid());
-            if (frame != FramePlan.COMPOSITE) syncShell();
             if (frame == FramePlan.COMPOSITE) root.composite(ctx.logicalWidth(), ctx.logicalHeight());
-            else root.render(ctx.logicalWidth(), ctx.logicalHeight(), frame != FramePlan.DIRECT);
+            else {
+                syncShell();
+                root.render(ctx.logicalWidth(), ctx.logicalHeight(), frame != FramePlan.DIRECT);
+            }
             RenderSystem.present();
         }
 
@@ -560,27 +527,24 @@ public class WaterMediaApp {
             destroyWindow();
 
             // 4) SELECT THE TARGET ENGINE AND REBUILD THE WINDOW WITH ITS HINTS (MIRRORS initWindow())
-            RenderSystem.chooseEngine(target);
-            openWindow();
-
-            restoreWindowPlacement(wasMaximized, px, py, pw, ph);
-
-            // RE-APPLY UI SCALE (MIRRORS BOOT), RE-CREATE ASSET TEXTURES + WINDOW ICON, SHOW, RE-PACE THE LIMITER
-            reapplyUiScale();
-            ctx.assets.load(ctx);
-            glfwShowWindow(ctx.windowHandle);
-            frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
+            rebuildWindow(target, wasMaximized, px, py, pw, ph);
 
             // A FAILED VULKAN ATTACH RUNS THIS LAUNCH ON OPENGL; THE SAVED PREFERENCE KEEPS WHAT THE USER PICKED
-            if (target == RenderSystem.Engine.VULKAN && RenderSystem.engineKind() != RenderSystem.Engine.VULKAN) {
+            if (target == RenderSystem.Engine.VULKAN && RenderSystem.engineKind() != RenderSystem.Engine.VULKAN)
                 ctx.showError("Vulkan unavailable",
                         "Vulkan could not be initialized on this system.\nThe app is running on OpenGL.", null);
-            }
             WaterMedia.LOGGER.info(IT, "Render engine hot-swap complete: {}", RenderSystem.engineName());
         } catch (final Throwable t) {
             WaterMedia.LOGGER.error(IT, "Render engine hot-swap failed; attempting OpenGL recovery", t);
-            if (!recoverToOpenGL(wasMaximized, px, py, pw, ph)) {
-                WaterMedia.LOGGER.error(IT, "OpenGL recovery after a failed hot-swap also failed; shutting down");
+            // LAST RESORT: FORCE OPENGL AND REBUILD FROM WHATEVER THE SWAP LEFT; A ZEROED HANDLE MEANS THE SWAP ALREADY
+            // DESTROYED THE WINDOW
+            try {
+                if (ctx.windowHandle != NULL) destroyWindow();
+                rebuildWindow(RenderSystem.Engine.OPENGL, wasMaximized, px, py, pw, ph);
+                ctx.showError("Engine switch failed",
+                        "The render engine could not be switched.\nThe app recovered on OpenGL.", null);
+            } catch (final Throwable recovery) {
+                WaterMedia.LOGGER.error(IT, "OpenGL recovery after a failed hot-swap also failed; shutting down", recovery);
                 running = false; // LET THE MAIN LOOP EXIT SO cleanup() TEARS DOWN CLEANLY
             }
         } finally {
@@ -590,7 +554,10 @@ public class WaterMediaApp {
 
     // createWindow() ALWAYS BUILDS MAXIMIZED, SO A WINDOWED PLACEMENT IS RESTORED HERE; THE SIZE IS READ BACK
     // BECAUSE THE RESIZE CALLBACK MAY NOT HAVE FIRED YET
-    private static void restoreWindowPlacement(final boolean wasMaximized, final int px, final int py, final int pw, final int ph) {
+    private static void rebuildWindow(final RenderSystem.Engine engine, final boolean wasMaximized, final int px, final int py,
+                                      final int pw, final int ph) {
+        RenderSystem.chooseEngine(engine);
+        openWindow();
         if (!wasMaximized) {
             glfwRestoreWindow(ctx.windowHandle);
             glfwSetWindowSize(ctx.windowHandle, pw, ph);
@@ -599,44 +566,27 @@ public class WaterMediaApp {
             ctx.windowMaximized = false;
         }
         try (final MemoryStack stack = stackPush()) {
-            final IntBuffer wBuf = stack.mallocInt(1);
-            final IntBuffer hBuf = stack.mallocInt(1);
-            glfwGetWindowSize(ctx.windowHandle, wBuf, hBuf);
-            ctx.windowWidth = wBuf.get(0);
-            ctx.windowHeight = hBuf.get(0);
+            final IntBuffer width = stack.mallocInt(1);
+            final IntBuffer height = stack.mallocInt(1);
+            glfwGetWindowSize(ctx.windowHandle, width, height);
+            ctx.windowWidth = width.get(0);
+            ctx.windowHeight = height.get(0);
         }
         RenderSystem.viewport(ctx.windowWidth, ctx.windowHeight);
+
+        // RE-APPLY THE UI SCALE (MIRRORS BOOT), RE-CREATE THE ASSET TEXTURES AND WINDOW ICON, SHOW, RE-PACE THE LIMITER
+        reapplyUiScale();
+        ctx.assets.load(ctx);
+        glfwShowWindow(ctx.windowHandle);
+        frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
     }
 
-    // LAST-RESORT RECOVERY AFTER A FAILED HOT-SWAP: FORCE OPENGL AND REBUILD A FRESH WINDOW/ENGINE/ASSETS FROM
-    // WHATEVER STATE THE SWAP LEFT BEHIND. RETURNS true WHEN THE APP IS RENDERABLE AGAIN, false WHEN IT MUST EXIT.
-    private static boolean recoverToOpenGL(final boolean wasMaximized, final int px, final int py, final int pw, final int ph) {
-        try {
-            // A ZEROED HANDLE MEANS THE SWAP ALREADY DESTROYED THE WINDOW
-            if (ctx.windowHandle != NULL) destroyWindow();
-            RenderSystem.chooseEngine(RenderSystem.Engine.OPENGL);
-            openWindow();
-            restoreWindowPlacement(wasMaximized, px, py, pw, ph);
-            reapplyUiScale();
-            ctx.assets.load(ctx);
-            glfwShowWindow(ctx.windowHandle);
-            frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
-            ctx.showError("Engine switch failed",
-                    "The render engine could not be switched.\nThe app recovered on OpenGL.", null);
-            return true;
-        } catch (final Throwable t) {
-            WaterMedia.LOGGER.error(IT, "OpenGL recovery failed", t);
-            return false;
-        }
-    }
-
+    // ==== INPUT HANDLING ====
     private static void handleFrameInput() {
         if (ctx.mousePressed) {
             ctx.mousePressed = false;
             // GLOBAL DIALOGS ARE TRULY MODAL — A PRESS MUST NOT START A DRAG ON CONTENT BENEATH THE SCRIM
-            if (!ctx.hasError() && !ctx.exitConfirm) {
-                root.press(ctx.mouseX, ctx.mouseY);
-            }
+            if (!ctx.hasError() && !ctx.exitConfirm) root.press(ctx.mouseX, ctx.mouseY);
         }
         // HOVER DISPATCHES ONLY ON REAL CURSOR MOVEMENT, SO A PARKED CURSOR NEVER OVERRIDES KEYBOARD NAVIGATION
         if (ctx.mouseX != lastMoveX || ctx.mouseY != lastMoveY) {
@@ -653,7 +603,6 @@ public class WaterMediaApp {
         }
     }
 
-    // INPUT HANDLING
     private static void handleKeyInput(final long window, final int key, final int scancode, final int action, final int mods) {
         ctx.requestRender();
         ctx.ctrlDown = (mods & GLFW_MOD_CONTROL) != 0
@@ -680,10 +629,10 @@ public class WaterMediaApp {
         root.character(codepoint);
     }
 
-    // CLEANUP
+    // ==== CLEANUP ====
     private static void cleanup() {
         // FINISH ANY BACKGROUND PLAYER RELEASE BEFORE TEARING DOWN THE RENDER DEVICE, OR A VULKAN
-        // RELEASE COULD DESTROY IMAGES ON AN ALREADY-DESTROYED DEVICE.
+        // RELEASE COULD DESTROY IMAGES ON AN ALREADY-DESTROYED DEVICE
         ctx.awaitPlayerRelease();
         RenderSystem.cleanup();
         destroyWindow();
@@ -693,7 +642,7 @@ public class WaterMediaApp {
         System.exit(0);
     }
 
-    // LOGGING
+    // ==== LOGGING ====
     private static void initLogging() {
         final String filename = "logs/watermedia-app.log";
         final File logfile = new File(filename);

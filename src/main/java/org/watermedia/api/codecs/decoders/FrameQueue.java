@@ -4,30 +4,16 @@ import org.bytedeco.ffmpeg.avutil.AVFrame;
 import org.bytedeco.ffmpeg.global.avutil;
 
 /**
- * Thread-safe ring buffer of decoded AVFrames.
- * Follows the ffplay pattern: pre-allocated slots with explicit ownership.
- * <p>
- * Threading:
- * <ul>
- *   <li>Exactly one writer thread (decode)</li>
- *   <li>Exactly one reader thread (render/caller)</li>
- *   <li>Internal synchronization via {@code synchronized} plus wait/notify</li>
- * </ul>
- * Memory:
- * <ul>
- *   <li>AVFrame slots are pre-allocated in the constructor with {@code av_frame_alloc()}</li>
- *   <li>Pixel buffers inside each slot are owned by the slot between {@link #push()} and {@link #next()}</li>
- *   <li>Each slot is reused indefinitely (no GC of AVFrame structs)</li>
- *   <li>{@link #free()} releases the AVFrame structs — call only during final cleanup</li>
- * </ul>
- * Recommended capacity:
- * <ul>
- *   <li>Video: 3 slots (~24MB for 1080p BGRA, absorbs decode jitter)</li>
- *   <li>Audio: 9 slots (~144KB for 48kHz stereo S16, low latency)</li>
- * </ul>
+ * Thread-safe ring buffer of decoded AVFrames, following the ffplay pattern of pre-allocated slots with explicit
+ * ownership.
+ *
+ * <p>Exactly one writer (the decode thread) and one reader (the render or caller thread) synchronize on an internal
+ * monitor with wait/notify. Each slot's AVFrame is allocated once in the constructor and reused indefinitely; the
+ * pixel buffers inside it belong to the slot between {@link #push()} and {@link #next()}, and {@link #free()}
+ * releases the structs at final cleanup. Video uses 3 slots (about 24 MB of 1080p BGRA, absorbing decode jitter),
+ * audio 9 (about 144 KB of 48 kHz stereo S16, keeping latency low).
  */
 public final class FrameQueue {
-
     /** Wrapper for a slot with its AVFrame and presentation metadata. */
     public static final class Slot {
         /** Pre-allocated AVFrame. Pixel data is filled via {@code av_frame_move_ref}. */
@@ -39,10 +25,7 @@ public final class FrameQueue {
         /** Estimated frame duration in milliseconds. */
         public long durationMs;
 
-        /**
-         * Serial of the {@link PacketQueue} at decode time.
-         * The reader compares this with the clock serial to discard frames from a previous seek.
-         */
+        /** Serial of the {@link PacketQueue} at decode time; the reader drops frames whose serial predates the last seek. */
         public int serial;
 
         // CACHED TO DETECT MID-STREAM FORMAT CHANGES WITHOUT ACCESSING THE AVFrame
@@ -52,9 +35,7 @@ public final class FrameQueue {
 
         Slot() {
             this.frame = avutil.av_frame_alloc();
-            if (this.frame == null) {
-                throw new OutOfMemoryError("av_frame_alloc failed");
-            }
+            if (this.frame == null) throw new OutOfMemoryError("av_frame_alloc failed");
         }
 
         void destroy() {
@@ -70,9 +51,7 @@ public final class FrameQueue {
     private volatile boolean aborted;
     private final Object lock = new Object();
 
-    /**
-     * @param capacity number of slots. Typically 3 (video) or 9 (audio).
-     */
+    /** Creates a ring of {@code capacity} pre-allocated slots, typically 3 for video or 9 for audio. */
     public FrameQueue(final int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("Frame queue capacity must be positive");
         this.capacity = capacity;
@@ -87,18 +66,9 @@ public final class FrameQueue {
 
     // WRITER SIDE (CALL FROM DECODE THREAD)
     /**
-     * Gets the next available slot for writing.
-     * Blocks if the queue is full, this is intentional backpressure.
-     * <p>
-     * Caller contract:
-     * <ol>
-     *   <li>Call this method to get a slot</li>
-     *   <li>{@code av_frame_move_ref(slot.frame, decodedFrame)}</li>
-     *   <li>Fill {@code slot.ptsMs}, {@code slot.serial}, etc.</li>
-     *   <li>Call {@link #push()}</li>
-     * </ol>
-     *
-     * @return writable slot, or null when the queue was aborted or the wait was interrupted
+     * Returns the next writable slot, blocking while the queue is full (intentional backpressure), or null when the
+     * queue was aborted or the wait was interrupted. The writer moves the decoded frame in with
+     * {@code av_frame_move_ref(slot.frame, decodedFrame)}, fills {@code ptsMs}, {@code serial} and the rest, then calls {@link #push()}.
      */
     public Slot peekWritable() {
         synchronized (this.lock) {
@@ -116,17 +86,14 @@ public final class FrameQueue {
     }
 
     /**
-     * Confirms that the slot at {@code writeIndex} has been filled.
-     * After this, the frame is visible to the reader.
+     * Commits the slot {@link #peekWritable()} granted, making the frame visible to the reader.
      *
      * @throws IllegalStateException if called without a slot obtained via {@link #peekWritable()}
      */
     public void push() {
         synchronized (this.lock) {
             // A PUSH WITHOUT A GRANTED SLOT WOULD OVERWRITE UNREAD FRAMES SILENTLY — FAIL LOUD
-            if (this.size >= this.capacity) {
-                throw new IllegalStateException("push() without a writable slot (queue full)");
-            }
+            if (this.size >= this.capacity) throw new IllegalStateException("push() without a writable slot (queue full)");
             this.writeIndex = (this.writeIndex + 1) % this.capacity;
             this.size++;
             this.lock.notifyAll();
@@ -134,12 +101,7 @@ public final class FrameQueue {
     }
 
     // READER SIDE (CALL FROM RENDER/CALLER THREAD)
-    /**
-     * Gets the oldest frame without consuming it.
-     * Non-blocking — returns null immediately if empty.
-     *
-     * @return readable slot, or null if empty or aborted.
-     */
+    /** Returns the oldest frame without consuming it, or null at once when the queue is empty or aborted. */
     public Slot peek() {
         synchronized (this.lock) {
             if (this.size <= 0 || this.aborted) return null;
@@ -147,12 +109,7 @@ public final class FrameQueue {
         }
     }
 
-    /**
-     * Peeks at the next frame after the current one (for computing inter-frame duration).
-     * Requires {@code size >= 2}.
-     *
-     * @return second slot in the queue, or null if not available.
-     */
+    /** Returns the frame after the current one (for the inter-frame duration), or null when fewer than two are queued or the queue is aborted. */
     public Slot peekNext() {
         synchronized (this.lock) {
             if (this.size < 2 || this.aborted) return null;
@@ -160,12 +117,7 @@ public final class FrameQueue {
         }
     }
 
-    /**
-     * Consumes the current frame: advances {@code readIndex} and releases pixel buffers.
-     * Calls {@code av_frame_unref} internally — pixel buffers are returned to the FFmpeg pool.
-     * <p>
-     * After this call, the previous slot is no longer valid.
-     */
+    /** Consumes the current frame, returning its pixel buffers to the FFmpeg pool with {@code av_frame_unref}; the slot is invalid afterwards. */
     public void next() {
         synchronized (this.lock) {
             avutil.av_frame_unref(this.queue[this.readIndex].frame);
@@ -187,19 +139,13 @@ public final class FrameQueue {
     }
 
     /**
-     * Discards all pending frames. Calls {@code av_frame_unref} on each.
-     * Use after a seek to clear frames from the previous timestamp.
-     * <p>
-     * Safe against a writer mid {@link #peekWritable()}/{@link #push()}: the write cursor is
-     * preserved, so an outstanding slot still commits into its own position and becomes the
-     * first readable frame (its stale serial is then discarded by the reader as usual).
+     * Discards every pending frame with {@code av_frame_unref}, as after a seek. A writer between {@link #peekWritable()}
+     * and {@link #push()} still commits into its own slot, which becomes the first readable frame and is then dropped
+     * by the reader for its stale serial.
      */
     public void flush() {
         synchronized (this.lock) {
-            for (int i = 0; i < this.size; i++) {
-                final int idx = (this.readIndex + i) % this.capacity;
-                avutil.av_frame_unref(this.queue[idx].frame);
-            }
+            for (int i = 0; i < this.size; i++) avutil.av_frame_unref(this.queue[(this.readIndex + i) % this.capacity].frame);
             // KEEP writeIndex: A WRITER HOLDING A SLOT (NEVER IN THE UNREF RANGE — THE QUEUE WASN'T
             // FULL) STILL PUSHES INTO IT; JUMPING THE READ CURSOR THERE KEEPS THE RING CONSISTENT.
             this.readIndex = this.writeIndex;
@@ -224,14 +170,9 @@ public final class FrameQueue {
         }
     }
 
-    /**
-     * Releases the AVFrame structs. Call only during final player cleanup.
-     * After this call, the queue is not reusable.
-     */
+    /** Releases the AVFrame structs at final player cleanup; the queue is not reusable afterwards. */
     public void free() {
         this.flush();
-        for (int i = 0; i < this.capacity; i++) {
-            this.queue[i].destroy();
-        }
+        for (int i = 0; i < this.capacity; i++) this.queue[i].destroy();
     }
 }

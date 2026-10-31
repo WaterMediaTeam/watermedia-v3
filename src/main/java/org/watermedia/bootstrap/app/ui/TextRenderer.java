@@ -31,31 +31,16 @@ public final class TextRenderer {
     private final int defaultStyle;
     private final int baseSize;
     private int margin = LINE_MARGIN;
-    // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX) — PICKS THE ATLAS RESOLUTION; QUADS/METRICS STAY LOGICAL
+    // PHYSICAL PX PER LOGICAL PX: PICKS THE ATLAS RESOLUTION, WHILE QUADS AND METRICS STAY LOGICAL
     private volatile float uiScale = 1f;
     // ONE IMMUTABLE RECORD, SO A READER NEVER PAIRS A SCALE WITH ANOTHER CALL'S RUN
     private volatile LastRun last;
 
     public TextRenderer() {
-        this(loadBundledFont(Font.PLAIN), loadBundledFont(Font.BOLD), Font.PLAIN, DEFAULT_FONT_SIZE);
-    }
-
-    private TextRenderer(final Font plainFont, final Font boldFont, final int defaultStyle, final int baseSize) {
-        this.plainFont = plainFont;
-        this.boldFont = boldFont;
-        this.defaultStyle = defaultStyle == Font.BOLD ? Font.BOLD : Font.PLAIN;
-        this.baseSize = Math.max(1, baseSize);
-    }
-
-    private static Font loadBundledFont(final int style) {
-        final String resource = style == Font.BOLD ? "assets/watermedia/font/jetbrainsmono-bld.ttf" : "assets/watermedia/font/jetbrainsmono-reg.ttf";
-        try (final InputStream in = IOTool.jarOpenFile(resource)) {
-            if (in != null) {
-                return Font.createFont(Font.TRUETYPE_FONT, in).deriveFont(Font.PLAIN, 1f);
-            }
-        } catch (final Exception ignored) {
-        }
-        return new Font("Consolas", style, 1);
+        this.plainFont = loadBundledFont(Font.PLAIN);
+        this.boldFont = loadBundledFont(Font.BOLD);
+        this.defaultStyle = Font.PLAIN;
+        this.baseSize = DEFAULT_FONT_SIZE;
     }
 
     public void margin(final int margin) {
@@ -87,9 +72,9 @@ public final class TextRenderer {
         return Math.max(1, Math.round(run.atlas.glyphHeight * run.drawScale));
     }
 
-    // DISTANCE FROM A render() y (THE GLYPH-CELL TOP) DOWN TO THE BASELINE; ALIGNING BY BASELINE KEEPS MIXED-SIZE
-    // TEXT ON ONE LINE, WHILE CELL CENTERING DRIFTS WITH THE UNEVEN DESCENDER SPACE
+    /** Returns the distance from a {@code render()} y (the glyph-cell top) to the baseline, which aligns mixed sizes on one line. */
     public int baselineOffset(final float scale, final int style) {
+        // CELL CENTERING WOULD DRIFT WITH THE UNEVEN DESCENDER SPACE OF EACH SIZE
         final FontRun run = this.fontRun(scale, style);
         return Math.round((run.atlas.baseline - run.atlas.fontTop) * run.drawScale);
     }
@@ -120,13 +105,13 @@ public final class TextRenderer {
 
         final FontRun run = this.fontRun(scale, style);
         float currentX = x;
-        // INDEX WITH charAt (NO toCharArray COPY PER FRAME) — THIS IS THE HOTTEST UI PATH, LABELS REDRAW EVERY FRAME
+        // INDEXED WITH charAt (NO toCharArray COPY PER FRAME): THIS IS THE HOTTEST UI PATH, LABELS REDRAW EVERY FRAME
         final int n = text.length();
         for (int i = 0; i < n; i++) {
             final CharGlyph g = run.atlas.glyph(text.charAt(i));
             if (g.textureId() > 0 && g.width() > 0 && g.height() > 0) {
-                // ASCII GLYPHS ALL SHARE THE ATLAS TEXTURE, SO bindTexture IS A NO-OP AFTER THE FIRST AND
-                // THE WHOLE RUN BATCHES INTO ONE DRAW; THE UV RECT SELECTS THIS GLYPH WITHIN THE ATLAS.
+                // ASCII GLYPHS ALL SHARE THE ATLAS TEXTURE, SO bindTexture IS A NO-OP AFTER THE FIRST AND THE WHOLE RUN
+                // BATCHES INTO ONE DRAW; THE UV RECT SELECTS THIS GLYPH WITHIN THE ATLAS
                 RenderSystem.bindTexture(g.textureId());
                 RenderSystem.blit(
                         currentX + g.offsetX() * run.drawScale,
@@ -155,7 +140,7 @@ public final class TextRenderer {
                 RenderSystem.blit(cursor + g.offsetX() * run.drawScale, y + g.offsetY() * run.drawScale,
                         g.width() * run.drawScale, g.height() * run.drawScale, g.u0(), g.v0(), g.u1(), g.v1());
             }
-            // EACH CHAR ADVANCES BY ITS OWN CEILED RUN WIDTH PLUS THE SPACING — MATCHES spacedWidth EXACTLY
+            // EACH CHAR ADVANCES BY ITS OWN CEILED RUN WIDTH PLUS THE SPACING, EXACTLY AS spacedWidth MEASURES
             cursor += (float) Math.ceil(g.advance() * run.drawScale) + letterSpacing;
         }
     }
@@ -213,8 +198,8 @@ public final class TextRenderer {
         final int ellipsisW = this.width(ellipsis, scale, style);
         if (maxWidth <= ellipsisW) return "";
 
-        // RESOLVE THE RUN ONCE AND MEASURE EACH CHAR FROM IT, WITHOUT A String OR FontRun PER CHAR; EVERY KEPT CHAR IS
-        // FOLLOWED BY THE TRACKING GAP render() DRAWS BEFORE THE NEXT GLYPH, THE ELLIPSIS INCLUDED
+        // THE RUN RESOLVES ONCE AND EACH CHAR MEASURES FROM IT, WITHOUT A String OR FontRun PER CHAR; EVERY KEPT CHAR
+        // IS FOLLOWED BY THE TRACKING GAP render() DRAWS BEFORE THE NEXT GLYPH, THE ELLIPSIS INCLUDED
         final FontRun run = this.fontRun(scale, style);
         final StringBuilder sb = new StringBuilder();
         float currentW = 0f;
@@ -235,54 +220,37 @@ public final class TextRenderer {
         // MEASURE AND DRAW CALLS COME IN RUNS OF ONE SCALE AND WEIGHT, SO THE LAST RUN SKIPS THE ATLAS LOOKUP
         final LastRun last = this.last;
         if (last != null && last.scale() == scale && last.style() == weight && last.ui() == ui) return last.run();
-        // ATLAS IS PICKED IN PHYSICAL PX (SNAPPED TO THE PIXEL GRID, ODD-SIZE SNAP KEPT); QUADS ARE
-        // EMITTED IN LOGICAL PX BY DIVIDING THE SNAPPED PHYSICAL SIZE BACK BY uiScale
+        // THE ATLAS IS PICKED IN PHYSICAL PX (SNAPPED TO THE PIXEL GRID, ODD-SIZE SNAP KEPT); QUADS ARE EMITTED IN
+        // LOGICAL PX BY DIVIDING THE SNAPPED PHYSICAL SIZE BACK BY uiScale
         final int targetSize = Math.max(1, Math.round(this.baseSize * Math.max(0.05f, scale) * ui));
         final int atlasSize = targetSize % 2 == 0 ? targetSize + 1 : targetSize;
-        final FontRun run = new FontRun(this.atlas(weight, atlasSize), targetSize / ui / atlasSize);
+        // A PLAIN get/put: computeIfAbsent WOULD ALLOCATE ITS CAPTURING LAMBDA ON EVERY SCALE OR WEIGHT SWITCH
+        final AtlasKey key = new AtlasKey(weight, atlasSize);
+        FontAtlas atlas = this.atlases.get(key);
+        if (atlas == null) {
+            atlas = new FontAtlas((weight == Font.BOLD ? this.boldFont : this.plainFont).deriveFont((float) atlasSize));
+            this.atlases.put(key, atlas);
+        }
+        final FontRun run = new FontRun(atlas, targetSize / ui / atlasSize);
         this.last = new LastRun(scale, weight, ui, run);
         return run;
     }
 
-    private FontAtlas atlas(final int style, final int size) {
-        final AtlasKey key = new AtlasKey(style, size);
-        FontAtlas atlas = this.atlases.get(key);
-        if (atlas == null) {
-            atlas = new FontAtlas((style == Font.BOLD ? this.boldFont : this.plainFont).deriveFont((float) size));
-            this.atlases.put(key, atlas);
-        }
-        return atlas;
-    }
-
-    private static Graphics2D textGraphics(final BufferedImage img, final Font font) {
-        final Graphics2D g2d = img.createGraphics();
-        g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-        g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_OFF);
-        g2d.setFont(font);
-        g2d.setColor(Color.WHITE);
-        return g2d;
-    }
-
-    private static int alpha(final BufferedImage image, final int x, final int y) {
-        return (image.getRGB(x, y) >>> 24) & 0xFF;
-    }
-
-    private record AtlasKey(int style, int size) {
-    }
-
-    private record FontRun(FontAtlas atlas, float drawScale) {
-    }
-
-    private record LastRun(float scale, int style, float ui, FontRun run) {
-    }
+    private record AtlasKey(int style, int size) {}
+    private record FontRun(FontAtlas atlas, float drawScale) {}
+    private record LastRun(float scale, int style, float ui, FontRun run) {}
+    private record GlyphBitmap(int[] pixels, int width, int height, int offsetX, int offsetY, int advance) {}
+    private record PackedGlyph(char c, GlyphBitmap bmp, int x, int y) {}
+    private record CharGlyph(int textureId, float u0, float v0, float u1, float v1,
+                             int width, int height, int offsetX, int offsetY, int advance) {}
 
     private static final class FontAtlas {
         private static final String SAMPLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789[]{}()/_-|";
-        // PRINTABLE ASCII IS PRE-PACKED INTO ONE TEXTURE SO A TEXT RUN BINDS ONCE AND BATCHES; CHARS
-        // OUTSIDE THIS RANGE FALL BACK TO A LAZY STANDALONE TEXTURE (RARE PATH — E.G. ACCENTS IN A URL).
+        // PRINTABLE ASCII IS PRE-PACKED INTO ONE TEXTURE SO A TEXT RUN BINDS ONCE AND BATCHES; CHARS OUTSIDE THIS RANGE
+        // FALL BACK TO A LAZY STANDALONE TEXTURE (RARE, SUCH AS ACCENTS IN A URL)
         private static final char FIRST_ASCII = 0x20;
         private static final char LAST_ASCII = 0x7E;
-        private static final int MAX_ATLAS_WIDTH = 1024;
+        private static final int MAX_ATLAS_WIDTH = 1_024;
         private static final int GUTTER = 1; // TRANSPARENT SEPARATION SO LINEAR SAMPLING NEVER BLEEDS NEIGHBORS
 
         private final Map<Character, CharGlyph> glyphs = new HashMap<>();
@@ -328,8 +296,8 @@ public final class TextRenderer {
             this.buildAtlas();
         }
 
-        // RASTERIZES PRINTABLE ASCII AND SHELF-PACKS IT INTO ONE TEXTURE, RECORDING EACH GLYPH'S UV RECT
         private void buildAtlas() {
+            // RASTERIZES PRINTABLE ASCII AND SHELF-PACKS IT INTO ONE TEXTURE, RECORDING EACH GLYPH'S UV RECT
             final List<PackedGlyph> packed = new ArrayList<>();
             int penX = GUTTER;
             int penY = GUTTER;
@@ -338,7 +306,7 @@ public final class TextRenderer {
             for (char c = FIRST_ASCII; c <= LAST_ASCII; c++) {
                 final GlyphBitmap bmp = this.rasterize(c);
                 if (bmp.pixels() == null) {
-                    // WHITESPACE OR BLANK GLYPH — ADVANCE ONLY, NO TEXTURE REGION
+                    // WHITESPACE OR BLANK GLYPH: ADVANCE ONLY, NO TEXTURE REGION
                     this.glyphs.put(c, new CharGlyph(0, 0f, 0f, 0f, 0f, 0, 0, 0, 0, bmp.advance()));
                     continue;
                 }
@@ -354,12 +322,10 @@ public final class TextRenderer {
             }
             final int atlasHeight = penY + shelfHeight + GUTTER;
 
-            // memCalloc ZEROES THE BUFFER (TRANSPARENT GUTTERS); ABSOLUTE PUTS LEAVE POSITION AT 0 SO THE
-            // WHOLE BUFFER IS UPLOADED
+            // memCalloc ZEROES THE BUFFER (TRANSPARENT GUTTERS); ABSOLUTE PUTS LEAVE THE POSITION AT 0 SO THE WHOLE
+            // BUFFER IS UPLOADED
             final ByteBuffer buffer = MemoryUtil.memCalloc(atlasWidth * atlasHeight * 4);
-            for (final PackedGlyph pg: packed) {
-                blitGlyph(buffer, atlasWidth, pg);
-            }
+            for (final PackedGlyph pg: packed) blitGlyph(buffer, atlasWidth, pg);
             final int textureId = RenderSystem.createTexture(atlasWidth, atlasHeight, buffer);
             MemoryUtil.memFree(buffer);
 
@@ -376,7 +342,7 @@ public final class TextRenderer {
             CharGlyph cached = this.glyphs.get(c);
             if (cached != null) return cached;
 
-            // CHAR OUTSIDE THE PRE-BUILT ASCII ATLAS — RASTERIZE A STANDALONE TEXTURE ON DEMAND
+            // A CHAR OUTSIDE THE PRE-BUILT ASCII ATLAS RASTERIZES A STANDALONE TEXTURE ON DEMAND
             final GlyphBitmap bmp = this.rasterize(c);
             if (bmp.pixels() == null) {
                 cached = new CharGlyph(0, 0f, 0f, 0f, 0f, 0, 0, 0, 0, bmp.advance());
@@ -398,8 +364,8 @@ public final class TextRenderer {
             return cached;
         }
 
-        // RASTERIZES ONE GLYPH AND CROPS IT TO ITS ALPHA BOUNDS; pixels()==null MEANS WHITESPACE/BLANK
         private GlyphBitmap rasterize(final char c) {
+            // ONE GLYPH CROPPED TO ITS ALPHA BOUNDS; pixels() == null MEANS WHITESPACE OR BLANK
             final int advance = Math.max(1, this.metrics.charWidth(c));
             if (Character.isWhitespace(c)) return new GlyphBitmap(null, 0, 0, 0, 0, advance);
 
@@ -433,8 +399,8 @@ public final class TextRenderer {
             return new GlyphBitmap(pixels, w, h, left - GLYPH_PAD, top - this.fontTop, advance);
         }
 
-        // WRITES A CROPPED GLYPH'S RGBA INTO THE ATLAS BUFFER AT ITS PACKED POSITION VIA ABSOLUTE PUTS
         private static void blitGlyph(final ByteBuffer atlas, final int atlasWidth, final PackedGlyph pg) {
+            // THE CROPPED GLYPH'S RGBA GOES INTO THE ATLAS BUFFER AT ITS PACKED POSITION THROUGH ABSOLUTE PUTS
             final int[] pixels = pg.bmp().pixels();
             final int w = pg.bmp().width();
             for (int row = 0; row < pg.bmp().height(); row++) {
@@ -451,13 +417,26 @@ public final class TextRenderer {
         }
     }
 
-    private record GlyphBitmap(int[] pixels, int width, int height, int offsetX, int offsetY, int advance) {
+    // UTILITY
+
+    private static Font loadBundledFont(final int style) {
+        final String resource = style == Font.BOLD ? "assets/watermedia/font/jetbrainsmono-bld.ttf" : "assets/watermedia/font/jetbrainsmono-reg.ttf";
+        try (final InputStream in = IOTool.jarOpenFile(resource)) {
+            if (in != null) return Font.createFont(Font.TRUETYPE_FONT, in).deriveFont(Font.PLAIN, 1f);
+        } catch (final Exception ignored) {}
+        return new Font("Consolas", style, 1);
     }
 
-    private record PackedGlyph(char c, GlyphBitmap bmp, int x, int y) {
+    private static Graphics2D textGraphics(final BufferedImage img, final Font font) {
+        final Graphics2D g2d = img.createGraphics();
+        g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_OFF);
+        g2d.setFont(font);
+        g2d.setColor(Color.WHITE);
+        return g2d;
     }
 
-    private record CharGlyph(int textureId, float u0, float v0, float u1, float v1,
-                             int width, int height, int offsetX, int offsetY, int advance) {
+    private static int alpha(final BufferedImage image, final int x, final int y) {
+        return (image.getRGB(x, y) >>> 24) & 0xFF;
     }
 }

@@ -54,8 +54,7 @@ import static org.watermedia.bootstrap.app.render.RenderSystem.mediaEngineSuppli
  * when the input is neither.
  */
 public class OpenMultimediaScreen extends Screen {
-
-    private static final long LOAD_TIMEOUT_MS = 30000L;
+    private static final long LOAD_TIMEOUT_MS = 30_000L;
     private static final int SEARCH_PREVIEW_H = 130;      // SHRUNK PREVIEW HEIGHT WHILE SEARCHING
     private static final long PREVIEW_ANIM_MS = 220L;     // PREVIEW GROW/SHRINK EASE DURATION
 
@@ -74,8 +73,7 @@ public class OpenMultimediaScreen extends Screen {
     private static final int ROW_RECENT = 3;
     private static final int ROW_HISTORY = 4;
 
-    private record Row(int kind, PlatformResult result, String text) {
-    }
+    private record Row(int kind, PlatformResult result, String text) {}
 
     // CONSTANT LISTS SO keybinds() ALLOCATES NOTHING PER FRAME
     private static final List<Keybind> KEYS_LOADING = List.of(new Keybind("ESC", "Cancel"));
@@ -291,9 +289,8 @@ public class OpenMultimediaScreen extends Screen {
                 || Previews.animating(this.thumbPlayers.values());
     }
 
-    // ==========================================================================
-    // PER-FRAME BINDING — PULLS LIVE STATE INTO THE TREE BEFORE MEASURE/DRAW
-    // ==========================================================================
+    // ==== PER-FRAME BINDING ====
+    // PULLS LIVE STATE INTO THE TREE BEFORE MEASURE/DRAW
 
     @Override
     protected void onUpdate() {
@@ -353,9 +350,8 @@ public class OpenMultimediaScreen extends Screen {
         this.ctx.requestRender();
     }
 
-    // ==========================================================================
-    // INPUT — THE TREE HANDLES POINTERS; ONLY THE SCREEN SHORTCUTS LIVE HERE
-    // ==========================================================================
+    // ==== INPUT ====
+    // THE TREE HANDLES POINTERS; ONLY THE SCREEN SHORTCUTS LIVE HERE
 
     @Override
     public boolean dispatchKey(final int key, final int action) {
@@ -393,9 +389,7 @@ public class OpenMultimediaScreen extends Screen {
         return this.contains(mx, my); // SWALLOWED INSIDE THE SLOT SO THE HOME SCREEN DOES NOT SCROLL
     }
 
-    // ==========================================================================
-    // ACTIONS
-    // ==========================================================================
+    // ==== ACTIONS ====
 
     private void pasteFromClipboard() {
         try {
@@ -495,16 +489,12 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void clearPreview() {
-        if (this.previewMRL != null || !this.previewUrl.isEmpty()) {
-            this.previewGeneration++;
-        }
+        if (this.previewMRL != null || !this.previewUrl.isEmpty()) this.previewGeneration++;
         this.previewMRL = null;
         this.previewUrl = "";
     }
 
-    // ==========================================================================
-    // SEARCH MODE
-    // ==========================================================================
+    // ==== SEARCH MODE ====
 
     // TRUE WHEN THE INPUT IS NOT loadable(); MEMOIZED ON THE INPUT TEXT BECAUSE IT RUNS EVERY FRAME
     // AND loadable() BLOCKS ON A FILE SYSTEM STAT
@@ -555,21 +545,18 @@ public class OpenMultimediaScreen extends Screen {
         this.ctx.requestRender();
     }
 
-    // THE RESULT'S URL REPLACES THE INPUT, WHICH LEAVES SEARCH MODE SO IT CAN BE PLAYED
-    private void selectResult(final PlatformResult result) {
-        if (result == null || result.uri() == null) return;
-        this.field.value(result.uri().toString());
-        this.clearSearch();
-        this.field.focused(true);
-        this.ensurePreviewMRL();
-        this.ctx.sound.play();
-        this.ctx.requestRender();
-    }
-
     private void pickRow(final Row row) {
         if (row == null) return;
         if (row.kind() == ROW_RESULT) {
-            this.selectResult(row.result());
+            // THE RESULT'S URL REPLACES THE INPUT, WHICH LEAVES SEARCH MODE SO IT CAN BE PLAYED
+            final PlatformResult result = row.result();
+            if (result == null || result.uri() == null) return;
+            this.field.value(result.uri().toString());
+            this.clearSearch();
+            this.field.focused(true);
+            this.ensurePreviewMRL();
+            this.ctx.sound.play();
+            this.ctx.requestRender();
         } else if (row.kind() == ROW_HISTORY) {
             this.field.value(row.text());
             this.doSearch(false);
@@ -601,9 +588,8 @@ public class OpenMultimediaScreen extends Screen {
         final List<PlatformResult> results = this.search != null ? this.search : List.of();
         final List<String> history = PlatformAPI.searchHistory();
         if (this.rowsBuilt && this.search == this.rowsSearch && results.size() == this.rowsResults
-                && history.size() == this.rowsHistory && searching == this.rowsSearching) {
+                && history.size() == this.rowsHistory && searching == this.rowsSearching)
             return;
-        }
         this.rowsSearch = this.search;
         this.rowsResults = results.size();
         this.rowsHistory = history.size();
@@ -613,11 +599,8 @@ public class OpenMultimediaScreen extends Screen {
         final List<Row> rows = new ArrayList<>();
         if (this.search != null) {
             rows.add(new Row(ROW_HEAD, null, searching ? "SEARCHING..." : "RESULTS (" + results.size() + ")"));
-            if (results.isEmpty() && searching) {
-                rows.add(new Row(ROW_WAIT, null, null));
-            } else {
-                for (final PlatformResult result: results) rows.add(new Row(ROW_RESULT, result, null));
-            }
+            if (results.isEmpty() && searching) rows.add(new Row(ROW_WAIT, null, null));
+            else for (final PlatformResult result: results) rows.add(new Row(ROW_RESULT, result, null));
         }
         if (!history.isEmpty()) {
             rows.add(new Row(ROW_RECENT, null, null));
@@ -685,9 +668,7 @@ public class OpenMultimediaScreen extends Screen {
                 .height(RESULT_ROW_H);
     }
 
-    // ==========================================================================
-    // THUMBNAIL PLAYERS
-    // ==========================================================================
+    // ==== THUMBNAIL PLAYERS ====
 
     private void releaseThumbs() {
         if (!this.thumbPlayers.isEmpty()) {
@@ -732,16 +713,12 @@ public class OpenMultimediaScreen extends Screen {
         return null;
     }
 
-    // ==========================================================================
-    // PREVIEW / LOADING STATE
-    // ==========================================================================
+    // ==== PREVIEW / LOADING STATE ====
 
     private void subscribePreviewMRL(final MRL mrl, final int generation) {
         if (mrl == null || Previews.loaded(mrl)) return;
         mrl.subscribe(done -> {
-            if (this.previewGeneration == generation && this.previewMRL == done) {
-                this.ctx.requestRender();
-            }
+            if (this.previewGeneration == generation && this.previewMRL == done) this.ctx.requestRender();
         });
     }
 
@@ -768,9 +745,7 @@ public class OpenMultimediaScreen extends Screen {
         ThreadTool.thread("OpenMultimediaScreen-LoadTimeout", () -> {
             final long wait = Math.max(0L, deadline - System.currentTimeMillis());
             ThreadTool.sleep(wait);
-            if (this.loading && this.loadGeneration == generation) {
-                this.ctx.requestRender();
-            }
+            if (this.loading && this.loadGeneration == generation) this.ctx.requestRender();
         });
     }
 
@@ -840,13 +815,10 @@ public class OpenMultimediaScreen extends Screen {
         return best == MediaQuality.UNKNOWN ? null : best.name();
     }
 
-    // ==========================================================================
-    // TREE — BODY (SCRIM + CENTERED DIALOG PANEL)
-    // ==========================================================================
+    // ==== TREE: BODY (SCRIM + CENTERED DIALOG PANEL) ====
 
     // THE SCRIM COVERS THE WHOLE SLOT AND THE PANEL IS CENTERED WITH AN 8 PX TOP MARGIN AND A 36 PX BOTTOM GAP
     private final class Body extends Group<Body> {
-
         private final Box scrim;
         private final PanelBox panel;
 
@@ -886,7 +858,6 @@ public class OpenMultimediaScreen extends Screen {
 
     // DIALOG PANEL: THE ELEMENT DECORATORS PAINT ITS FRAME AND THE FOUR AMBER CORNER CUBES GO UNDER THE CHILDREN
     private static final class PanelBox extends Group<PanelBox> {
-
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             for (final Element<?> child: this.children) child.measure(innerAvailWidth, innerAvailHeight);
@@ -911,7 +882,6 @@ public class OpenMultimediaScreen extends Screen {
 
     // INPUT ROW: THE MODE LABEL SITS 20 PX ABOVE THE FIELD AND PASTE AND RELOAD TRAIL IT AT 8 PX GAPS
     private final class InputBlock extends Group<InputBlock> {
-
         private final Button paste = new Button("PASTE").icon("copy")
                 .accent(AppTheme.NEON).textColor(AppTheme.NEON_LIGHT)
                 .size(104, 40).onClick(b -> OpenMultimediaScreen.this.pasteFromClipboard());
@@ -951,7 +921,6 @@ public class OpenMultimediaScreen extends Screen {
     // ZONE BETWEEN THE INPUT ROW AND THE FOOTER: THE RESULTS DROPDOWN COVERS THE STATUS CHIP, MATCHES
     // THE INPUT FIELD'S WIDTH AND STOPS 10 PX ABOVE THE FOOTER
     private final class MiddleZone extends Group<MiddleZone> {
-
         private MiddleZone() {
             this.add(OpenMultimediaScreen.this.chip); // ADDED FIRST SO IT PAINTS UNDER THE DROPDOWN
             this.add(OpenMultimediaScreen.this.dropdown);
@@ -974,7 +943,6 @@ public class OpenMultimediaScreen extends Screen {
 
     // DETECTED-STATUS CHIP: TINTED FILL, OUTLINE, SQUARE PIP AND LABEL
     private static final class StatusChip extends Element<StatusChip> {
-
         private String label = "";
         private Color color = AppTheme.TEXT_FAINT;
 
@@ -1004,12 +972,9 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
-    // ==========================================================================
-    // TREE — PREVIEW PANEL (TV FRAME + LOCALIZED CRT + STATE CONTENT + QUALITY CHIP)
-    // ==========================================================================
+    // ==== TREE: PREVIEW PANEL (TV FRAME + LOCALIZED CRT + STATE CONTENT + QUALITY CHIP) ====
 
     private final class PreviewPanel extends Group<PreviewPanel> {
-
         private final CrtOverlay crt = new CrtOverlay();
 
         private PreviewPanel() {

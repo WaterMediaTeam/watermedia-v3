@@ -20,10 +20,10 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves D.tube video pages to the HLS ladder and metadata embedded in their script. */
 public final class DTubePlatform implements Platform {
-    public static final String NAME = "D.tube";
     private static final Marker IT = MarkerManager.getMarker(DTubePlatform.class.getSimpleName());
-
+    public static final String NAME = "D.tube";
     private static final String ORIGIN = "https://d.tube";
     private static final Pattern VIDEO_URL = Pattern.compile("video_url:\\s*\"([^\"]+)\"");
     private static final Pattern THUMBNAIL_URL = Pattern.compile("thumbnail_url:\\s*\"([^\"]+)\"");
@@ -44,7 +44,7 @@ public final class DTubePlatform implements Platform {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
         if (uri.getPath() == null || uri.getPath().length() < 2) throw PlatformException.unsupported(NAME, uri);
 
-        // D.tube CDN demands a browser UA + d.tube origin/referer
+        // THE D.tube CDN DEMANDS A BROWSER UA AND THE d.tube ORIGIN AND REFERER
         final HttpHeaders headers = HttpHeaders.defaults(uri)
                 .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
                 .set("Referer", ORIGIN + "/")
@@ -71,7 +71,7 @@ public final class DTubePlatform implements Platform {
                 try { publishedAt = Instant.parse(createdAt); }
                 catch (final DateTimeParseException e) { LOGGER.warn(IT, "D.tube unparseable created_at '{}' for {}", createdAt, uri, e); }
             }
-            final long duration = DataTool.parseLong(extract(html, DURATION), 0L) * 1000L;
+            final long duration = DataTool.parseLong(extract(html, DURATION), 0L) * 1_000L;
             final Metadata metadata = new Metadata(title, description, publishedAt, duration, extract(html, USERNAME));
             // THE CDN CHECKS THE PLAYLIST REQUEST WITH THE SAME BROWSER HEADERS AS THE MEDIA ONE
             final List<Quality> variants = WebRequests.hls(hlsUri, headers);

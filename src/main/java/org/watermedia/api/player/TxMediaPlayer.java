@@ -74,7 +74,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private static final int PREFETCH_MAX = 6;
     private static final int PREFETCH_REFILL = 3;
     private static final int POOL_SPARE = 2;
-    private static final long PREFETCH_BUDGET_BYTES = 64L * 1024 * 1024;
+    private static final long PREFETCH_BUDGET_BYTES = 64L * 1_024 * 1_024;
     private static final long PREFETCH_SAFETY_MARGIN_MS = 2L;
     // ENGINES CONSUME OR DROP A SUBMITTED FRAME BEFORE THE SECOND SUBSEQUENT upload() RETURNS,
     // SO ONLY THE LAST TWO SUBMITTED BUFFERS MUST STAY UNTOUCHED.
@@ -119,10 +119,9 @@ public final class TxMediaPlayer extends MediaPlayer {
     // STATUS
     private volatile Status status = Status.WAITING;
 
-    // STATIC-IMAGE DISPLAY CLOCK — A STILL IMAGE TRANSITIONS TO ENDED AFTER displayTimeMs OF
-    // PLAYBACK SO STATUS-DRIVEN PLAYLISTS ADVANCE OFF ended(). 0 = UNLIMITED (SHOW FOREVER).
-    // WHEN staticTimed IS SET, THE STATIC IMAGE RIDES THE SAME PASSIVE clock AS MODE 2 (texTime()),
-    // WITH knownDuration = displayTimeMs AND NO FRAME-TEXTURE SWITCHING.
+    // STATIC-IMAGE DISPLAY CLOCK: A STILL ENDS AFTER displayTimeMs OF PLAYBACK SO STATUS-DRIVEN PLAYLISTS ADVANCE OFF ended()
+    // (0 = SHOW FOREVER). WITH staticTimed SET THE STILL RIDES MODE 2'S PASSIVE clock (texTime()), knownDuration =
+    // displayTimeMs AND NO FRAME-TEXTURE SWITCHING
     private volatile long displayTimeMs;
     private volatile boolean staticTimed;
 
@@ -195,9 +194,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     boolean launch(final boolean initialPause, final long seekMs) {
         if (this.released) return false;
         final Future<?> oldTask = this.lifecycleTask;
-        if ((this.lifecycleThread != null && this.lifecycleThread.isAlive()) || (oldTask != null && !oldTask.isDone())) {
-            this.teardown(true);
-        }
+        if ((this.lifecycleThread != null && this.lifecycleThread.isAlive()) || (oldTask != null && !oldTask.isDone())) this.teardown(true);
         final Thread old = this.lifecycleThread;
         final int serial;
         // MINT THE SERIAL UNDER signals: TWO CONCURRENT start() CALLS (GAME THREAD + NETWORK HANDLER) MUST NOT
@@ -339,7 +336,10 @@ public final class TxMediaPlayer extends MediaPlayer {
                 this.releaseDone = true;
                 synchronized (this.signals) {
                     final Status prev = this.status;
-                    this.resetAfterRelease();
+                    this.loaded = false;
+                    this.paused = false;
+                    this.status = Status.STOPPED;
+                    this.clearBuffers();
                     this.queueStatus(prev, Status.STOPPED);
                 }
                 super.release();
@@ -381,10 +381,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     // MODE DISPATCH
     // ==========================================================================
-    // OPENS THE SOURCE ONCE, READS METADATA, AND DISPATCHES TO EXACTLY ONE OF THE
-    // THREE PLAYBACK MODES BELOW. THE READER IS HANDED OFF TO A LIFECYCLE THREAD
-    // FOR MODE 3; OTHERWISE IT IS CLOSED IN THE FINALLY BLOCK.
-    // THE 'handedOff' FLAG GUARDS AGAINST DOUBLE-CLOSING A READER STILL IN USE.
+    // OPENS THE SOURCE ONCE, READS METADATA AND DISPATCHES TO EXACTLY ONE OF THE THREE PLAYBACK MODES BELOW. MODE 3 HANDS
+    // THE READER OFF TO A LIFECYCLE THREAD, OTHERWISE THE FINALLY BLOCK CLOSES IT (handedOff GUARDS A DOUBLE CLOSE)
     private void prepare(final int serial) {
         ImageReader reader = null;
         boolean handedOff = false;
@@ -398,9 +396,8 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (this.released || this.triggerStop || serial != this.lifecycleSerial || Thread.currentThread().isInterrupted()) return;
             this.sourceWidth = reader.width();
             this.sourceHeight = reader.height();
-            if (this.sourceWidth <= 0 || this.sourceHeight <= 0) {
+            if (this.sourceWidth <= 0 || this.sourceHeight <= 0)
                 throw new IOException("Invalid image dimensions: " + this.sourceWidth + "x" + this.sourceHeight);
-            }
             this.resolveQuality(this.sourceWidth, this.sourceHeight);
             this.animated = reader.frameCount() > 1;
             this.knownDuration = Math.max(0L, reader.duration());
@@ -571,9 +568,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         synchronized (this.clock) {
             final long duration = Math.max(1L, this.knownDuration);
             long t = this.clockBase;
-            if (this.status == Status.PLAYING) {
-                t += (long) ((nowMs() - this.wallBase) * this.speed());
-            }
+            if (this.status == Status.PLAYING) t += (long) ((nowMs() - this.wallBase) * this.speed());
             if (t < duration) return t;
             // A TIMED STILL NEVER LOOPS: ITS WINDOW ENDS THE DISPLAY REGARDLESS OF repeat()
             if (this.repeat() && !this.staticTimed) {
@@ -637,11 +632,9 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     // MODE 3 — STREAMING DECODE WITH PREFETCH
     // ==========================================================================
-    // EACH next() CALL DECODES ONE FRAME ON DEMAND. WHILE THE CURRENT FRAME IS
-    // DISPLAYED, THE LOOP DECODES AHEAD INTO A BOUNDED QUEUE. IF THE QUEUE
-    // EMPTIES THE PLAYER ENTERS BUFFERING, REFILLS A SMALL BATCH, AND RESUMES.
-    // SEEK / LOOP / STEP-BACKWARDS REWIND THE SOURCE (reset() WHEN SUPPORTED) AND
-    // DECODE FORWARD BECAUSE ANIMATED IMAGE FRAMES DEPEND ON PRIOR ONES.
+    // EACH next() DECODES ONE FRAME ON DEMAND; WHILE A FRAME IS DISPLAYED THE LOOP DECODES AHEAD INTO A BOUNDED QUEUE, AND
+    // AN EMPTY QUEUE ENTERS BUFFERING, REFILLS A SMALL BATCH AND RESUMES. SEEK, LOOP AND STEP-BACKWARDS REWIND THE SOURCE
+    // (reset() WHEN SUPPORTED) AND DECODE FORWARD, BECAUSE ANIMATED FRAMES DEPEND ON PRIOR ONES
 
     // WRAPS playStream(...) WITH FIRST-FRAME PUBLISH AND READER LIFECYCLE.
     private void playStreaming(ImageReader reader, final int serial) {
@@ -825,7 +818,9 @@ public final class TxMediaPlayer extends MediaPlayer {
             return false;
         }
         final int idx = this.nextDecodedIndex++;
-        this.prefetchQueue.offerLast(this.snapshot(reader.next(), reader.delay(), idx));
+        final ByteBuffer frame = reader.next();
+        final long delay = reader.delay();
+        this.prefetchQueue.offerLast(new PrefetchedFrame(this.copyFrame(frame), delay, idx, this.outWidth, this.outHeight));
         return true;
     }
 
@@ -863,14 +858,11 @@ public final class TxMediaPlayer extends MediaPlayer {
                     WaterMediaConfig.player.tx.cache);
             if (this.released || this.triggerStop || Thread.currentThread().isInterrupted())
                 throw new IOException("Image loading was cancelled");
-            // THE MEDIA TYPE WAS ALREADY DETERMINED AUTHORITATIVELY BY MRL (BY CONTENT-TYPE OR, FOR
-            // AMBIGUOUS MIMES, BY BYTE-SNIFFING) AND decode VALIDATES THE ACTUAL BYTES — SO WE DO
-            // NOT SECOND-GUESS WITH THE SERVER'S CONTENT-TYPE HEADER, WHICH WOULD WRONGLY REJECT IMAGES
-            // SERVED AS application/octet-stream OR text/xml (e.g. SVG)
-            // DECODERS DELIVER BGRA EXCEPT GRAYSCALE JPEG, WHICH STAYS ONE LUMA BYTE PER PIXEL FOR THE GPU ENGINES;
-            // AN ENGINE THAT DECLINES GRAY (SOFTWARE AWT/JavaFX) GETS BGRA FROM THE DECODER INSTEAD (MIRRORS
-            // FFMediaPlayer'S sws FALLBACK).
+            // MRL ALREADY TYPED THE SOURCE (CONTENT-TYPE OR, FOR AMBIGUOUS MIMES, A BYTE SNIFF) AND THE DECODER VALIDATES THE
+            // BYTES, SO THE SERVER'S CONTENT-TYPE IS IGNORED: IT WOULD REJECT IMAGES SERVED AS application/octet-stream OR text/xml
             final ByteBuffer bytes = ByteBuffer.wrap(sourceBytes.bytes());
+            // DECODERS DELIVER BGRA EXCEPT GRAYSCALE JPEG, WHICH STAYS ONE LUMA BYTE PER PIXEL FOR THE GPU ENGINES; AN ENGINE THAT
+            // DECLINES GRAY (SOFTWARE AWT/JavaFX) GETS BGRA FROM THE DECODER, LIKE FFMediaPlayer'S sws FALLBACK
             final ImageReader reader = this.gfx != null && !this.gfx.supports(PixelFormat.GRAY)
                     ? CodecsAPI.reader(bytes, PixelFormat.BGRA)
                     : CodecsAPI.reader(bytes);
@@ -897,9 +889,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.publish(Status.BUFFERING, serial);
         this.clearBuffers();
 
-        if (!reader.hasNext()) {
-            throw new IOException("No frames decoded from: " + this.source);
-        }
+        if (!reader.hasNext()) throw new IOException("No frames decoded from: " + this.source);
         final ByteBuffer first = this.copyFrame(reader.next());
         this.uploadBuffer(first, this.outWidth, this.outHeight);
         this.currentFrameIndex = 0;
@@ -1072,32 +1062,21 @@ public final class TxMediaPlayer extends MediaPlayer {
         }
         if (w == this.outWidth && h == this.outHeight) return;
         final long byteSize = this.pixelFormat.frameBytes(w, h, 8);
-        if (byteSize > Integer.MAX_VALUE) {
-            throw new IOException("Image dimensions exceed upload buffer limit: " + w + "x" + h);
-        }
+        if (byteSize > Integer.MAX_VALUE) throw new IOException("Image dimensions exceed upload buffer limit: " + w + "x" + h);
         this.outWidth = w;
         this.outHeight = h;
         this.bufferByteSize = (int) byteSize;
-        this.capPrefetch();
-    }
-
-    private PrefetchedFrame snapshot(final ByteBuffer frame, final long delay, final int idx) {
-        final ByteBuffer pixels = this.copyFrame(frame);
-        return new PrefetchedFrame(pixels, delay, idx, this.outWidth, this.outHeight);
+        // CAP THE PREFETCH QUEUE SO DIRECT BUFFER MEMORY STAYS UNDER THE BUDGET
+        final long bytesPerFrame = Math.max(1L, this.bufferByteSize);
+        final int cap = (int) MathUtil.clamp(PREFETCH_BUDGET_BYTES / bytesPerFrame, 1L, PREFETCH_MAX);
+        this.prefetchMax = cap;
+        this.prefetchRefill = Math.min(PREFETCH_REFILL, cap);
     }
 
     // DRAINS THE PREFETCH QUEUE AND RETURNS EACH QUEUED BUFFER TO THE POOL.
     private void clearPrefetch() {
         for (final PrefetchedFrame f: this.prefetchQueue) this.returnBuffer(f.pixels);
         this.prefetchQueue.clear();
-    }
-
-    // CAPS THE PREFETCH QUEUE SO DIRECT BUFFER MEMORY STAYS UNDER THE BUDGET.
-    private void capPrefetch() {
-        final long bytesPerFrame = Math.max(1L, this.bufferByteSize);
-        final int cap = (int) MathUtil.clamp(PREFETCH_BUDGET_BYTES / bytesPerFrame, 1L, PREFETCH_MAX);
-        this.prefetchMax = cap;
-        this.prefetchRefill = Math.min(PREFETCH_REFILL, cap);
     }
 
     // ==========================================================================
@@ -1132,27 +1111,11 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.activeReader = null;
     }
 
-    private void resetAfterRelease() {
-        this.loaded = false;
-        this.paused = false;
-        this.status = Status.STOPPED;
-        this.clearBuffers();
-    }
-
     // DRAINS THE PREFETCH QUEUE, THE SPARE POOL, AND THE IN-FLIGHT BUFFERS — EVERYTHING IS DISCARDED.
     private void clearBuffers() {
         this.prefetchQueue.clear();
         this.bufferPool.clear();
         this.inFlight.clear();
-    }
-
-    // ==========================================================================
-    // SHARED — DELAY HELPERS
-    // ==========================================================================
-    private static long delayAt(final long[] delays, final int index) {
-        if (delays == null || delays.length == 0) return 0L;
-        if (index < delays.length) return delays[Math.max(0, index)];
-        return delays[delays.length - 1];
     }
 
     // ==========================================================================
@@ -1295,7 +1258,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public float fps() {
         if (!this.loaded || this.currentDelayMs <= 0L) return 0f;
-        return 1000f / this.currentDelayMs;
+        return 1_000f / this.currentDelayMs;
     }
 
     @Override public boolean live() { return false; }
@@ -1324,6 +1287,16 @@ public final class TxMediaPlayer extends MediaPlayer {
         // WAKE THE STREAMING LOOP SO A LIVE SPEED CHANGE RESCALES THE CURRENT FRAME DELAY (MODE 3)
         this.wake();
         return true;
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // DELAY OF FRAME index, CLAMPED TO THE LAST KNOWN DELAY; 0 WITHOUT DELAYS
+    private static long delayAt(final long[] delays, final int index) {
+        if (delays == null || delays.length == 0) return 0L;
+        if (index < delays.length) return delays[Math.max(0, index)];
+        return delays[delays.length - 1];
     }
 
     // ==========================================================================

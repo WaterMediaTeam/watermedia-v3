@@ -1,11 +1,10 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
+// THE VP8L COLOR, SUBTRACT-GREEN AND COLOR-INDEXING INVERSE TRANSFORMS
 final class ColorTransform {
+    private ColorTransform() {}
 
-    private ColorTransform() {
-    }
-
-    /** Restores red and blue channels in an ARGB image using one transform pixel per block. */
+    // RESTORES RED AND BLUE IN AN ARGB IMAGE FROM ONE TRANSFORM PIXEL PER BLOCK
     public static void inverse(final int[] pixels, final int width, final int height, final int[] transforms, final int blockBits) {
         if (width == 0 || height == 0) return;
         final int blockSize = 1 << blockBits;
@@ -42,7 +41,7 @@ final class ColorTransform {
         }
     }
 
-    /** Adds each pixel's green channel back into red and blue, modulo 256, in place. */
+    // ADDS EACH PIXEL'S GREEN BACK INTO RED AND BLUE, MODULO 256, IN PLACE
     public static void addGreen(final int[] pixels) {
         for (int i = 0; i < pixels.length; i++) {
             final int pixel = pixels[i];
@@ -58,7 +57,7 @@ final class ColorTransform {
         }
     }
 
-    /** Expands green-channel palette indexes into ARGB pixels; packed input ({@code bits > 0}) yields a new full-width array. */
+    // EXPANDS GREEN-CHANNEL PALETTE INDEXES INTO ARGB; PACKED INPUT (bits > 0) YIELDS A NEW FULL-WIDTH ARRAY
     public static int[] applyPalette(final int[] pixels, final int width, final int height, final int[] colorTable, final int bits) {
         if (bits == 0) {
             // ONE INDEX PER PIXEL, IN PLACE; AN INDEX PAST THE TABLE IS TRANSPARENT BLACK (RFC 9649)
@@ -88,7 +87,7 @@ final class ColorTransform {
         return unpacked;
     }
 
-    /** Reconstructs a nonempty delta-coded ARGB color table without modifying the input. */
+    // RECONSTRUCTS A NONEMPTY DELTA-CODED ARGB COLOR TABLE (PER-COMPONENT SUMS MODULO 256) INTO A NEW ARRAY
     public static int[] decodeColorTable(final int[] rawTable) {
         final int[] table = new int[rawTable.length];
         table[0] = rawTable[0];
@@ -96,8 +95,6 @@ final class ColorTransform {
         for (int i = 1; i < rawTable.length; i++) {
             final int prev = table[i - 1];
             final int curr = rawTable[i];
-
-            // ADD EACH COMPONENT
             final int a = (((prev >> 24) & 0xFF) + ((curr >> 24) & 0xFF)) & 0xFF;
             final int r = (((prev >> 16) & 0xFF) + ((curr >> 16) & 0xFF)) & 0xFF;
             final int g = (((prev >> 8) & 0xFF) + ((curr >> 8) & 0xFF)) & 0xFF;
@@ -109,7 +106,7 @@ final class ColorTransform {
         return table;
     }
 
-    /** Returns WebP color-index packing bits: 3, 2 or 1 for at most 2, 4 or 16 colors; otherwise 0. */
+    // WEBP COLOR-INDEX PACKING BITS: 3, 2 OR 1 FOR AT MOST 2, 4 OR 16 COLORS, OTHERWISE 0
     public static int widthBits(final int colorTableSize) {
         if (colorTableSize <= 2) return 3;      // 8 PIXELS PER BYTE
         if (colorTableSize <= 4) return 2;      // 4 PIXELS PER BYTE

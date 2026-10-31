@@ -29,23 +29,9 @@ import java.util.List;
 import static org.watermedia.WaterMedia.LOGGER;
 
 /**
- * Streaming WebP reader.
- *
- * <p>Receives a {@link ByteBuffer} positioned past the 12-byte {@code RIFF????WEBP} preamble that ends
- * where the file ends (a final chunk may omit its padding byte). The constructor reads the first
- * chunk to identify the file shape:
- * <ul>
- *   <li><b>Simple lossy</b> ({@code VP8 }): the chunk contains the whole bitstream — single frame.</li>
- *   <li><b>Simple lossless</b> ({@code VP8L}): single frame.</li>
- *   <li><b>Extended</b> ({@code VP8X}): walks the remaining chunks once for the frame durations, the loop
- *       count and the ICC, EXIF and XMP metadata; a still keeps its bitstream and optional {@code ALPH} chunk.</li>
- * </ul>
- *
- * <p>For animated WebPs, each {@link #next()} reads one {@code ANMF} chunk, decodes its
- * sub-chunks (optional {@code ALPH} + {@code VP8 } / {@code VP8L}), and composites onto the canvas.
- * Every frame is delivered as {@link PixelFormat#BGRA}, already rotated into its EXIF orientation:
- * lossless, alpha and compositing are BGRA-native, and lossy VP8 is converted on the CPU with its
- * BT.601 limited-range matrix.
+ * Streaming WebP reader over the bytes past the 12-byte {@code RIFF????WEBP} preamble (the last chunk may omit its pad
+ * byte): simple lossy {@code VP8 } and lossless {@code VP8L} stills, extended {@code VP8X} stills, and {@code ANMF}
+ * animations composited one frame per {@link #next()}. Frames are BGRA, already rotated into their EXIF orientation.
  */
 public final class WebPReader extends ImageReader {
     private static final Marker IT = MarkerManager.getMarker(WebPReader.class.getSimpleName());
@@ -67,7 +53,6 @@ public final class WebPReader extends ImageReader {
     private static final int ANIMATION_FLAG = 0x02;
     private static final int ALPHA_FLAG = 0x10;
     private static final byte[] EXIF_PREFIX = { 'E', 'x', 'i', 'f', 0, 0 };
-
 
     private final int canvasWidth;
     private final int canvasHeight;

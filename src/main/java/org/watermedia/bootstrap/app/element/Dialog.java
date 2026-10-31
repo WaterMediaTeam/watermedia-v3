@@ -36,10 +36,10 @@ public final class Dialog extends Group<Dialog> {
     private boolean closable = true;
     private Runnable onDismiss;
     private Runnable onPrimary;
-    // FADE-IN — fadeStart 0 MEANS IDLE; wasVisible TRACKS THE HIDDEN→VISIBLE TRANSITION ACROSS FRAMES
+    // FADE-IN: fadeStart 0 MEANS IDLE; wasVisible TRACKS THE HIDDEN-TO-VISIBLE TRANSITION ACROSS FRAMES
     private long fadeStart;
     private boolean wasVisible;
-    // KEY WHOSE PRESS A CHILD SWALLOWED (E.G. A SPINNER EDIT) — ITS RELEASE MUST NOT DOUBLE-FIRE THE DIALOG ACTION
+    // KEY WHOSE PRESS A CHILD SWALLOWED (A SPINNER EDIT): ITS RELEASE MUST NOT DOUBLE-FIRE THE DIALOG ACTION
     private int childConsumedKey = -1;
 
     public Dialog() {
@@ -141,18 +141,14 @@ public final class Dialog extends Group<Dialog> {
 
     /** Replaces the right-aligned footer row of action buttons; a button without a height gets the standard one. */
     public Dialog actions(final Button... buttons) {
-        if (this.actionsRow == null) {
-            this.actionsRow = Parent.row().spacing(Theme.SPACE_SM).gravity(Gravity.RIGHT);
-        } else {
-            this.actionsRow.clear();
-        }
-        if (buttons != null) {
+        if (this.actionsRow == null) this.actionsRow = Parent.row().spacing(Theme.SPACE_SM).gravity(Gravity.RIGHT);
+        else this.actionsRow.clear();
+        if (buttons != null)
             for (final Button button: buttons) {
                 if (button == null) continue;
                 if (button.height == WRAP_CONTENT) button.height(Theme.BUTTON);
                 this.actionsRow.add(button);
             }
-        }
         if (this.footerBand == null) {
             this.footerBand = new Band(true);
             this.footerBand.add(this.actionsRow);
@@ -161,40 +157,16 @@ public final class Dialog extends Group<Dialog> {
         return this;
     }
 
-    // REBUILDS THE PANEL CHILD LIST IN BAND ORDER (SKIPPING ABSENT SLOTS) SO DRAW/DISPATCH MATCH THE STACK
-    private void layoutSlots() {
-        this.panel.clear();
-        if (this.titleBand != null) this.panel.add(this.titleBand);
-        if (this.headerBand != null) this.panel.add(this.headerBand);
-        this.panel.add(this.contentCol);
-        if (this.footerBand != null) this.panel.add(this.footerBand);
-    }
-
-    private void applyAccent() {
-        this.panel.border(this.accent == null ? AppTheme.STROKE_BRIGHT : this.accent, Theme.BORDER_ACTIVE)
-                .glow(this.accent == null ? AppTheme.NEON : this.accent, Theme.GLOW_MED);
-    }
-
-    private void refreshClose() {
-        if (this.titleBand != null) this.titleBand.close.visible(this.closable && this.onDismiss != null);
-    }
-
     @Override
     protected void onUpdate() {
         // THE FADE-IN ARMS ON THE HIDDEN-TO-VISIBLE EDGE, WHICH update SEES BECAUSE IT RUNS FOR HIDDEN CHILDREN
         // TOO; CLOSING IS INSTANT
-        if (this.visible && !this.wasVisible) {
-            this.fadeStart = System.currentTimeMillis();
-        } else if (!this.visible) {
-            this.fadeStart = 0L; // HIDDEN MID-FADE — DROP THE ANIMATION SO THE LOOP CAN GO BACK TO IDLE
-        }
+        if (this.visible && !this.wasVisible) this.fadeStart = System.currentTimeMillis();
+        else if (!this.visible) this.fadeStart = 0L; // HIDDEN MID-FADE: DROP THE ANIMATION SO THE LOOP CAN GO IDLE
         this.wasVisible = this.visible;
         if (this.fadeStart != 0L) {
-            if (System.currentTimeMillis() - this.fadeStart >= FADE_MS) {
-                this.fadeStart = 0L; // DONE — STOP SELF-SUSTAINING
-            } else {
-                this.invalidate();
-            }
+            if (System.currentTimeMillis() - this.fadeStart >= FADE_MS) this.fadeStart = 0L; // DONE: STOP SELF-SUSTAINING
+            else this.invalidate();
         }
     }
 
@@ -206,7 +178,7 @@ public final class Dialog extends Group<Dialog> {
             super.onDraw(canvas);
             return;
         }
-        // EASE-IN FADE OVER THE WHOLE DIALOG (SCRIM + PANEL + CHILDREN) VIA THE CANVAS ALPHA MULTIPLIER
+        // EASE-IN FADE OVER THE WHOLE DIALOG (SCRIM, PANEL AND CHILDREN) THROUGH THE CANVAS ALPHA MULTIPLIER
         final float t = Math.min(1f, (System.currentTimeMillis() - this.fadeStart) / (float) FADE_MS);
         canvas.pushAlpha(t * t);
         super.onDraw(canvas);
@@ -229,8 +201,26 @@ public final class Dialog extends Group<Dialog> {
         this.panel.layout(px, py);
     }
 
+    private void layoutSlots() {
+        // THE PANEL CHILDREN FOLLOW THE BAND ORDER (SKIPPING ABSENT SLOTS), SO DRAW AND DISPATCH MATCH THE STACK
+        this.panel.clear();
+        if (this.titleBand != null) this.panel.add(this.titleBand);
+        if (this.headerBand != null) this.panel.add(this.headerBand);
+        this.panel.add(this.contentCol);
+        if (this.footerBand != null) this.panel.add(this.footerBand);
+    }
+
+    private void applyAccent() {
+        this.panel.border(this.accent == null ? AppTheme.STROKE_BRIGHT : this.accent, Theme.BORDER_ACTIVE)
+                .glow(this.accent == null ? AppTheme.NEON : this.accent, Theme.GLOW_MED);
+    }
+
+    private void refreshClose() {
+        if (this.titleBand != null) this.titleBand.close.visible(this.closable && this.onDismiss != null);
+    }
+
     // ==========================================================================
-    // MODAL INPUT — WHILE VISIBLE, EVERYTHING IS CONSUMED AFTER THE CONTENT HAD ITS CHANCE
+    // MODAL INPUT: WHILE VISIBLE, EVERYTHING IS CONSUMED AFTER THE CONTENT HAD ITS CHANCE
     // ==========================================================================
 
     @Override
@@ -238,8 +228,8 @@ public final class Dialog extends Group<Dialog> {
         if (!this.visible) return false;
         final boolean childHandled = super.dispatchKey(key, action);
         if (action == GLFW_PRESS) {
-            // REMEMBER A CHILD-CONSUMED PRESS (E.G. A SPINNER ESC/ENTER, WHICH ACTS ON PRESS) SO ITS RELEASE
-            // BELOW IS IGNORED — OTHERWISE ONE KEYSTROKE BOTH COMMITS THE EDITOR AND DISMISSES THE DIALOG
+            // A CHILD-CONSUMED PRESS (A SPINNER ESC OR ENTER, WHICH ACTS ON PRESS) MUTES ITS RELEASE BELOW, OR ONE
+            // KEYSTROKE WOULD BOTH COMMIT THE EDITOR AND DISMISS THE DIALOG
             if (childHandled) this.childConsumedKey = key;
         } else if (action == GLFW_RELEASE) {
             final boolean paired = this.childConsumedKey == key;
@@ -274,21 +264,21 @@ public final class Dialog extends Group<Dialog> {
         if (!this.visible) return null;
         final Element<?> hit = super.dispatchPress(mx, my);
         if (hit != null) return hit;
-        // MODAL: A PRESS NOBODY INSIDE CLAIMED IS CAPTURED BY THE DIALOG ITSELF, SO DRAGGABLES UNDER
-        // THE SCRIM (SEEKBARS, TITLEBAR) NEVER SEE IT; CLICKS SURVIVE — ONLY REAL DRAGS SUPPRESS THEM
+        // MODAL: A PRESS NOBODY INSIDE CLAIMED IS CAPTURED BY THE DIALOG ITSELF, SO DRAGGABLES UNDER THE SCRIM
+        // (SEEKBARS, TITLEBAR) NEVER SEE IT; CLICKS SURVIVE, ONLY REAL DRAGS SUPPRESS THEM
         return this;
     }
 
     // ==========================================================================
-    // PANEL — A VERTICAL BAND STACK STRETCHED TO ONE WIDTH, WITH AMBER CORNER CUBES
+    // PANEL: A VERTICAL BAND STACK STRETCHED TO ONE WIDTH, WITH AMBER CORNER CUBES
     // ==========================================================================
 
     private final class Panel extends Group<Panel> {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            // WIDTH IS THE FIXED panelWidth WHEN SET, ELSE THE WIDEST OF THE CONTENT/HEADER/FOOTER (THE
-            // TITLE BAND ONLY STRETCHES — IT NEVER DRIVES THE WIDTH), CLAMPED TO THE AVAILABLE SPACE
+            // THE FIXED panelWidth WHEN SET, ELSE THE WIDEST OF CONTENT, HEADER AND FOOTER (THE TITLE BAND ONLY
+            // STRETCHES, IT NEVER DRIVES THE WIDTH), CLAMPED TO THE AVAILABLE SPACE
             int width;
             if (this.width > 0) {
                 width = innerAvailWidth;
@@ -298,17 +288,15 @@ public final class Dialog extends Group<Dialog> {
                 width = Math.max(width, bandWidth(Dialog.this.footerBand, innerAvailWidth, innerAvailHeight));
                 width = Math.min(width, innerAvailWidth);
             }
-            int totalH = 0;
-            totalH += this.stretch(Dialog.this.titleBand, width, innerAvailHeight);
-            totalH += this.stretch(Dialog.this.headerBand, width, innerAvailHeight);
-            totalH += this.stretch(Dialog.this.contentCol, width, innerAvailHeight);
-            totalH += this.stretch(Dialog.this.footerBand, width, innerAvailHeight);
             this.contentWidth = width;
-            this.contentHeight = totalH;
+            this.contentHeight = this.stretch(Dialog.this.titleBand, width, innerAvailHeight)
+                    + this.stretch(Dialog.this.headerBand, width, innerAvailHeight)
+                    + this.stretch(Dialog.this.contentCol, width, innerAvailHeight)
+                    + this.stretch(Dialog.this.footerBand, width, innerAvailHeight);
         }
 
-        // MEASURES A BAND AT THE PANEL WIDTH AND FORCES IT TO FILL THAT WIDTH; RETURNS ITS HEIGHT (0 IF ABSENT)
         private int stretch(final Element<?> band, final int width, final int availHeight) {
+            // THE BAND MEASURES AT THE PANEL WIDTH AND FILLS IT; AN ABSENT ONE IS 0 HIGH
             if (band == null || !band.visible) return 0;
             band.measure(width, availHeight);
             band.measuredWidth = width;
@@ -347,7 +335,7 @@ public final class Dialog extends Group<Dialog> {
     }
 
     // ==========================================================================
-    // TITLE BAND — DARKER STRIP: ACCENT TITLE LEFT, RED X RIGHT, FULL-WIDTH HAIRLINE UNDER IT
+    // TITLE BAND: DARKER STRIP, ACCENT TITLE LEFT, RED X RIGHT, FULL-WIDTH HAIRLINE UNDER IT
     // ==========================================================================
 
     private final class TitleBand extends Group<TitleBand> {
@@ -389,10 +377,8 @@ public final class Dialog extends Group<Dialog> {
             final int ty = this.top + (this.measuredHeight - th) / 2;
             final int reserve = this.close.visible() ? this.close.measuredWidth + Theme.SPACE_MD : Theme.SPACE_XL;
             final int avail = this.measuredWidth - Theme.SPACE_XL - reserve;
-            String draw = this.title;
-            if (avail > 0 && canvas.textWidth(this.title, AppTheme.TEXT_BUTTON, true) > avail) {
-                draw = canvas.text().truncateToWidth(this.title, avail, AppTheme.TEXT_BUTTON, Font.BOLD);
-            }
+            final String draw = avail > 0 && canvas.textWidth(this.title, AppTheme.TEXT_BUTTON, true) > avail
+                    ? canvas.text().truncateToWidth(this.title, avail, AppTheme.TEXT_BUTTON, Font.BOLD) : this.title;
             canvas.text(draw, this.left + Theme.SPACE_XL, ty, tc, AppTheme.TEXT_BUTTON, true);
             super.onDraw(canvas); // THE CLOSE BUTTON
             canvas.lineH(this.left, this.top + this.measuredHeight - 1, this.measuredWidth, AppTheme.STROKE_BRIGHT, 1f);
@@ -400,7 +386,7 @@ public final class Dialog extends Group<Dialog> {
     }
 
     // ==========================================================================
-    // HEADER / FOOTER BAND — A PADDED SINGLE-CHILD COLUMN WITH A FULL-WIDTH HAIRLINE (TOP OR BOTTOM)
+    // HEADER / FOOTER BAND: A PADDED SINGLE-CHILD COLUMN WITH A FULL-WIDTH HAIRLINE (TOP OR BOTTOM)
     // ==========================================================================
 
     private static final class Band extends Parent {

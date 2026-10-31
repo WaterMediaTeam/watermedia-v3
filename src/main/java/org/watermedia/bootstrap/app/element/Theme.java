@@ -6,9 +6,6 @@ package org.watermedia.bootstrap.app.element;
  */
 public final class Theme {
 
-    private Theme() {
-    }
-
     // SPACING SCALE (PADDING / MARGIN / GAPS)
     public static final int SPACE_XS = 4;
     public static final int SPACE_SM = 8;
@@ -49,4 +46,6 @@ public final class Theme {
     // TRAILING CHIP GEOMETRY SHARED BY Button AND Text, SO BOTH CHIPS KEEP THE SAME LOOK
     public static final int CHIP_PAD = 6;
     public static final int CHIP_H = 20;
+
+    private Theme() {}
 }

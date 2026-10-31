@@ -22,10 +22,8 @@ import java.util.EnumSet;
  * Create instances through {@code PlayerAPI.alEngine}.
  */
 public final class ALEngine extends SFXEngine {
-    // 8 BUFFERS × ~43ms ≈ 340ms OF DEPTH — WHAT RIDES OVER GAME HITCHES WITHOUT UNDERRUNS;
-    // THE MEDIA CLOCK FOLLOWS THE AUDIBLE POSITION VIA pendingMs(), SO DEPTH NEVER DESYNCS A/V.
     /** Default AL buffer pool depth used by {@code PlayerAPI.alEngine()}. */
-    public static final int DEFAULT_BUFFER_COUNT = 8;
+    public static final int DEFAULT_BUFFER_COUNT = 8; // ~43 MS EACH ≈ 340 MS OF DEPTH; THE CLOCK FOLLOWS pendingMs(), SO DEPTH NEVER DESYNCS A/V
 
     private final SampleType[] supportedTypes;
     private final ChannelSupport[] supportedChannels;
@@ -38,8 +36,9 @@ public final class ALEngine extends SFXEngine {
     private final boolean efx;
     private final int auxiliarySends;
     private volatile SpatialAudio spatialAudio;
-    // PRIMITIVE RINGS, NO BOXING IN THE HOT PATH: freeIds IS A LIFO OF FILLABLE BUFFER IDS,
-    // queuedDur A FIFO OF DURATIONS MIRRORING THE SOURCE QUEUE ORDER (POPPED BY reclaimProcessed).
+    // QUEUE STATE, GUARDED BY THE ENGINE MONITOR: UPLOADS, HOST CONTROLS, ENVIRONMENT CALLBACKS AND RELEASE NEVER OVERLAP.
+    // PRIMITIVE RINGS, NO BOXING IN THE HOT PATH: freeIds IS A LIFO OF FILLABLE BUFFER IDS, queuedDur A FIFO OF DURATIONS
+    // MIRRORING THE SOURCE QUEUE ORDER (POPPED BY reclaimProcessed)
     private final int[] freeIds;
     private int freeCount;
     private final long[] queuedDur;
@@ -48,12 +47,9 @@ public final class ALEngine extends SFXEngine {
     private long totalQueuedUs;
     // PRECOMPUTED AL FORMAT CONSTANT — UPDATED BY format(), READ BY upload
     private int alFormat;
-    private int bytesPerFrame; // BYTES PER SAMPLE-FRAME (channels × sample size)
-    // REUSED SCRATCH FOR AL_SOFT_source_latency QUERIES: [0] = offset seconds, [1] = device latency seconds
+    private int bytesPerFrame; // BYTES PER SAMPLE-FRAME (CHANNELS × SAMPLE SIZE)
+    // REUSED SCRATCH FOR AL_SOFT_source_latency QUERIES: [0] = OFFSET SECONDS, [1] = DEVICE LATENCY SECONDS
     private final double[] latencyValues = new double[2];
-
-    // THE PLAYER'S UPLOAD LOOP AND HOST CONTROLS SHARE ONE SOURCE; THIS MONITOR ALSO OWNS ITS QUEUE.
-    // RELEASE CANNOT RECYCLE NATIVE IDS WHILE AN UPLOAD OR AN ENVIRONMENT CALLBACK STILL USES THEM.
 
     ALEngine(final int bufferCount) {
         this(bufferCount, false);
@@ -121,9 +117,8 @@ public final class ALEngine extends SFXEngine {
         this.spatialAudio = null;
         try {
             if (previous != null && previous.environment() != null
-                    && (audio == null || previous.environment() != audio.environment())) {
+                    && (audio == null || previous.environment() != audio.environment()))
                 previous.environment().reset(this.source);
-            }
         } finally {
             // CLEAR EFFECTS EVEN IF THE ADAPTER WAS DISABLED OR ITS RESET FAILED.
             this.clearSpatial();
@@ -145,41 +140,18 @@ public final class ALEngine extends SFXEngine {
         }
     }
 
-    private void requireContext() {
-        final long localContext = this.threadContext ? EXTThreadLocalContext.alcGetThreadContext() : 0;
-        if ((localContext != 0 ? localContext : ALC10.alcGetCurrentContext()) != this.context)
-            throw new IllegalStateException("The ALEngine's original OpenAL context must be current on this thread");
-    }
-
-    private void clearSpatial() {
-        AL10.alSourcei(this.source, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE);
-        AL10.alSource3f(this.source, AL10.AL_POSITION, 0, 0, 0);
-        AL10.alSourcef(this.source, AL10.AL_ROLLOFF_FACTOR, 0);
-        if (this.efx) {
-            AL10.alSourcei(this.source, EXTEfx.AL_DIRECT_FILTER, EXTEfx.AL_FILTER_NULL);
-            for (int send = 0; send < this.auxiliarySends; send++) {
-                AL11.alSource3i(this.source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, send, EXTEfx.AL_FILTER_NULL);
-            }
-            AL10.alSourcef(this.source, EXTEfx.AL_AIR_ABSORPTION_FACTOR, 0);
-        }
-    }
-
     @Override
     synchronized void pause() {
         if (this.source == 0) return;
         this.requireContext();
-        if (AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) != AL10.AL_PAUSED) {
-            AL10.alSourcePause(this.source);
-        }
+        if (AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) != AL10.AL_PAUSED) AL10.alSourcePause(this.source);
     }
 
     @Override
     synchronized void play() {
         if (this.source == 0) return;
         this.requireContext();
-        if (AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) {
-            AL10.alSourcePlay(this.source);
-        }
+        if (AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) AL10.alSourcePlay(this.source);
     }
 
     // AL_PITCH IS CORE OPENAL; ONLY A RELEASED SOURCE CANNOT CHANGE SPEED. THE VOLATILE READ NEEDS NO CONTEXT
@@ -292,7 +264,7 @@ public final class ALEngine extends SFXEngine {
         this.requireContext();
         AL10.alSourceStop(this.source);
         // DETACH THE WHOLE QUEUE IN ONE CALL (AL_BUFFER=0 ON A STOPPED SOURCE) AND REBUILD THE FREE
-        // STACK TO THE EXACT BUFFER SET — INCREMENTAL UNQUEUEING OVERFLOWED freeIds ON DRIVER MISCOUNTS.
+        // STACK TO THE EXACT BUFFER SET: INCREMENTAL UNQUEUEING OVERFLOWS freeIds ON DRIVER MISCOUNTS
         AL10.alSourcei(this.source, AL10.AL_BUFFER, 0);
         // LAND ON INITIAL, NOT STOPPED: A STOPPED SOURCE REPORTS EVERY FUTURE QUEUED BUFFER AS
         // PROCESSED, SO PAUSED WARM-UP UPLOADS AFTER A SEEK WOULD BE RECLAIMED AND LOST
@@ -324,12 +296,31 @@ public final class ALEngine extends SFXEngine {
         }
 
         final long playedUs = (long) (Math.max(0.0, offsetSec) * 1_000_000.0);
-        return Math.max(0L, (this.totalQueuedUs - playedUs) / 1000L);
+        return Math.max(0L, (this.totalQueuedUs - playedUs) / 1_000L);
     }
 
     /** Returns a defensive copy of the AL buffer ids owned by this engine. */
     public int[] buffers() {
         return this.buffers.clone();
+    }
+
+    private void requireContext() {
+        final long localContext = this.threadContext ? EXTThreadLocalContext.alcGetThreadContext() : 0;
+        if ((localContext != 0 ? localContext : ALC10.alcGetCurrentContext()) != this.context)
+            throw new IllegalStateException("The ALEngine's original OpenAL context must be current on this thread");
+    }
+
+    // RESETS THE SOURCE TO A DRY, LISTENER-RELATIVE ORIGIN WITH NO DISTANCE ATTENUATION AND NO EFX FILTERS OR SENDS
+    private void clearSpatial() {
+        AL10.alSourcei(this.source, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE);
+        AL10.alSource3f(this.source, AL10.AL_POSITION, 0, 0, 0);
+        AL10.alSourcef(this.source, AL10.AL_ROLLOFF_FACTOR, 0);
+        if (this.efx) {
+            AL10.alSourcei(this.source, EXTEfx.AL_DIRECT_FILTER, EXTEfx.AL_FILTER_NULL);
+            for (int send = 0; send < this.auxiliarySends; send++)
+                AL11.alSource3i(this.source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, send, EXTEfx.AL_FILTER_NULL);
+            AL10.alSourcef(this.source, EXTEfx.AL_AIR_ABSORPTION_FACTOR, 0);
+        }
     }
 
     // UNQUEUES EVERY PROCESSED BUFFER AND RETURNS IT TO THE FREE STACK, KEEPING THE QUEUED-DURATION
@@ -415,5 +406,4 @@ public final class ALEngine extends SFXEngine {
             };
         };
     }
-
 }

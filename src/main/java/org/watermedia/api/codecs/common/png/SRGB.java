@@ -6,8 +6,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
- * sRGB - Standard RGB Color Space Chunk
- * Indicates the image uses the sRGB color space with specified rendering intent
+ * sRGB (standard RGB color space) chunk: the image uses the sRGB color space with the given rendering intent.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11sRGB">PNG Specification - sRGB</a>
  */
@@ -28,28 +27,19 @@ public record SRGB(int renderingIntent) implements IChunk {
 
     /** Converts a generic chunk to sRGB. */
     public static SRGB convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for sRGB: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for sRGB: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("sRGB data must be 1 byte, got " + data.length);
-        }
-
+        if (data.length != LENGTH) throw new CodecException("sRGB data must be 1 byte, got " + data.length);
         return new SRGB(data[0] & 0xFF);
     }
 
-    /**
-     * Returns whether perceptual rendering intent is used
-     */
+    /** Returns whether the perceptual rendering intent is used. */
     public boolean isPerceptual() {
         return this.renderingIntent == PERCEPTUAL;
     }
 
-    /**
-     * Returns the rendering intent name
-     */
+    /** Returns the rendering intent name. */
     public String renderingIntentName() {
         return switch (this.renderingIntent) {
             case PERCEPTUAL -> "Perceptual";

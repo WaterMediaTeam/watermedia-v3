@@ -7,35 +7,16 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Immutable inherited render state: the current device transform plus the cascaded presentation
- * values (fill/stroke paint, opacities, fill-rule, stroke width, {@code currentColor}). A child
- * state is produced with {@link #derive(SvgNode, Map, double)}, which reads an element's attributes
- * and falls back to this state for anything the element does not override — the SVG inheritance model.
- *
- * <p>Element {@code opacity} is folded multiplicatively into the subtree opacity (parent × child),
- * which is exact except for an isolated group whose children overlap — an intentional limitation.
- * Modelled as a record so each derived state is an allocation-friendly immutable value.
- *
- * @param ctm           current device transform
- * @param fill          fill paint, or {@code null} for no fill
- * @param fillOpacity   inherited fill opacity
- * @param evenOdd       fill-rule (true = even-odd)
- * @param stroke        stroke paint, or {@code null} for no stroke
- * @param strokeWidth   stroke width in user units
- * @param strokeOpacity inherited stroke opacity
- * @param opacity       folded subtree opacity
- * @param color         {@code currentColor} as packed ARGB
+ * Immutable inherited render state: the device transform plus the cascaded presentation values (null paints draw
+ * nothing, {@code color} is {@code currentColor} as ARGB). {@link #derive} applies an element over its parent's state.
+ * Element {@code opacity} folds into the subtree opacity (parent × child), inexact only for overlapping group children.
  */
 record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd, SvgPaint stroke,
                    double strokeWidth, float strokeOpacity, float opacity, int color, boolean visible) {
-
     // SVG INITIAL VALUES: BLACK FILL, NO STROKE, FULL OPACITY, NON-ZERO FILL RULE, VISIBLE
     static RenderState root(final Affine ctm) {
         return new RenderState(ctm, SvgPaint.solid(0xFF000000), 1f, false, null, 1.0, 1f, 1f, 0xFF000000, true);
     }
-
-    float fillEff() { return this.fillOpacity * this.opacity; }
-    float strokeEff() { return this.strokeOpacity * this.opacity; }
 
     RenderState derive(final SvgNode node, final Map<String, SvgPaint> gradients, final double diag) throws CodecException {
         final Map<String, String> a = node.attrs();
@@ -87,7 +68,7 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
         return new RenderState(ctm, fill, fillOpacity, evenOdd, stroke, strokeWidth, strokeOpacity, opacity, color, visible);
     }
 
-    // RESOLVES A fill/stroke VALUE: none → null, url(#id) → gradient, colour → solid, else inherit
+    // RESOLVES A fill/stroke VALUE: none → NULL, url(#id) → GRADIENT, A COLOUR → SOLID, ANYTHING ELSE → INHERITED
     private static SvgPaint resolvePaint(final String value, final SvgPaint inherited,
                                          final Map<String, SvgPaint> gradients, final int color) {
         if (value == null) return inherited;
@@ -100,11 +81,14 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
             final int hash = v.indexOf('#');
             if (hash >= 0 && close > hash) {
                 String id = v.substring(hash + 1, close).trim();
-                id = stripQuotes(id);
+                if (id.length() >= 2) {
+                    final char first = id.charAt(0), last = id.charAt(id.length() - 1);
+                    if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) id = id.substring(1, id.length() - 1);
+                }
                 final SvgPaint g = gradients.get(id);
                 if (g != null) return g;
             }
-            // OPTIONAL FALLBACK PAINT AFTER url(...) e.g. "url(#x) red"
+            // OPTIONAL FALLBACK PAINT AFTER url(...), AS IN "url(#x) red"
             if (close >= 0 && close + 1 < v.length()) {
                 final String fb = v.substring(close + 1).trim();
                 if (fb.equalsIgnoreCase("none")) return null;
@@ -118,14 +102,7 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
         return c == SvgColor.INVALID ? inherited : SvgPaint.solid((int) c);
     }
 
-    private static String stripQuotes(final String s) {
-        if (s.length() >= 2) {
-            final char a = s.charAt(0), b = s.charAt(s.length() - 1);
-            if ((a == '"' && b == '"') || (a == '\'' && b == '\'')) return s.substring(1, s.length() - 1);
-        }
-        return s;
-    }
-
+    // RESOLVES A fill-opacity/stroke-opacity VALUE CLAMPED TO [0,1]; MISSING OR inherit KEEPS THE PARENT'S
     private static float opacityValue(final String v, final float inherited) throws CodecException {
         if (v == null) return inherited;
         final String s = v.trim().toLowerCase(Locale.ROOT);

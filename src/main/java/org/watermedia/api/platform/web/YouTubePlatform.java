@@ -28,31 +28,25 @@ import static org.watermedia.tools.JSONTool.obj;
 import static org.watermedia.tools.JSONTool.str;
 
 /**
- * YouTube platform backed by yt-dlp. Extends {@link YtDlpPlatform} to reuse its yt-dlp engine (binary
- * invocation + JSON→{@link Source} mapping) and adds the two things
- * YouTube alone needs: the BotGuard po_token retry for the "Sign in to confirm you're not a bot" gate,
- * and the InnerTube {@code visitorData} fetch the token must be bound to.
- *
- * <p>When yt-dlp is blocked by the bot check, the request is retried with a freshly minted po_token
- * supplied to the web-family clients, which unblocks their otherwise-gated stream URLs while keeping
- * yt-dlp's bot-resistant default clients. The rustypipe-botguard binary that mints the token is
- * provisioned lazily by the {@code binaries} module ({@link BotGuardBinary}); running it out-of-process
- * keeps a crash in its bundled JS engine from taking down the host JVM.
+ * YouTube platform on the {@link YtDlpPlatform} engine, plus what YouTube alone needs: a retry of the "Sign in to
+ * confirm you're not a bot" gate with a BotGuard po_token for the web-family clients, bound to a fresh InnerTube
+ * {@code visitorData}. The token comes from rustypipe-botguard ({@link BotGuardBinary}), run out of process so a
+ * crash in its bundled JS engine never takes down the JVM.
  */
 public final class YouTubePlatform extends YtDlpPlatform {
-    public static final String NAME = "YouTube";
     private static final Marker IT = MarkerManager.getMarker(YouTubePlatform.class.getSimpleName());
+    public static final String NAME = "YouTube";
     private static final String[] HOSTS = { "youtube.com", "youtu.be" };
     // SITE PAGES WITHOUT MEDIA; CHANNELS AND PLAYLISTS STAY PLAYABLE AS PLAYLISTS
     private static final String[] UNPLAYABLE_PATHS = { "/results", "/feed/", "/account", "/premium", "/t/", "/howyoutubeworks" };
-    // VIDEO SHAPES (vs a pure playlist link) — DECIDES WHETHER TO PASS --no-playlist
+    // VIDEO SHAPES, AS OPPOSED TO A PURE PLAYLIST LINK: DECIDES WHETHER TO PASS --no-playlist
     private static final Pattern YOUTUBE_VIDEO_ID = Pattern.compile("(?:youtu\\.be/|youtube\\.com/(?:embed/|v/|shorts/|feeds/api/videos/|watch\\?v=|watch\\?.+&v=))([^/?&#]+)", Pattern.CASE_INSENSITIVE);
 
     private static final long BOTGUARD_TIMEOUT_SECONDS = 60; // COLD START RUNS THE BOTGUARD VM + NETWORK
 
     // INNERTUBE visitor_id ENDPOINT — A po_token MUST BE BOUND TO THE visitorData THEN HANDED TO yt-dlp
     private static final URI VISITOR_ENDPOINT = URI.create("https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false");
-    private static final String CLIENT_VERSION = "2.20250601.01.00"; // WEB client; the endpoint is lenient
+    private static final String CLIENT_VERSION = "2.20250601.01.00"; // WEB CLIENT; THE ENDPOINT IS LENIENT
     private static final String VISITOR_BODY =
             "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"" + CLIENT_VERSION
             + "\",\"hl\":\"en\",\"gl\":\"US\"}}}";
@@ -67,7 +61,6 @@ public final class YouTubePlatform extends YtDlpPlatform {
 
     @Override
     public Resolution resolve(final URI uri) throws PlatformException {
-        // NOT A YOUTUBE URL → LET PlatformAPI KEEP PROBING OTHER HANDLERS (HOSTS ARE CASE-INSENSITIVE)
         if (!hostMatches(uri.getHost(), HOSTS)) return null;
         // A BARE HOST, A SEARCH PAGE OR A FEED NAMES NOTHING TO PLAY; SPAWNING yt-dlp TO FIND THAT OUT WOULD COST TWO MINUTES
         final String path = uri.getPath() == null ? "" : uri.getPath();
@@ -83,16 +76,22 @@ public final class YouTubePlatform extends YtDlpPlatform {
         } catch (final IOException e) {
             final PlatformException gate = ageGate(uri, e);
             if (gate != null) throw gate;
-            if (isBotCheck(e.getMessage())) return this.retryWithPoToken(uri, args);
+
+            // yt-dlp'S MESSAGES FOR THE BOT GATE THAT A po_token CAN BYPASS
+            final String message = e.getMessage() == null ? "" : e.getMessage().toLowerCase(Locale.ROOT);
+            if (message.contains("not a bot") || message.contains("sign in to confirm") || message.contains("po_token"))
+                return this.retryWithPoToken(uri, args);
             throw new PlatformException(NAME, "yt-dlp could not resolve " + uri + ": " + e.getMessage(), e);
         }
-        return this.extract(info); // EXTRACTION EXCEPTIONS (Mature/Platform) PROPAGATE AS-IS
+        return this.extract(info);
     }
 
     // THE AGE GATE NEEDS A SIGNED-IN SESSION NO TOKEN CAN REPLACE: A MATURE BLOCK WHEN MATURE CONTENT IS OFF, A PLAIN
-    // FAILURE OTHERWISE, AND null WHEN THE FAILURE IS SOMETHING ELSE
+    // FAILURE OTHERWISE, AND null WHEN yt-dlp'S MESSAGE IS NOT AN AGE GATE
     private static PlatformException ageGate(final URI uri, final IOException e) {
-        if (!isAgeGate(e.getMessage())) return null;
+        final String message = e.getMessage() == null ? "" : e.getMessage().toLowerCase(Locale.ROOT);
+        if (!message.contains("confirm your age") && !message.contains("age-restricted") && !message.contains("inappropriate for some users"))
+            return null;
         if (!WaterMediaConfig.platforms.allowMatureContent) return new MatureContentException(NAME, "Age-restricted: " + uri, e);
         return new PlatformException(NAME, "Age-restricted video " + uri + " needs a signed-in session, which WaterMedia cannot provide", e);
     }
@@ -103,7 +102,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
         LOGGER.warn(IT, "YouTube bot check hit for '{}'; retrying with a BotGuard po_token", uri);
         final JsonObject info;
         try {
-            final String visitorData = fetchVisitorData();
+            final String visitorData = visitorData();
             final String token = this.mintToken(visitorData);
             final List<String> args = new ArrayList<>(baseArgs);
             args.add("--extractor-args");
@@ -153,9 +152,8 @@ public final class YouTubePlatform extends YtDlpPlatform {
             // yt-dlp'S FLAT-PLAYLIST url CAN BE A BARE VIDEO ID (NO SCHEME, WHICH DataTool.uri REJECTS);
             // THEN THE WATCH URL IS BUILT FROM THE ID SO SELECTING THE RESULT PLAYS IT INSTEAD OF RE-SEARCHING
             final URI parsed = DataTool.uri(url);
-            final URI page = parsed != null ? parsed
-                    : id != null ? DataTool.uri("https://www.youtube.com/watch?v=" + id) : null;
-            if (page == null) continue; // NEITHER AN ABSOLUTE url NOR AN id — NOTHING PLAYABLE TO LINK
+            final URI page = parsed != null ? parsed : id != null ? DataTool.uri("https://www.youtube.com/watch?v=" + id) : null;
+            if (page == null) continue;
             out.add(new PlatformResult(this, str(entry, "title"), thumbnail, page));
             if (out.size() >= limit) break;
         }
@@ -189,9 +187,9 @@ public final class YouTubePlatform extends YtDlpPlatform {
         throw new IOException("rustypipe-botguard produced no token");
     }
 
-    // FETCHES A FRESH visitorData FROM YOUTUBE'S INNERTUBE visitor_id ENDPOINT; THE po_token MUST BE
-    // BOUND TO THE SAME visitorData HANDED TO yt-dlp
-    private static String fetchVisitorData() throws IOException {
+    // A FRESH visitorData FROM YOUTUBE'S INNERTUBE visitor_id ENDPOINT; THE po_token MUST BE BOUND TO THE SAME
+    // visitorData HANDED TO yt-dlp
+    private static String visitorData() throws IOException {
         final JsonObject json = WebRequests.fetchJson(NAME, new NetRequest(VISITOR_ENDPOINT)
                 .method("POST")
                 .accept(NetRequest.ACCEPT_JSON)
@@ -202,19 +200,5 @@ public final class YouTubePlatform extends YtDlpPlatform {
         final String visitorData = str(obj(json, "responseContext"), "visitorData");
         if (visitorData == null) throw new IOException("visitor_id endpoint answered without visitorData");
         return visitorData;
-    }
-
-    // yt-dlp'S MESSAGES FOR THE BOT GATE THAT A PO_TOKEN CAN BYPASS
-    private static boolean isBotCheck(final String message) {
-        if (message == null) return false;
-        final String m = message.toLowerCase(Locale.ROOT);
-        return m.contains("not a bot") || m.contains("sign in to confirm") || m.contains("po_token");
-    }
-
-    // yt-dlp'S MESSAGES FOR THE AGE GATE, WHICH ONLY A SIGNED-IN SESSION PASSES
-    private static boolean isAgeGate(final String message) {
-        if (message == null) return false;
-        final String m = message.toLowerCase(Locale.ROOT);
-        return m.contains("confirm your age") || m.contains("age-restricted") || m.contains("inappropriate for some users");
     }
 }

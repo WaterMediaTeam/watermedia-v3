@@ -15,8 +15,7 @@ import java.util.Arrays;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.codecs.readers.webp.lossy.VP8Tables.*;
 
-// RFC6386 VP8 LOSSY DECODER
-// COEFFICIENT TYPES: 0=Y_AFTER_Y2, 1=Y2, 2=UV, 3=Y_I4X4
+/** RFC 6386 VP8 key-frame decoder of lossy WebP, into packed ARGB or a BGRA buffer. */
 public final class VP8LossyDecoder {
     static final Marker IT = MarkerManager.getMarker(VP8LossyDecoder.class.getSimpleName());
     private static final byte[] TOP_BORDER_16 = fillBorder(16, 127);
@@ -24,6 +23,8 @@ public final class VP8LossyDecoder {
     private static final byte[] TOP_BORDER_8 = fillBorder(8, 127);
     private static final byte[] LEFT_BORDER_8 = fillBorder(8, 129);
     private static final byte[] LEFT_BORDER_4 = fillBorder(4, 129);
+
+    private VP8LossyDecoder() {}
 
     /** Converts an opaque VP8 key frame into a new direct BGRA buffer; {@code warned} latches the repair notice. */
     public static ByteBuffer decodeToBgra(final ByteBuffer data, final int expW, final int expH, final boolean[] warned) throws CodecException {
@@ -99,12 +100,12 @@ public final class VP8LossyDecoder {
         return DataTool.yuvToBgra(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
     }
 
-    // RFC6386 SECTION 9.5 - READ THE TOKEN PARTITION SIZE TABLE AND BUILD ONE BOOL DECODER PER
-    // PARTITION. SIZES COME STRAIGHT FROM THE FILE AND CAN BE BROKEN (DECLARING MORE BYTES THAN
-    // AVAILABLE, TRUNCATED TABLE, OR EMPTY PARTITIONS). STRICT MODE FAILS THE DECODE; WITH
-    // codecs.vp8.brokenTokens ENABLED THE SIZES ARE CLAMPED TO THE BYTES ACTUALLY AVAILABLE AND
-    // UNUSABLE PARTITIONS ARE REPLACED WITH A DUPLICATE OF THE PREVIOUS ONE OR WITH FAKE ZEROED
-    // DATA SO THE MACROBLOCK LOOP CAN STILL RUN BEST-EFFORT.
+    // ==========================================================================
+    // RFC6386 SECTION 9 - FRAME HEADER AND PARTITIONS
+    // ==========================================================================
+    // RFC6386 SECTION 9.5 - ONE BOOL DECODER PER TOKEN PARTITION. FILE SIZES CAN BE BROKEN (OVERLONG, TRUNCATED TABLE,
+    // EMPTY PARTITION): STRICT MODE FAILS, codecs.vp8.brokenTokens CLAMPS THEM AND STANDS IN THE PREVIOUS PARTITION OR
+    // ZEROED DATA FOR AN UNUSABLE ONE, SO THE MACROBLOCK LOOP STILL RUNS BEST-EFFORT
     private static VP8BoolDecoder[] readTokenParts(final ByteBuffer buf, final int numParts, final boolean[] warned) throws CodecException {
         final boolean repair = WaterMediaConfig.codecs.vp8.brokenTokens;
 
@@ -163,8 +164,7 @@ public final class VP8LossyDecoder {
         LOGGER.warn(IT, pattern, args);
     }
 
-    // RFC6386 SECTION 9 - FRAME HEADER
-    // RFC6386 SECTION 9.1 - UNCOMPRESSED DATA CHUNK
+    // RFC6386 SECTION 9.1 - FRAME HEADER, UNCOMPRESSED DATA CHUNK
     private static FrameInfo parseFrameHeader(final ByteBuffer buf) throws CodecException {
         if (buf.remaining() < 10) throw new CodecException("VP8 frame too small");
 
@@ -255,9 +255,7 @@ public final class VP8LossyDecoder {
                     System.arraycopy(DEFAULT_COEFF_PROBS[t][b][c], 0, st.coeffProbs[t][b][c], 0, 11);
 
         // RFC6386 SECTION 9.11 - KEY FRAME: REFRESH_ENTROPY_PROBS
-        if (frm.keyFrame) {
-            br.readBool();
-        }
+        if (frm.keyFrame) br.readBool();
 
         // RFC6386 SECTION 9.9/13.4 - DCT COEFFICIENT PROBABILITY UPDATE
         for (int t = 0; t < 4; t++)
@@ -274,11 +272,12 @@ public final class VP8LossyDecoder {
         return st;
     }
 
+    // ==========================================================================
     // RFC6386 SECTIONS 11-14 - MACROBLOCK DECODING
+    // ==========================================================================
     private static void decodeMBs(final VP8BoolDecoder hdrBr, final VP8BoolDecoder[] tokBr, final State st,
                                   final byte[] yPln, final byte[] uPln, final byte[] vPln,
                                   final int yStr, final int uvStr, final int mbW, final int mbH) throws CodecException {
-
         // NON-ZERO COEFFICIENT TRACKING FOR CONTEXT
         final int[] topNzY = new int[mbW * 4];
         final int[] topNzU = new int[mbW * 2];
@@ -356,12 +355,11 @@ public final class VP8LossyDecoder {
                 }
 
                 // RFC6386 SECTION 11.4 - CHROMA MODE
-                final MBMode uvMode;
                 final int uvModeIdx;
                 if (!hdrBr.readBool(142)) uvModeIdx = 0;
                 else if (!hdrBr.readBool(114)) uvModeIdx = 1;
                 else uvModeIdx = hdrBr.readBool(183) ? 3 : 2;
-                uvMode = MBMode.VALUES[uvModeIdx];
+                final MBMode uvMode = MBMode.VALUES[uvModeIdx];
 
                 // STORE PER-MB INFO FOR LOOP FILTER (mbFInner IS SET AFTER RESIDUAL DECODING)
                 final int mbIdx = mbY * mbW + mbX;
@@ -394,7 +392,7 @@ public final class VP8LossyDecoder {
 
                 // RFC6386 SECTION 12 - INTRAFRAME PREDICTION
                 if (!isI4x4) {
-                    predict16(yMode, yPln, yOff, yStr, aboveY, leftY, tlY, hasAbove, hasLeft);
+                    predictBlock(yMode, yPln, yOff, yStr, 16, aboveY, leftY, tlY, hasAbove, hasLeft);
                 } else if (skip) {
                     for (int j = 0; j < 4; j++)
                         for (int i = 0; i < 4; i++) {
@@ -409,8 +407,8 @@ public final class VP8LossyDecoder {
                         }
                 }
 
-                predict8(uvMode, uPln, uvOff, uvStr, aboveU, leftU, tlU, hasAbove, hasLeft);
-                predict8(uvMode, vPln, uvOff, uvStr, aboveV, leftV, tlV, hasAbove, hasLeft);
+                predictBlock(uvMode, uPln, uvOff, uvStr, 8, aboveU, leftU, tlU, hasAbove, hasLeft);
+                predictBlock(uvMode, vPln, uvOff, uvStr, 8, aboveV, leftV, tlV, hasAbove, hasLeft);
 
                 // RFC6386 SECTION 13 - DCT COEFFICIENT DECODING
                 // TRACK WHETHER ANY COEFFICIENT DECODED NON-ZERO; LIBWEBP DERIVES THE LOOP-FILTER
@@ -507,7 +505,7 @@ public final class VP8LossyDecoder {
         }
     }
 
-    // RFC6386 SECTION 13 - COEFFICIENT DECODING
+    // RFC6386 SECTION 13 - COEFFICIENT DECODING; type IS 0=Y_AFTER_Y2, 1=Y2, 2=UV OR 3=Y_I4X4
     private static int decodeCoeffs(final VP8BoolDecoder br, final short[] coeffs, final int[][][][] probs,
                                     final int type, final int first, final int dcQ, final int acQ, int ctx) {
         int nz = 0;
@@ -583,7 +581,6 @@ public final class VP8LossyDecoder {
 
     // RFC6386 SECTION 14 - DCT/WHT INVERSION
     private static void inverseWHT(final short[] in, final short[] out, final int[] t) {
-
         for (int i = 0; i < 4; i++) {
             final int a1 = in[i] + in[12 + i];
             final int b1 = in[4 + i] + in[8 + i];
@@ -612,7 +609,6 @@ public final class VP8LossyDecoder {
     }
 
     private static void inverseDCT(final short[] c, final byte[] dst, final int off, final int str, final int[] t) {
-
         for (int i = 0; i < 4; i++) {
             final int c0 = c[i], c1 = c[4 + i], c2 = c[8 + i], c3 = c[12 + i];
             final int a = c0 + c2;
@@ -646,8 +642,10 @@ public final class VP8LossyDecoder {
         }
     }
 
+    // ==========================================================================
     // RFC6386 SECTION 12 - INTRAFRAME PREDICTION
-    // LIBWEBP BORDER VALUES: 127 FOR TOP ROW (mbY=0), 129 FOR LEFT COLUMN (mbX=0)
+    // ==========================================================================
+    // A BORDER ROW OR COLUMN OF sz BYTES; LIBWEBP USES 127 FOR THE TOP ROW (mbY=0) AND 129 FOR THE LEFT COLUMN (mbX=0)
     private static byte[] fillBorder(final int sz, final int val) {
         final byte[] border = new byte[sz];
         Arrays.fill(border, (byte) val);
@@ -688,69 +686,36 @@ public final class VP8LossyDecoder {
         for (int i = 0; i < sz; i++) out[i] = pln[off + i * str - 1];
     }
 
-    private static void predict16(final MBMode mode, final byte[] dst, final int off, final int str,
-                                  final byte[] above, final byte[] left, final int tl,
-                                  final boolean hasAbove, final boolean hasLeft) {
+    // PREDICTS A WHOLE sz x sz BLOCK: THE 16X16 LUMA OR AN 8X8 CHROMA PLANE OF THE MACROBLOCK
+    private static void predictBlock(final MBMode mode, final byte[] dst, final int off, final int str, final int sz,
+                                     final byte[] above, final byte[] left, final int tl,
+                                     final boolean hasAbove, final boolean hasLeft) {
         switch (mode) {
             case DC -> {
                 // LIBWEBP CheckMode: DC USES ONLY REAL NEIGHBORS, NOT BORDER VALUES
                 int sum = 0, cnt = 0;
                 if (hasAbove) {
-                    for (int i = 0; i < 16; i++) sum += above[i] & 0xFF;
-                    cnt += 16;
+                    for (int i = 0; i < sz; i++) sum += above[i] & 0xFF;
+                    cnt += sz;
                 }
                 if (hasLeft) {
-                    for (int i = 0; i < 16; i++) sum += left[i] & 0xFF;
-                    cnt += 16;
+                    for (int i = 0; i < sz; i++) sum += left[i] & 0xFF;
+                    cnt += sz;
                 }
-                fill(dst, off, str, 16, (byte) (cnt > 0 ? (sum + cnt / 2) / cnt : 128));
+                fill(dst, off, str, sz, (byte) (cnt > 0 ? (sum + cnt / 2) / cnt : 128));
             }
             case V -> {
-                for (int y = 0; y < 16; y++) System.arraycopy(above, 0, dst, off + y * str, 16);
+                for (int y = 0; y < sz; y++) System.arraycopy(above, 0, dst, off + y * str, sz);
             }
             case H -> {
-                for (int y = 0; y < 16; y++) {
+                for (int y = 0; y < sz; y++) {
                     final byte v = left[y];
-                    for (int x = 0; x < 16; x++) dst[off + y * str + x] = v;
+                    for (int x = 0; x < sz; x++) dst[off + y * str + x] = v;
                 }
             }
             case TM -> {
-                for (int y = 0; y < 16; y++)
-                    for (int x = 0; x < 16; x++)
-                        dst[off + y * str + x] = (byte) MathUtil.clip255((left[y] & 0xFF) + (above[x] & 0xFF) - tl);
-            }
-        }
-    }
-
-    private static void predict8(final MBMode mode, final byte[] dst, final int off, final int str,
-                                 final byte[] above, final byte[] left, final int tl,
-                                 final boolean hasAbove, final boolean hasLeft) {
-        switch (mode) {
-            case DC -> {
-                // LIBWEBP CheckMode: DC USES ONLY REAL NEIGHBORS, NOT BORDER VALUES
-                int sum = 0, cnt = 0;
-                if (hasAbove) {
-                    for (int i = 0; i < 8; i++) sum += above[i] & 0xFF;
-                    cnt += 8;
-                }
-                if (hasLeft) {
-                    for (int i = 0; i < 8; i++) sum += left[i] & 0xFF;
-                    cnt += 8;
-                }
-                fill(dst, off, str, 8, (byte) (cnt > 0 ? (sum + cnt / 2) / cnt : 128));
-            }
-            case V -> {
-                for (int y = 0; y < 8; y++) System.arraycopy(above, 0, dst, off + y * str, 8);
-            }
-            case H -> {
-                for (int y = 0; y < 8; y++) {
-                    final byte v = left[y];
-                    for (int x = 0; x < 8; x++) dst[off + y * str + x] = v;
-                }
-            }
-            case TM -> {
-                for (int y = 0; y < 8; y++)
-                    for (int x = 0; x < 8; x++)
+                for (int y = 0; y < sz; y++)
+                    for (int x = 0; x < sz; x++)
                         dst[off + y * str + x] = (byte) MathUtil.clip255((left[y] & 0xFF) + (above[x] & 0xFF) - tl);
             }
         }
@@ -1002,7 +967,9 @@ public final class VP8LossyDecoder {
         };
     }
 
+    // ==========================================================================
     // RFC6386 SECTION 15 - LOOP FILTER
+    // ==========================================================================
     private static void applyLoopFilter(final State st, final byte[] yPln, final byte[] uPln, final byte[] vPln,
                                         final int yStr, final int uvStr, final int mbW, final int mbH, final boolean keyFrame) {
         for (int mbY = 0; mbY < mbH; mbY++) {
@@ -1228,8 +1195,10 @@ public final class VP8LossyDecoder {
         }
     }
 
-    // RFC6386 SECTION 12 - PREDICTION MODES
-    // RFC6386 SECTION 12.1 - 16X16 LUMA AND 8X8 CHROMA MODES
+    // ==========================================================================
+    // TYPES
+    // ==========================================================================
+    // RFC6386 SECTION 12.1 - 16X16 LUMA AND 8X8 CHROMA PREDICTION MODES
     enum MBMode {
         DC, V, H, TM;
 
@@ -1250,7 +1219,7 @@ public final class VP8LossyDecoder {
         }
     }
 
-    // INTERNAL STATE CLASSES
+    // MUTABLE PARSE STATE OF ONE FRAME
     private static final class FrameInfo {
         boolean keyFrame;
         int p0Sz, w, h, hdrSz;
@@ -1271,5 +1240,4 @@ public final class VP8LossyDecoder {
         // PER-MB INFO FOR LOOP FILTER (STORED DURING DECODE, USED DURING FILTER)
         int[] mbSeg, mbIsI4x4, mbFInner;
     }
-
 }

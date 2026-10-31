@@ -9,11 +9,6 @@ import java.nio.ByteBuffer;
  * {@link CodecException} instead.
  */
 public final class UnsupportedFormatException extends CodecException {
-    public UnsupportedFormatException(final String message) {
-        super(message);
-    }
-
-    public UnsupportedFormatException(final String message, final Throwable cause) {
-        super(message, cause);
-    }
+    public UnsupportedFormatException(final String message) { super(message); }
+    public UnsupportedFormatException(final String message, final Throwable cause) { super(message, cause); }
 }

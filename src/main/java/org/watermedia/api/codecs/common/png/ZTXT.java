@@ -7,15 +7,14 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 /**
- * zTXt - Compressed Textual Data Chunk
- * Contains zlib-compressed Latin-1 textual data with a keyword-value pair
+ * zTXt (compressed textual data) chunk: a zlib-compressed Latin-1 keyword-value pair.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11zTXt">PNG Specification - zTXt</a>
  */
 public record ZTXT(String keyword, int compressionMethod, byte[] compressedText) implements IChunk {
     public static final int SIGNATURE = 0x7A_54_58_74; // "zTXt"
     // CAP DECOMPRESSED TEXT: A FEW COMPRESSED BYTES CAN INFLATE TO GIGABYTES (DECOMPRESSION BOMB)
-    private static final int MAX_DECOMPRESSED_BYTES = 2 * 1024 * 1024; // 2 MB
+    private static final int MAX_DECOMPRESSED_BYTES = 2 * 1_024 * 1_024;
 
     /** Reads a complete zTXt chunk (length, type, data and CRC) from the buffer. */
     public static ZTXT read(final ByteBuffer buffer) throws IOException {
@@ -24,13 +23,10 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
 
     /** Converts a generic chunk to zTXt. */
     public static ZTXT convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for zTXt: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for zTXt: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-
-        // FIND NULL SEPARATOR AFTER KEYWORD
+        // THE KEYWORD TAKES 1-79 BYTES AND ENDS AT A NUL
         int nullIndex = -1;
         for (int i = 0; i < Math.min(80, data.length); i++) {
             if (data[i] == 0) {
@@ -38,28 +34,17 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
                 break;
             }
         }
-
-        if (nullIndex < 1) {
-            throw new CodecException("Invalid zTXt: missing or empty keyword");
-        }
-
+        if (nullIndex < 1) throw new CodecException("Invalid zTXt: missing or empty keyword");
         // NEED THE COMPRESSION-METHOD BYTE AFTER THE KEYWORD NUL; A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
-        if (data.length < nullIndex + 2) {
-            throw new CodecException("Truncated zTXt: missing compression method");
-        }
+        if (data.length < nullIndex + 2) throw new CodecException("Truncated zTXt: missing compression method");
 
         final String keyword = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);
         final int compressionMethod = data[nullIndex + 1] & 0xFF;
+        if (compressionMethod != 0) throw new CodecException("Unknown zTXt compression method: " + compressionMethod);
 
-        if (compressionMethod != 0) {
-            throw new CodecException("Unknown zTXt compression method: " + compressionMethod);
-        }
-
-        // REMAINING DATA IS COMPRESSED TEXT
         final int textStart = nullIndex + 2;
         final byte[] compressedText = new byte[data.length - textStart];
         System.arraycopy(data, textStart, compressedText, 0, compressedText.length);
-
         return new ZTXT(keyword, compressionMethod, compressedText);
     }
 

@@ -31,10 +31,10 @@ public final class Spinner extends Element<Spinner> {
     private Consumer<Double> onChange;
     private float scale = AppTheme.TEXT_BODY;
 
-    // TEXT-ENTRY STATE — editing MIRRORS TextField's focus; editText IS THE UNCOMMITTED BUFFER
+    // TEXT-ENTRY STATE: editing MIRRORS TextField's FOCUS; editText IS THE UNCOMMITTED BUFFER
     private boolean editing;
     private String editText = "";
-    // 0 = NONE, 1 = MINUS HELD, 2 = PLUS HELD — DRIVES THE AMBER PRESS HIGHLIGHT
+    // 0 = NONE, 1 = MINUS HELD, 2 = PLUS HELD; DRIVES THE AMBER PRESS HIGHLIGHT
     private int pressZone;
     // KEY WHOSE PRESS THE EDIT HANDLED, UNTIL ITS RELEASE (-1 = NONE)
     private int heldKey = -1;
@@ -76,9 +76,7 @@ public final class Spinner extends Element<Spinner> {
         return this;
     }
 
-    public double value() {
-        return this.value;
-    }
+    public double value() { return this.value; }
 
     @Override
     public boolean textInputActive() {
@@ -88,7 +86,7 @@ public final class Spinner extends Element<Spinner> {
 
     @Override
     public void clearFocus() {
-        // A CONSUMED CLICK LANDED ELSEWHERE — COMMIT THE BUFFER, EXACTLY LIKE A CLICK OUTSIDE THE CONTROL
+        // A CONSUMED CLICK LANDED ELSEWHERE: COMMIT THE BUFFER, EXACTLY LIKE A CLICK OUTSIDE THE CONTROL
         if (this.editing) this.commit();
     }
 
@@ -127,32 +125,16 @@ public final class Spinner extends Element<Spinner> {
         final int tw = canvas.textWidth(shown, this.scale, false);
         final int textX = midX + Math.max(0, (midW - tw) / 2);
         canvas.text(shown, textX, ty, AppTheme.TEXT, this.scale, false);
-        if (this.editing && (System.currentTimeMillis() / 500) % 2 == 0) {
-            canvas.fill(textX + tw + 1, ty, 1, th, AppTheme.AMBER);
-        }
+        if (this.editing && (System.currentTimeMillis() / 500) % 2 == 0) canvas.fill(textX + tw + 1, ty, 1, th, AppTheme.AMBER);
 
         canvas.stroke(leftX, y, w, h, this.editing ? AppTheme.AMBER : AppTheme.STROKE_BRIGHT,
                 this.editing ? Theme.BORDER_ACTIVE : Theme.BORDER_HAIRLINE);
     }
 
-    private void stepZone(final Canvas canvas, final int x, final int y, final int h, final String glyph,
-                          final boolean hover, final boolean press) {
-        if (press) {
-            canvas.glow(x, y, BUTTON, h, 0f, AppTheme.AMBER, 0.4f);
-            canvas.fill(x, y, BUTTON, h, AppTheme.alpha(AppTheme.AMBER, 70));
-        } else if (hover) {
-            canvas.fill(x, y, BUTTON, h, AppTheme.alpha(AppTheme.AMBER, 32));
-        }
-        final Color gc = hover || press ? AppTheme.AMBER : AppTheme.TEXT_FAINT;
-        final int gw = canvas.textWidth(glyph, this.scale, false);
-        final int th = canvas.textHeight(this.scale, false);
-        canvas.text(glyph, x + (BUTTON - gw) / 2, y + (h - th) / 2, gc, this.scale, false);
-    }
-
     @Override
     protected boolean onPress(final double mx, final double my) {
-        // +/- ACT ON PRESS (SNAPPY) AND HOLD THE AMBER HIGHLIGHT UNTIL RELEASE; THE CENTER FALLS THROUGH
-        // TO dispatchClick, WHICH FOCUSES THE EDITOR
+        // +/- ACT ON PRESS (SNAPPY) AND HOLD THE AMBER HIGHLIGHT UNTIL RELEASE; THE CENTER FALLS THROUGH TO
+        // dispatchClick, WHICH FOCUSES THE EDITOR
         if (!this.enabled || !this.contains(mx, my)) return false;
         final int leftX = this.innerLeft();
         final int rightX = this.innerLeft() + this.innerWidth() - BUTTON;
@@ -186,10 +168,14 @@ public final class Spinner extends Element<Spinner> {
             if (this.editing) this.commit(); // A CLICK ANYWHERE ELSE BLURS AND COMMITS
             return false;
         }
-        // MINUS/PLUS ALREADY ACTED ON PRESS — A CLICK IN THE CENTER FOCUSES THE EDITOR
+        // MINUS AND PLUS ALREADY ACTED ON PRESS; A CLICK IN THE CENTER FOCUSES THE EDITOR
         final int centerL = this.innerLeft() + BUTTON;
         final int centerR = this.innerLeft() + this.innerWidth() - BUTTON;
-        if (mx >= centerL && mx < centerR && !this.editing) this.beginEdit();
+        if (mx >= centerL && mx < centerR && !this.editing) {
+            this.editing = true;
+            this.editText = this.numberString();
+            this.invalidate();
+        }
         return true;
     }
 
@@ -206,7 +192,10 @@ public final class Spinner extends Element<Spinner> {
         if (!this.editing) return false;
         switch (key) {
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.commit();
-            case GLFW_KEY_ESCAPE -> this.cancel();
+            case GLFW_KEY_ESCAPE -> {
+                this.editing = false;
+                this.invalidate();
+            }
             case GLFW_KEY_BACKSPACE, GLFW_KEY_DELETE -> {
                 if (!this.editText.isEmpty()) {
                     this.editText = this.editText.substring(0, this.editText.length() - 1);
@@ -233,28 +222,27 @@ public final class Spinner extends Element<Spinner> {
         return true;
     }
 
-    private void beginEdit() {
-        this.editing = true;
-        this.editText = this.numberString();
-        this.invalidate();
+    private void stepZone(final Canvas canvas, final int x, final int y, final int h, final String glyph,
+                          final boolean hover, final boolean press) {
+        if (press) {
+            canvas.glow(x, y, BUTTON, h, 0f, AppTheme.AMBER, 0.4f);
+            canvas.fill(x, y, BUTTON, h, AppTheme.alpha(AppTheme.AMBER, 70));
+        } else if (hover) {
+            canvas.fill(x, y, BUTTON, h, AppTheme.alpha(AppTheme.AMBER, 32));
+        }
+        final Color gc = hover || press ? AppTheme.AMBER : AppTheme.TEXT_FAINT;
+        final int gw = canvas.textWidth(glyph, this.scale, false);
+        final int th = canvas.textHeight(this.scale, false);
+        canvas.text(glyph, x + (BUTTON - gw) / 2, y + (h - th) / 2, gc, this.scale, false);
     }
 
     private void commit() {
         double parsed = this.value;
-        if (!this.editText.isEmpty() && !this.editText.equals("-") && !this.editText.equals(".")) {
-            try {
-                parsed = Double.parseDouble(this.editText);
-            } catch (final NumberFormatException ignored) {
-                // KEEP THE CURRENT VALUE ON UNPARSEABLE INPUT
-            }
-        }
+        if (!this.editText.isEmpty() && !this.editText.equals("-") && !this.editText.equals("."))
+            try { parsed = Double.parseDouble(this.editText); }
+            catch (final NumberFormatException ignored) {} // UNPARSEABLE INPUT KEEPS THE CURRENT VALUE
         this.editing = false;
         this.apply(parsed);
-    }
-
-    private void cancel() {
-        this.editing = false;
-        this.invalidate();
     }
 
     private void apply(final double v) {

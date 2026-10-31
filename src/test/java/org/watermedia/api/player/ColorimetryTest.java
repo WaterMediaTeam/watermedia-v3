@@ -31,13 +31,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-/**
- * Verifies {@link Colorimetry}: what an untagged frame is guessed to be, the shader constants for every range, depth,
- * matrix and chroma layout, how {@link FFMediaPlayer} maps FFmpeg's color tags, and that it hands the engine the tags a
- * stream carries.
- */
+/** Verifies {@link Colorimetry}: untagged guesses, shader constants, FFmpeg tag mapping and the tags a stream hands the engine. */
 @DisplayName("Colorimetry")
 public class ColorimetryTest {
+
     private static final float EPSILON = 1e-4f;
 
     @Nested

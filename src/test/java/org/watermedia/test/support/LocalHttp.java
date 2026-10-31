@@ -15,14 +15,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.Executor;
 
-/**
- * Loopback HTTP server scaffolding for tests. One instance backs a single
- * handler — callers spin up a server per test and {@code close()} it via
- * try-with-resources.
- *
- * <p>Helps express NetworkCache, NetRequest, and platform tests that need a
- * deterministic, ephemeral origin without hitting the real internet.
- */
+/** Loopback HTTP server with one handler, opened per test and closed through try-with-resources. */
 public final class LocalHttp implements AutoCloseable {
     private final HttpServer server;
 
@@ -35,7 +28,7 @@ public final class LocalHttp implements AutoCloseable {
         return start(path, handler, null);
     }
 
-    /** Uses a caller-owned executor when requests must run concurrently. */
+    /** Boots the server on a caller-owned executor, for requests that must run concurrently. */
     public static LocalHttp start(final String path, final HttpHandler handler, final Executor executor) {
         try {
             final HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
@@ -48,7 +41,7 @@ public final class LocalHttp implements AutoCloseable {
         }
     }
 
-    /** Absolute URI for a path served by this server. */
+    /** Returns the absolute URI of a path served by this server. */
     public URI uri(final String path) {
         final InetSocketAddress addr = this.server.getAddress();
         return URI.create("http://" + addr.getHostString() + ":" + addr.getPort() + path);
@@ -57,18 +50,13 @@ public final class LocalHttp implements AutoCloseable {
     /** Writes a standard 200 OK response with the given body and headers. */
     public static void respond(final HttpExchange exchange, final String contentType, final byte[] body, final long cacheMaxAgeSec) throws IOException {
         exchange.getResponseHeaders().set("Content-Type", contentType);
-        if (cacheMaxAgeSec > 0) {
-            exchange.getResponseHeaders().set("Cache-Control", "max-age=" + cacheMaxAgeSec);
-        }
+        if (cacheMaxAgeSec > 0) exchange.getResponseHeaders().set("Cache-Control", "max-age=" + cacheMaxAgeSec);
         exchange.sendResponseHeaders(200, body.length);
         exchange.getResponseBody().write(body);
         exchange.close();
     }
 
-    /**
-     * Writes {@code body} the way a media CDN answers a seeking client: a {@code Range: bytes=start-[end]} request gets
-     * a 206 with its {@code Content-Range}, any other request the whole body, and both advertise byte ranges.
-     */
+    /** Writes {@code body} like a media CDN: a {@code Range} request gets a 206 with its {@code Content-Range}, any other the whole body. */
     public static void respondRange(final HttpExchange exchange, final String contentType, final byte[] body) throws IOException {
         final String range = exchange.getRequestHeaders().getFirst("Range");
         int start = 0;
@@ -95,7 +83,7 @@ public final class LocalHttp implements AutoCloseable {
         try (final OutputStream out = exchange.getResponseBody()) { out.write(body, start, end - start + 1); }
     }
 
-    /** RFC 1123-formatted timestamp {@code n} seconds in the future. */
+    /** Returns an RFC 1123 timestamp {@code seconds} in the future. */
     public static String expiresIn(final long seconds) {
         return DateTimeFormatter.RFC_1123_DATE_TIME.format(Instant.now().plusSeconds(seconds).atZone(ZoneOffset.UTC));
     }

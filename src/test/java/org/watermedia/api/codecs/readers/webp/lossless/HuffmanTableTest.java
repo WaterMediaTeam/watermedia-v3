@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.test.support.ImageBytes;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -31,7 +32,7 @@ public class HuffmanTableTest {
         @DisplayName("Single-symbol tables")
         Iterable<DynamicTest> testSingleSymbol() {
             final List<DynamicTest> tests = new ArrayList<>();
-            for (final int symbol: new int[] {0, 1, 42, 127, 255}) {
+            for (final int symbol: new int[] { 0, 1, 42, 127, 255 }) {
                 tests.add(dynamicTest("Single symbol [" + symbol + "]", () -> {
                     // SINGLE-SYMBOL TABLE: READS RETURN THE SYMBOL WITHOUT CONSUMING BITS
                     final HuffmanTable table = HuffmanTable.simple(1, symbol, 0);
@@ -48,7 +49,7 @@ public class HuffmanTableTest {
         Iterable<DynamicTest> testTwoSymbol() {
             final List<DynamicTest> tests = new ArrayList<>();
             // BYTE 0xAA = 10101010: LSB-FIRST READ ORDER YIELDS sym0, sym1, sym0, sym1...
-            for (final int[] pair: new int[][] {{0, 1}, {10, 20}, {100, 200}}) {
+            for (final int[] pair: new int[][] { { 0, 1 }, { 10, 20 }, { 100, 200 } }) {
                 tests.add(dynamicTest("Two symbols [" + pair[0] + ", " + pair[1] + "]", () -> {
                     final HuffmanTable table = HuffmanTable.simple(2, pair[0], pair[1]);
                     final BitReader reader = reader(0xAA);
@@ -108,9 +109,8 @@ public class HuffmanTableTest {
         }
     }
 
+    // UTILITY
     private static BitReader reader(final int... bytes) {
-        final byte[] data = new byte[bytes.length];
-        for (int i = 0; i < bytes.length; i++) data[i] = (byte) bytes[i];
-        return new BitReader(ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN));
+        return new BitReader(ByteBuffer.wrap(new ImageBytes().raw(bytes).bytes()).order(ByteOrder.LITTLE_ENDIAN));
     }
 }

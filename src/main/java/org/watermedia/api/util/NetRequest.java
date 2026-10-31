@@ -51,41 +51,7 @@ public final class NetRequest implements AutoCloseable {
     // A TRICKLING SERVER CAN KEEP EVERY READ UNDER THE SOCKET TIMEOUT, SO A TEXT BODY GETS THIS MANY READ TIMEOUTS IN TOTAL
     private static final int TEXT_DEADLINE_READ_TIMEOUTS = 4;
 
-    /** Splits the raw query into an unmodifiable map decoded once: a malformed pair stays raw, a repeated key keeps its last value, a bare key maps to "". */
-    public static Map<String, String> query(final URI uri) {
-        final String query = uri == null ? null : uri.getRawQuery();
-        if (query == null || query.isEmpty()) return Map.of();
-        final Map<String, String> result = new HashMap<>();
-        for (final String param: query.split("&")) {
-            if (param.isEmpty()) continue;
-            final int eq = param.indexOf('=');
-            final String key = eq < 0 ? param : param.substring(0, eq);
-            final String value = eq < 0 ? "" : param.substring(eq + 1);
-            try {
-                result.put(URLDecoder.decode(key, StandardCharsets.UTF_8), URLDecoder.decode(value, StandardCharsets.UTF_8));
-            } catch (final IllegalArgumentException malformed) {
-                result.put(key, value);
-            }
-        }
-        return Map.copyOf(result);
-    }
-
-    /**
-     * Content type for a file name: WaterMedia's own extension table first, then the JDK's, else
-     * {@link #MIMETYPE_OCTET_STREAM}. A local lookup, so no global JDK state is ever replaced.
-     */
-    public static String contentTypeOf(final String fileName) {
-        final int dot = fileName.lastIndexOf('.');
-        final String known = dot < 0 || dot == fileName.length() - 1 ? null : MediaType.mime(fileName.substring(dot + 1));
-        if (known != null) return known;
-        final String guessed = URLConnection.guessContentTypeFromName(fileName);
-        return guessed != null ? guessed : MIMETYPE_OCTET_STREAM;
-    }
-
-    /**
-     * User-Agent presets. {@link #WATERMEDIA} identifies our APIs; {@link #GENERIC} mimics a
-     * desktop browser to bypass servers that filter non-browser clients.
-     */
+    /** User-Agent presets: {@link #WATERMEDIA} identifies WaterMedia, {@link #GENERIC} mimics a desktop browser for servers that filter other clients. */
     public enum UserAgent {
         WATERMEDIA(WaterMedia.USER_AGENT),
         GENERIC(WaterMedia.BROWSER_AGENT);
@@ -146,10 +112,7 @@ public final class NetRequest implements AutoCloseable {
     /** Replaces every value of a header; names must be HTTP tokens and values free of control characters. */
     public NetRequest header(final String name, final String value) { this.headers.set(name, value); return this; }
 
-    /**
-     * Bulk-applies {@code headers}: the first occurrence of each name replaces any default (like {@link #header}),
-     * later occurrences append, preserving multi-valued headers. A {@code null} or empty bag is a no-op.
-     */
+    /** Applies {@code headers}: the first value of each name replaces the current ones (like {@link #header}), later values append; null or empty changes nothing. */
     public NetRequest headers(final HttpHeaders headers) { this.headers.merge(headers); return this; }
 
     /** Sets the body without copying, or clears it with null; redirects resend it only to the original origin. */
@@ -183,15 +146,7 @@ public final class NetRequest implements AutoCloseable {
 
     // ==== SEND ====
 
-    /**
-     * Opens the connection, writes the body if any and follows redirects by hand; afterwards the response
-     * accessors answer for the final hop.
-     *
-     * @return this request, connected
-     * @throws IOException when the transfer fails, the method is rejected, a redirect leaves http and https
-     *                     or the redirect chain exceeds {@link #maxRedirects}
-     * @throws IllegalStateException when the request was already sent
-     */
+    /** Opens the connection, writes the body and follows redirects by hand, failing on a hop outside http(s) or past {@link #maxRedirects}; the response accessors then answer for the final hop. */
     public NetRequest send() throws IOException {
         if (this.connection != null) throw new IllegalStateException("The request was already sent");
         URI current = this.uri;
@@ -214,7 +169,9 @@ public final class NetRequest implements AutoCloseable {
             }
 
             final int code = http.getResponseCode();
-            if (!isRedirect(code)) return this.receive(current, http, code, deadline);
+            final boolean redirect = code == HttpURLConnection.HTTP_MOVED_PERM || code == HttpURLConnection.HTTP_MOVED_TEMP
+                    || code == HttpURLConnection.HTTP_SEE_OTHER || code == 307 || code == 308;
+            if (!redirect) return this.receive(current, http, code, deadline);
             if (hops >= this.maxRedirects) {
                 http.disconnect();
                 throw new IOException("Too many redirects (" + this.maxRedirects + " hops) for " + this.uri);
@@ -254,11 +211,7 @@ public final class NetRequest implements AutoCloseable {
     /** The URI the response came from, after any followed redirects; the request's own URI before {@link #send()}. */
     public URI uri() { return this.location != null ? this.location : this.uri; }
 
-    /**
-     * HTTP response code. Defaults to {@link HttpURLConnection#HTTP_OK} (200) for non-HTTP
-     * protocols (file://, ftp://) so callers can use a single {@code statusCode != 200}
-     * check without special-casing the protocol.
-     */
+    /** Returns the HTTP status code; {@code file:} and {@code ftp:} answer 200, so one {@code != 200} check fits every protocol. */
     public int statusCode() { this.connection(); return this.statusCode; }
 
     /** Returns the reported content type, or null when unavailable. */
@@ -273,15 +226,7 @@ public final class NetRequest implements AutoCloseable {
     /** Headers received from the server, snapshotted when the response arrived. */
     public HttpHeaders responseHeaders() { this.connection(); return this.responseHeaders; }
 
-    /**
-     * Raw response stream; the caller must close it (or {@link #close()} the request). An HTTP
-     * status of 400 or more yields the error body instead of throwing, or an empty stream when the
-     * server sent none. The body can be read once, through this, {@link #text()} or {@link #json(Class)}.
-     *
-     * @return the response body stream
-     * @throws IOException when the connection cannot provide the body
-     * @throws IllegalStateException when the request was not sent or the body was already read
-     */
+    /** Returns the raw body stream for the caller to close, the error body (or an empty stream) on a 400+ status; the body reads once through this, {@link #text()} or {@link #json(Class)}. */
     public InputStream inputStream() throws IOException {
         final URLConnection connection = this.connection();
         if (this.consumed) throw new IllegalStateException("The response body was already read");
@@ -293,15 +238,7 @@ public final class NetRequest implements AutoCloseable {
         return connection.getInputStream();
     }
 
-    /**
-     * Reads the entire response as a UTF-8 string, the error body of a failed status included.
-     * Throws when the body exceeds {@link #maxBytes} (else {@link WaterMediaConfig.Network#maxTextBytes})
-     * or outlives {@link #deadline} (else four read timeouts; a read timeout of zero sets no deadline).
-     *
-     * @return the response body text
-     * @throws IOException when the transfer fails or exceeds its size or time budget
-     * @throws IllegalStateException when the request was not sent or the body was already read
-     */
+    /** Reads the whole body as UTF-8, error bodies included, failing past {@link #maxBytes} (else {@code network.maxTextBytes}) or {@link #deadline} (else four read timeouts, none at zero). */
     public String text() throws IOException {
         try (final InputStream in = this.inputStream()) {
             final long limit = this.maxBytes > 0 ? this.maxBytes : WaterMediaConfig.network.maxTextBytes;
@@ -311,15 +248,7 @@ public final class NetRequest implements AutoCloseable {
         }
     }
 
-    /**
-     * Streams a 200 body into a new file within the size and time budgets of the request and verifies its SHA-256;
-     * the file is deleted again on any failure.
-     *
-     * @param destination the file to create; it must not exist
-     * @param expectedSha256 the publisher-provided lowercase or uppercase hex digest
-     * @throws IOException when the status is not 200, the budget is exceeded, the file exists or the digest differs
-     * @throws IllegalStateException when the request was not sent or the body was already read
-     */
+    /** Streams a 200 body into a new file within the request's size and time budgets and verifies its hex SHA-256; any failure deletes the file again. */
     public void download(final Path destination, final String expectedSha256) throws IOException {
         final String digest = IOTool.requireSha256(expectedSha256);
         if (this.statusCode() != HttpURLConnection.HTTP_OK) throw new IOException("Download returned HTTP " + this.statusCode + ": " + this.uri);
@@ -351,17 +280,7 @@ public final class NetRequest implements AutoCloseable {
         }
     }
 
-    /**
-     * Parses the response body as JSON and binds it to {@code type} through {@link JSONTool}, with
-     * the size and time budget of {@link #text()}. Accepts {@code application/json},
-     * {@code text/json} and any {@code +json} subtype such as {@code application/vnd.api+json}.
-     *
-     * @param type the class the JSON body binds to
-     * @param <T> the bound type
-     * @return the bound body, or {@code null} for another content type (the body stays unread) or an empty body
-     * @throws IOException when the transfer fails or the body is malformed JSON
-     * @throws IllegalStateException when the request was not sent or the body was already read
-     */
+    /** Binds a JSON body ({@code application/json}, {@code text/json}, any {@code +json}) to {@code type} within the {@link #text()} budgets; null for an empty body or another type, left unread. */
     public <T> T json(final Class<T> type) throws IOException {
         final String contentType = this.contentType();
         if (this.consumed) throw new IllegalStateException("The response body was already read");
@@ -386,6 +305,36 @@ public final class NetRequest implements AutoCloseable {
         // FILE AND FTP CONNECTIONS OPEN THEIR STREAM AT connect(): RELEASE IT OR THE HANDLE LIVES UNTIL GC
         try { this.connection.getInputStream().close(); }
         catch (final IOException ignored) {}
+    }
+
+    // ==== STATIC HELPERS ====
+
+    /** Splits the raw query into an unmodifiable map decoded once: a malformed pair stays raw, a repeated key keeps its last value, a bare key maps to "". */
+    public static Map<String, String> query(final URI uri) {
+        final String query = uri == null ? null : uri.getRawQuery();
+        if (query == null || query.isEmpty()) return Map.of();
+        final Map<String, String> result = new HashMap<>();
+        for (final String param: query.split("&")) {
+            if (param.isEmpty()) continue;
+            final int eq = param.indexOf('=');
+            final String key = eq < 0 ? param : param.substring(0, eq);
+            final String value = eq < 0 ? "" : param.substring(eq + 1);
+            try {
+                result.put(URLDecoder.decode(key, StandardCharsets.UTF_8), URLDecoder.decode(value, StandardCharsets.UTF_8));
+            } catch (final IllegalArgumentException malformed) {
+                result.put(key, value);
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    /** Returns the content type of a file name from WaterMedia's extension table, then the JDK's, else {@link #MIMETYPE_OCTET_STREAM}. */
+    public static String contentTypeOf(final String fileName) {
+        final int dot = fileName.lastIndexOf('.');
+        final String known = dot < 0 || dot == fileName.length() - 1 ? null : MediaType.mime(fileName.substring(dot + 1));
+        if (known != null) return known;
+        final String guessed = URLConnection.guessContentTypeFromName(fileName);
+        return guessed != null ? guessed : MIMETYPE_OCTET_STREAM;
     }
 
     // UTILITY
@@ -446,13 +395,5 @@ public final class NetRequest implements AutoCloseable {
         final int targetPort = target.getPort() != -1 ? target.getPort() : ("https".equalsIgnoreCase(target.getScheme()) ? 443 : 80);
         return origin.getScheme() != null && origin.getScheme().equalsIgnoreCase(target.getScheme())
                 && origin.getHost() != null && origin.getHost().equalsIgnoreCase(target.getHost()) && originPort == targetPort;
-    }
-
-    private static boolean isRedirect(final int code) {
-        return code == HttpURLConnection.HTTP_MOVED_PERM
-                || code == HttpURLConnection.HTTP_MOVED_TEMP
-                || code == HttpURLConnection.HTTP_SEE_OTHER
-                || code == 307
-                || code == 308;
     }
 }

@@ -12,13 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the pure-Java control surface {@link MediaPlayer} implements for every subclass:
- * volume clamp/round-trip, mute orthogonality, speed bounds and the {@link MediaPlayer#canSpeed()}
- * gate, repeat, scale/lod validation, the LOD sizing rule, {@link Status#of(int)} and how release
- * merges cleanup failures. {@link ServerMediaPlayer} is the headless concrete instance (the class is
- * sealed, so no test-only stub is possible).
- */
+/** Verifies the control surface every {@link MediaPlayer} shares, through {@link ServerMediaPlayer} since the sealed class allows no stub. */
 @DisplayName("MediaPlayer base surface")
 public class MediaPlayerBaseTest {
 
@@ -153,19 +147,19 @@ public class MediaPlayerBaseTest {
         @Test
         @DisplayName("scaled keeps the native size when nothing reduces it")
         void scaledKeepsNative() {
-            assertEquals(1081, MediaPlayer.scaled(1081, 0, 100));
-            assertEquals(1081, MediaPlayer.scaled(1081, 4096, 100));
+            assertEquals(1_081, MediaPlayer.scaled(1_081, 0, 100));
+            assertEquals(1_081, MediaPlayer.scaled(1_081, 4_096, 100));
             assertEquals(0, MediaPlayer.scaled(0, 720, 50), "an unknown size stays unknown");
         }
 
         @Test
         @DisplayName("scaled caps, applies the percentage and keeps the result even")
         void scaledCapsAndEvens() {
-            assertEquals(720, MediaPlayer.scaled(1080, 720, 100));
-            assertEquals(540, MediaPlayer.scaled(1080, 0, 50));
-            assertEquals(10, MediaPlayer.scaled(1080, 0, 1));
+            assertEquals(720, MediaPlayer.scaled(1_080, 720, 100));
+            assertEquals(540, MediaPlayer.scaled(1_080, 0, 50));
+            assertEquals(10, MediaPlayer.scaled(1_080, 0, 1));
             assertEquals(2, MediaPlayer.scaled(100, 0, 1));
-            assertEquals(360, MediaPlayer.scaled(1080, 720, 50), "the percentage applies to the capped size");
+            assertEquals(360, MediaPlayer.scaled(1_080, 720, 50), "the percentage applies to the capped size");
         }
     }
 

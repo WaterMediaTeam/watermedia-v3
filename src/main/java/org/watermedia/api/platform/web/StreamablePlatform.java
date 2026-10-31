@@ -15,9 +15,10 @@ import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves Streamable share and embed links through the public videos API. */
 public final class StreamablePlatform implements Platform {
-    public static final String NAME = "Streamable";
     private static final Marker IT = MarkerManager.getMarker(StreamablePlatform.class.getSimpleName());
+    public static final String NAME = "Streamable";
     private static final String API_URL = "https://api.streamable.com/videos/";
     // STREAMABLE STATUS CODES: 0=UPLOADING, 1=PROCESSING, 2=READY, 3=ERROR
     private static final int STATUS_READY = 2;
@@ -41,7 +42,7 @@ public final class StreamablePlatform implements Platform {
         final VideoData video = WebRequests.fetchJson(NAME, API_URL + videoId, VideoData.class);
         LOGGER.debug(IT, "Streamable video '{}' raw status={} percent={}", videoId, video.status, video.percent);
 
-        // GATE ON READINESS BEFORE TOUCHING files — A PROCESSING VIDEO HAS NO RENDITIONS YET
+        // A VIDEO STILL PROCESSING HAS NO files YET
         if (video.status != STATUS_READY)
             throw new PlatformException(NAME, "Video '" + videoId + "' is not ready (status=" + video.status
                     + ", " + video.percent + "%" + (video.message != null ? ", message: " + video.message : "") + ")");
@@ -58,7 +59,7 @@ public final class StreamablePlatform implements Platform {
         final URI thumbnailUri = DataTool.uri(video.thumbnail);
         if (thumbnailUri == null) LOGGER.warn(IT, "Streamable video '{}' has no thumbnail", videoId);
 
-        final long durationMs = video.files.original != null ? (long) Math.max(0f, video.files.original.duration * 1000f) : 0L;
+        final long durationMs = video.files.original != null ? (long) Math.max(0f, video.files.original.duration * 1_000f) : 0L;
         final Metadata metadata = new Metadata(video.title, null, null, durationMs, null);
 
         LOGGER.debug(IT, "Streamable resolved video '{}' with {} variant(s)", videoId, variants.size());
@@ -69,15 +70,7 @@ public final class StreamablePlatform implements Platform {
         return new Resolution(null, entry);
     }
 
-    private record VideoData(String title, int status, int percent, String message, @SerializedName("thumbnail_url") String thumbnail, VideoFiles files) {
-
-    }
-
-    private record VideoFiles(VideoFile original, VideoFile mp4, @SerializedName("mp4-mobile") VideoFile mp4Small) {
-
-    }
-
-    private record VideoFile(int status, String url, float framerate, int width, int height, int bitrate, int size, float duration) {
-
-    }
+    private record VideoData(String title, int status, int percent, String message, @SerializedName("thumbnail_url") String thumbnail, VideoFiles files) {}
+    private record VideoFiles(VideoFile original, VideoFile mp4, @SerializedName("mp4-mobile") VideoFile mp4Small) {}
+    private record VideoFile(int status, String url, float framerate, int width, int height, int bitrate, int size, float duration) {}
 }

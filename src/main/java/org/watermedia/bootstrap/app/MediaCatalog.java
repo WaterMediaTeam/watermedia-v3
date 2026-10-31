@@ -19,18 +19,10 @@ public final class MediaCatalog {
     public IptvChannel[] iptvChannels = new IptvChannel[0];
     public final List<TestURI> customTests = new ArrayList<>();
 
-    public record TestURI(String name, String uri, boolean debug) {
-    }
-
-    public record URIGroup(String name, TestURI[] uris) {
-    }
-
-    public record IptvChannel(String name, String url, String logo, String region,
-                              String group, String tvgId, String source) {
-    }
-
-    record IptvCatalog(String generatedAt, IptvChannel[] channels) {
-    }
+    public record TestURI(String name, String uri, boolean debug) {}
+    public record URIGroup(String name, TestURI[] uris) {}
+    public record IptvChannel(String name, String url, String logo, String region, String group, String tvgId, String source) {}
+    record IptvCatalog(String generatedAt, IptvChannel[] channels) {}
 
     /** Reads the bundled groups and channels; without DEBUG logging the debug-only links are left out. */
     public void load() {

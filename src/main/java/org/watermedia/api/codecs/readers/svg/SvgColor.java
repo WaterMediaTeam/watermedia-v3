@@ -6,20 +6,16 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Parses SVG/CSS colour syntax into a packed {@code 0xAARRGGBB} value: {@code #rgb}, {@code #rgba},
- * {@code #rrggbb}, {@code #rrggbbaa}, {@code rgb()}/{@code rgba()} (numeric or percentage),
- * {@code hsl()}/{@code hsla()}, the SVG named colours, {@code transparent} and {@code currentColor}.
- *
- * <p>{@link #parse(String, int)} returns a {@code long} so failure is out-of-band: valid colours are
- * the unsigned 32-bit range ({@code 0..0xFFFFFFFF}, cast to {@code int} after checking) and
- * {@link #INVALID} is negative — every 32-bit pattern is a legal ARGB colour, so no int sentinel works.
+ * Parses SVG/CSS colours ({@code #rgb[a]}, {@code #rrggbb[aa]}, {@code rgb[a]()}, {@code hsl[a]()}, named colours,
+ * {@code transparent}, {@code currentColor}) into {@code 0xAARRGGBB}, returned as an unsigned {@code long} so the
+ * negative {@link #INVALID} cannot collide with a colour: every 32-bit pattern is a legal ARGB value.
  */
 final class SvgColor {
     // SENTINEL RETURNED FOR AN UNPARSEABLE COLOUR TOKEN — NEGATIVE, SO IT CANNOT COLLIDE WITH ANY
     // PACKED ARGB VALUE (e.g. rgba(0,0,1,0) == 0x00000001 IS A REAL, FULLY TRANSPARENT COLOUR)
     static final long INVALID = -1L;
 
-    // COMMON SVG NAMED COLOURS (the references use hex/rgb/hsl; this covers the frequent names)
+    // THE FREQUENT SVG NAMED COLOURS, NOT THE WHOLE CSS LIST
     private static final Map<String, Integer> NAMED = Map.ofEntries(
             Map.entry("black", argb(255, 0, 0, 0)),
             Map.entry("white", argb(255, 255, 255, 255)),

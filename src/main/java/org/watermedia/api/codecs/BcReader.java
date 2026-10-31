@@ -19,7 +19,6 @@ import java.nio.ByteOrder;
  * and leave every texture array slice with zero display delay.
  */
 public final class BcReader implements Closeable {
-
     private final int width;
     private final int height;
     private final PixelFormat format;
@@ -61,8 +60,7 @@ public final class BcReader implements Closeable {
         }
         this.duration = total;
 
-        // COPY THE TEXTURE DATA INTO A SINGLE DIRECT BUFFER AND SLICE PER-FRAME VIEWS FROM IT — THE
-        // SLICES STAY DIRECT, SO THE GRAPHICS ENGINE CAN UPLOAD THEM WITHOUT A FURTHER COPY.
+        // ONE DIRECT COPY OF EVERY SLICE, VIEWED PER FRAME: THE VIEWS STAY DIRECT, SO AN ENGINE UPLOADS THEM WITHOUT ANOTHER COPY
         final ByteBuffer tex = ByteBuffer.allocateDirect((int) texLen).order(ByteOrder.nativeOrder());
         final ByteBuffer region = file.duplicate();
         region.position(texStart).limit(texStart + (int) texLen);

@@ -129,7 +129,7 @@ public abstract class ImageReader implements Closeable {
     public float averageFps() {
         final long duration = this.duration();
         final int frames = this.frameCount();
-        return duration > 0L && frames > 1 ? (frames * 1000f) / duration : 0f;
+        return duration > 0L && frames > 1 ? (frames * 1_000f) / duration : 0f;
     }
 
     /** True when per-frame delays may differ; a single frame never does. */
@@ -167,16 +167,14 @@ public abstract class ImageReader implements Closeable {
             // BACKSTOP AGAINST THE ANIMATION BOMB: FRAME COST IS FIXED AT CANVAS SIZE WHILE FRAME COUNT COMES FROM
             // THE CONTAINER. CHARGED BEFORE THE COPY, SO THE FRAME THAT BREAKS THE BUDGET IS NEVER RETAINED
             retained += decoded.remaining();
-            if (retained > MAX_DECODED_BYTES) {
+            if (retained > MAX_DECODED_BYTES)
                 throw new CodecException("Decoded animation exceeds budget: " + retained
                         + " bytes over " + frames.size() + " frames (max " + MAX_DECODED_BYTES + ")");
-            }
-            frames.add(this.fresh ? decoded : detach(decoded));
+            // A REUSED READER FRAME IS COPIED OUT; A FILTER-ALLOCATED ONE IS KEPT AS IT IS
+            frames.add(this.fresh ? decoded : ByteBuffer.allocateDirect(decoded.remaining()).order(decoded.order()).put(decoded.duplicate()).flip());
             frameDelays.add(this.delayMs);
         }
-        if (frames.isEmpty()) {
-            throw new CodecException("No frames decoded by " + this.name());
-        }
+        if (frames.isEmpty()) throw new CodecException("No frames decoded by " + this.name());
         final long[] delayArray = new long[frameDelays.size()];
         for (int i = 0; i < delayArray.length; i++) delayArray[i] = frameDelays.get(i);
         return new ImageData(frames.toArray(ByteBuffer[]::new), this.pixelFormat(), this.frameWidth(), this.frameHeight(),
@@ -252,13 +250,7 @@ public abstract class ImageReader implements Closeable {
         return this.frame = f.buffer();
     }
 
-    /**
-     * Decodes the next frame from the underlying buffer into the internal direct buffer, laid out
-     * in {@link #decodedFormat()}; the base class already verified that a frame remains.
-     *
-     * @return the decoded frame buffer, positioned at zero
-     * @throws IOException on I/O error or malformed bitstream
-     */
+    /** Decodes the next frame (the base class verified one remains) into a reused direct buffer in {@link #decodedFormat()}, positioned at zero. */
     protected abstract ByteBuffer decode() throws IOException;
 
     @Override
@@ -290,9 +282,8 @@ public abstract class ImageReader implements Closeable {
         if (out == null || out.capacity() < bytes) this.converted = out = ByteBuffer.allocateDirect(bytes).order(decoded.order());
         out.clear().limit(bytes);
         if (from != PixelFormat.GRAY && to != PixelFormat.GRAY) {
-            for (int o = 0; o < bytes; o += 4) {
+            for (int o = 0; o < bytes; o += 4)
                 out.put(o, decoded.get(o + 2)).put(o + 1, decoded.get(o + 1)).put(o + 2, decoded.get(o)).put(o + 3, decoded.get(o + 3));
-            }
         } else if (from == PixelFormat.GRAY) {
             for (int i = 0, o = 0; i < pixels; i++, o += 4) {
                 final byte luma = decoded.get(i);
@@ -309,13 +300,5 @@ public abstract class ImageReader implements Closeable {
             }
         }
         return out;
-    }
-
-    // COPIES A REUSED READER FRAME INTO AN INDEPENDENTLY-OWNED DIRECT BUFFER, READY TO READ.
-    private static ByteBuffer detach(final ByteBuffer src) {
-        final ByteBuffer copy = ByteBuffer.allocateDirect(src.remaining()).order(src.order());
-        copy.put(src.duplicate());
-        copy.flip();
-        return copy;
     }
 }

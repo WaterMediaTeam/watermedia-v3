@@ -20,13 +20,13 @@ public final class Switch extends Element<Switch> {
     private boolean on;
     private Color accent = AppTheme.NEON;
     private Consumer<Boolean> onChange;
-    // KNOB SLIDE — animStart 0 MEANS IDLE; WHILE RUNNING THE KNOB EASES FROM animFrom TO THE CURRENT STATE
+    // KNOB SLIDE: animStart 0 MEANS IDLE; WHILE RUNNING THE KNOB EASES FROM animFrom TO THE CURRENT STATE
     private long animStart;
     private float animFrom;
     private boolean drawn;
 
     public Switch on(final boolean value) {
-        // ONLY A REAL TRANSITION ANIMATES — A PER-FRAME REBIND TO THE SAME VALUE (SETTINGS SYNC) NEVER DOES
+        // ONLY A REAL TRANSITION ANIMATES; A PER-FRAME REBIND TO THE SAME VALUE (SETTINGS SYNC) NEVER DOES
         if (value != this.on) {
             this.slide();
             this.on = value;
@@ -44,37 +44,14 @@ public final class Switch extends Element<Switch> {
         return this;
     }
 
-    public boolean on() {
-        return this.on;
-    }
-
-    // RESTARTS THE EASE FROM THE CURRENT KNOB POSITION; BEFORE THE FIRST DRAW IT SNAPS, SO A FRESHLY BUILT ROW
-    // BINDING ITS INITIAL VALUE NEVER PLAYS A SLIDE THE USER DID NOT TRIGGER
-    private void slide() {
-        if (this.ctx == null || !this.drawn) return;
-        final long now = System.currentTimeMillis();
-        this.animFrom = this.pos(now);
-        this.animStart = now;
-    }
-
-    // VISUAL KNOB POSITION IN [0..1] (0 = LEFT/OFF, 1 = RIGHT/ON) — CUBIC EASE-OUT WHILE ANIMATING
-    private float pos(final long now) {
-        final float target = this.on ? 1f : 0f;
-        if (this.animStart == 0L) return target;
-        final float t = Math.min(1f, (now - this.animStart) / (float) ANIM_MS);
-        final float inv = 1f - t;
-        return this.animFrom + (target - this.animFrom) * (1f - inv * inv * inv);
-    }
+    public boolean on() { return this.on; }
 
     @Override
     protected void onUpdate() {
-        // SELF-SUSTAINED ANIMATION — KEEP REQUESTING FRAMES UNTIL THE SLIDE ENDS, THEN LET THE LOOP IDLE
+        // SELF-SUSTAINED ANIMATION: KEEP REQUESTING FRAMES UNTIL THE SLIDE ENDS, THEN LET THE LOOP IDLE
         if (this.animStart == 0L) return;
-        if (System.currentTimeMillis() - this.animStart >= ANIM_MS) {
-            this.animStart = 0L;
-        } else {
-            this.invalidate();
-        }
+        if (System.currentTimeMillis() - this.animStart >= ANIM_MS) this.animStart = 0L;
+        else this.invalidate();
     }
 
     @Override
@@ -105,5 +82,23 @@ public final class Switch extends Element<Switch> {
         this.invalidate();
         if (this.onChange != null) this.onChange.accept(this.on);
         return true;
+    }
+
+    private void slide() {
+        // RESTARTS THE EASE FROM THE CURRENT KNOB POSITION; BEFORE THE FIRST DRAW IT SNAPS, SO A FRESHLY BUILT ROW
+        // BINDING ITS INITIAL VALUE NEVER PLAYS A SLIDE THE USER DID NOT TRIGGER
+        if (this.ctx == null || !this.drawn) return;
+        final long now = System.currentTimeMillis();
+        this.animFrom = this.pos(now);
+        this.animStart = now;
+    }
+
+    private float pos(final long now) {
+        // VISUAL KNOB POSITION IN [0..1] (0 = LEFT/OFF, 1 = RIGHT/ON), CUBIC EASE-OUT WHILE ANIMATING
+        final float target = this.on ? 1f : 0f;
+        if (this.animStart == 0L) return target;
+        final float t = Math.min(1f, (now - this.animStart) / (float) ANIM_MS);
+        final float inv = 1f - t;
+        return this.animFrom + (target - this.animFrom) * (1f - inv * inv * inv);
     }
 }

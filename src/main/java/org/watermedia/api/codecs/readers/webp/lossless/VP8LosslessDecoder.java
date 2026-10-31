@@ -11,25 +11,23 @@ import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** VP8L (lossless WebP) bitstream decoder: transforms, color cache, meta prefix codes and LZ77 backward references. */
 public final class VP8LosslessDecoder {
     static final Marker IT = MarkerManager.getMarker(VP8LosslessDecoder.class.getSimpleName());
-    // HARD HUFFMAN GROUP CAP. THE 16-BIT META CODE ALLOWS 65536 GROUPS OF 5 TABLES EACH, WHILE NO
-    // REAL ENCODER GOES NEAR THIS (libwebp CAPS ITS ENTROPY IMAGE AT ~2600 BLOCKS, SO AT MOST THAT
-    // MANY GROUPS). A RECOMMENDATION THAT ONLY LOGS IS NOT A LIMIT
+    // HARD HUFFMAN GROUP CAP: THE 16-BIT META CODE ALLOWS 65536 GROUPS OF 5 TABLES EACH, WHILE NO REAL ENCODER
+    // GOES NEAR THIS (libwebp CAPS ITS ENTROPY IMAGE AT ~2600 BLOCKS, SO AT MOST THAT MANY GROUPS)
     private static final int MAX_GROUPS = 4_096;
     // MINIMUM BITS ONE GROUP CAN OCCUPY: 5 SIMPLE-CODE TABLES x 4 BITS (isSimple + numSymbols +
     // is8Bits + 1-BIT SYMBOL) EACH
     private static final int MIN_GROUP_BITS = 20;
-    // CEILING FOR IMAGES NO AMOUNT OF INPUT CAN BOUND (SEE THE FEASIBILITY GATE): A CONSTANT FILL
-    // IS DECODED FROM ZERO BITS, SO ITS ONLY LIMIT IS ITS OWN DECLARED SIZE. 16 MPX STILL COVERS
-    // EVERY REALISTIC SOLID IMAGE OR UNIFORM ALPHA PLANE WHILE KEEPING THE FILE-TO-HEAP RATIO OF A
-    // 30-BYTE FILE BOUNDED
+    // CEILING FOR WHAT NO AMOUNT OF INPUT BOUNDS (SEE THE FEASIBILITY GATE): A CONSTANT FILL DECODES FROM ZERO
+    // BITS, SO ONLY ITS DECLARED SIZE LIMITS IT. 16 MPX COVERS EVERY REALISTIC SOLID IMAGE OR ALPHA PLANE
+    // WHILE KEEPING THE FILE-TO-HEAP RATIO OF A 30-BYTE FILE BOUNDED
     private static final int MAX_FILL_PIXELS = 1 << 24;
     // LONGEST COPY ONE LZ77 TOKEN CAN EMIT (RFC 9649 LENGTH PREFIX 23 -> 3072 + 1023 + 1)
     private static final int MAX_COPY_LENGTH = 4_096;
 
-    private VP8LosslessDecoder() {
-    }
+    private VP8LosslessDecoder() {}
 
     /** Decodes VP8L image data that starts past the 5-byte header and inverse transforms it into {@code width * height} packed ARGB pixels. */
     public static int[] decode(final ByteBuffer data, final int width, final int height) throws CodecException {
@@ -96,17 +94,17 @@ public final class VP8LosslessDecoder {
             }
 
             final int numGroups = maxCode + 1;
-            // GROUP-COUNT GATE, THREE INDEPENDENT BOUNDS APPLIED BEFORE ANY TABLE IS ALLOCATED: THE
-            // ENTROPY IMAGE CANNOT REFERENCE MORE GROUPS THAN IT HAS PIXELS, THE REMAINING BITSTREAM
-            // CANNOT ENCODE MORE THAN ONE GROUP PER MIN_GROUP_BITS, AND NOTHING LEGITIMATE EXCEEDS
-            // MAX_GROUPS. UNGATED, A 1x1 IMAGE BUYS 65536 GROUPS OF LIVE TABLES WITH A FEW KB
+            // GROUP-COUNT GATE BEFORE ANY TABLE IS ALLOCATED: NO MORE GROUPS THAN ENTROPY PIXELS, THAN ONE PER
+            // MIN_GROUP_BITS OF THE REMAINING STREAM, OR THAN MAX_GROUPS. UNGATED, A 1x1 IMAGE BUYS 65536 GROUPS
+            // OF LIVE TABLES WITH A FEW KB
             final long maxGroups = Math.min(Math.min(MAX_GROUPS, metaPrefixImage.length),
                     (reader.remaining() * 8L + reader.bitsAvail()) / MIN_GROUP_BITS);
             if (numGroups > maxGroups)
                 throw new CodecException("VP8L declares " + numGroups + " huffman groups, max " + maxGroups);
             LOGGER.trace(IT, "VP8L huffman groups: declared={}, meta={}x{} (bits={}), colorCacheSize={}, tables={}",
                     numGroups, metaWidth, metaHeight, metaBits, colorCacheSize, numGroups * 5);
-            huffmanGroups = HuffmanDecoder.readGroups(reader, numGroups, colorCacheSize);
+            huffmanGroups = new HuffmanGroup[numGroups];
+            for (int i = 0; i < numGroups; i++) huffmanGroups[i] = HuffmanDecoder.readGroup(reader, colorCacheSize);
         } else {
             // SINGLE HUFFMAN GROUP
             huffmanGroups = new HuffmanGroup[]{HuffmanDecoder.readGroup(reader, colorCacheSize)};
@@ -172,11 +170,9 @@ public final class VP8LosslessDecoder {
         if (width <= 0 || height <= 0 || declared > Limits.MAX_PIXELS)
             throw new CodecException("Invalid VP8L image size: " + width + "x" + height + " (max " + Limits.MAX_PIXELS + " pixels)");
 
-        // PIXEL FEASIBILITY GATE, EVALUATED BEFORE THE ALLOCATION. RFC 9649 LETS A ONE-SYMBOL PREFIX
-        // CODE COST ZERO BITS, SO A GROUP WHOSE ENTIRE TOKEN PATH IS ONE-SYMBOL EMITS PIXELS OUT OF
-        // NOTHING: THE IMAGE IS THEN A CONSTANT FILL AND ONLY ITS DECLARED SIZE BOUNDS IT. EVERY
-        // OTHER GROUP SPENDS AT LEAST ONE BIT PER TOKEN AND A TOKEN YIELDS AT MOST MAX_COPY_LENGTH
-        // PIXELS, WHICH TIES THE PIXEL COUNT TO THE BITS THE STREAM CAN PHYSICALLY SUPPLY
+        // PIXEL FEASIBILITY GATE BEFORE THE ALLOCATION: A ONE-SYMBOL CODE COSTS ZERO BITS, SO A GROUP WHOSE WHOLE
+        // TOKEN PATH IS ONE-SYMBOL IS A CONSTANT FILL BOUNDED ONLY BY MAX_FILL_PIXELS. ANY OTHER GROUP SPENDS A BIT
+        // PER TOKEN OF AT MOST MAX_COPY_LENGTH PIXELS, WHICH TIES THE PIXEL COUNT TO THE BITS THE STREAM HOLDS
         boolean fill = false;
         for (final HuffmanGroup group: groups) {
             final int green = group.green().symbol();

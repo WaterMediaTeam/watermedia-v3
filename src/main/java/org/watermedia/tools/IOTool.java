@@ -21,17 +21,13 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.jar.Manifest;
 
+/** Platform detection, bounded reads, atomic installs, digests and bundled resources. */
 public final class IOTool {
-    public static final int BUFFER_SIZE = 1024 * 64; // 64 KB
-    private static final int MAX_PREALLOCATED_BYTES = 4 * 1024 * 1024; // FIRST BUFFER readLimited SIZES FROM A DECLARED LENGTH
+    public static final int BUFFER_SIZE = 64 * 1_024;
+    private static final int MAX_PREALLOCATED_BYTES = 4 * 1_024 * 1_024; // FIRST BUFFER readLimited SIZES FROM A DECLARED LENGTH
     private static final String SHADERS = "assets/watermedia/shaders/"; // THE BUNDLED GLSL, INCLUDES RESOLVE AGAINST IT
-    private IOTool() {}
 
-    public static String platformClassifier() {
-        final String system = os();
-        final String cpu = arch();
-        return system == null || cpu == null ? "unsupported" : system + (cpu.equals("aarch64") ? "-arm64" : "");
-    }
+    private IOTool() {}
 
     // NORMALISED OS TOKEN ("windows"/"macos"/"linux"), OR null IF UNSUPPORTED; platformClassifier NAMES THE ffmpeg
     // ZIPS WHILE platform() RESOLVES THE PER-OS/ARCH ASSETS OF DOWNLOADED NATIVE BINARIES
@@ -43,19 +39,17 @@ public final class IOTool {
         return null;
     }
 
-    // NORMALISED ARCH TOKEN ("x86_64"/"aarch64"), OR null IF UNSUPPORTED
-    private static String arch() {
-        final String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
-        if (arch.equals("amd64") || arch.equals("x86_64") || arch.equals("x64")) return "x86_64";
-        if (arch.equals("aarch64") || arch.equals("arm64")) return "aarch64";
-        return null;
-    }
-
     /** Stable operating-system and CPU identifier, or unsupported when either is unknown. */
     public static String platform() {
         final String system = os();
         final String cpu = arch();
         return system == null || cpu == null ? "unsupported" : system + "-" + cpu;
+    }
+
+    public static String platformClassifier() {
+        final String system = os();
+        final String cpu = arch();
+        return system == null || cpu == null ? "unsupported" : system + (cpu.equals("aarch64") ? "-arm64" : "");
     }
 
     /** Whether {@code uri} uses the http or https scheme, in any case. */
@@ -71,11 +65,7 @@ public final class IOTool {
         catch (final Exception ignored) {}
     }
 
-    /**
-     * Reads {@code in} to its end, failing past {@code maxBytes}. {@code expectedBytes} (or -1) only sizes the
-     * first buffer, never past {@code maxBytes} or 4 MiB; a positive {@code timeoutMs} bounds the whole read in
-     * wall-clock time, checked between chunks.
-     */
+    /** Reads {@code in} to its end, failing past {@code maxBytes}; {@code expectedBytes} (or -1) only sizes the first buffer, up to 4 MiB, and a positive {@code timeoutMs} bounds the whole read. */
     public static byte[] readLimited(final InputStream in, final long maxBytes, final long expectedBytes, final long timeoutMs) throws IOException {
         // A HOSTILE Content-Length MUST NOT DRIVE THE ALLOCATION: THE BUFFER STARTS BOUNDED AND GROWS WITH REAL BYTES
         final long initial = Math.min(expectedBytes > 0L ? expectedBytes : BUFFER_SIZE, Math.min(maxBytes, MAX_PREALLOCATED_BYTES));
@@ -165,9 +155,7 @@ public final class IOTool {
         try (final InputStream in = new BufferedInputStream(Files.newInputStream(file))) {
             final byte[] buffer = new byte[BUFFER_SIZE];
             int read;
-            while ((read = in.read(buffer)) != -1) {
-                digest.update(buffer, 0, read);
-            }
+            while ((read = in.read(buffer)) != -1) digest.update(buffer, 0, read);
         }
         return HexFormat.of().formatHex(digest.digest());
     }
@@ -235,4 +223,12 @@ public final class IOTool {
         return IOTool.class.getResourceAsStream(name.startsWith("/") ? name : "/" + name);
     }
 
+    // UTILITY
+    // NORMALISED ARCH TOKEN ("x86_64"/"aarch64"), OR null IF UNSUPPORTED
+    private static String arch() {
+        final String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
+        if (arch.equals("amd64") || arch.equals("x86_64") || arch.equals("x64")) return "x86_64";
+        if (arch.equals("aarch64") || arch.equals("arm64")) return "aarch64";
+        return null;
+    }
 }

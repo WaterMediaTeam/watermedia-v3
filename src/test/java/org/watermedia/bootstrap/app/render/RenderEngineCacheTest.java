@@ -99,7 +99,7 @@ public class RenderEngineCacheTest {
             engine.raiseCache();
             engine.endCache();
             assertEquals(List.of(0, 1), RenderEngineCacheTest.this.backend.begun);
-            assertArrayEquals(new float[] {0f, 0f, 0f, 0f}, RenderEngineCacheTest.this.backend.lastClear);
+            assertArrayEquals(new float[] { 0f, 0f, 0f, 0f }, RenderEngineCacheTest.this.backend.lastClear);
             assertEquals(1, RenderEngineCacheTest.this.backend.ended);
         }
 
@@ -139,8 +139,8 @@ public class RenderEngineCacheTest {
             assertEquals(clears + 1, RenderEngineCacheTest.this.backend.clipClears, "a clip left by a painter must not cut the layer");
             // FIRST VERTEX: TOP-LEFT CORNER WITH THE TOP ROW OF A TOP-DOWN LAYER; THIRD: BOTTOM-RIGHT WITH ITS LAST ROW
             final float[] v = RenderEngineCacheTest.this.backend.lastVertices;
-            assertArrayEquals(new float[] {0f, 0f, 0f, 0f}, Arrays.copyOfRange(v, 0, 4));
-            assertArrayEquals(new float[] {100f, 50f, 1f, 1f}, Arrays.copyOfRange(v, 16, 20));
+            assertArrayEquals(new float[] { 0f, 0f, 0f, 0f }, Arrays.copyOfRange(v, 0, 4));
+            assertArrayEquals(new float[] { 100f, 50f, 1f, 1f }, Arrays.copyOfRange(v, 16, 20));
         }
 
         @Test
@@ -152,8 +152,8 @@ public class RenderEngineCacheTest {
             engine.endCache();
             engine.drawCache(false);
             final float[] v = RenderEngineCacheTest.this.backend.lastVertices;
-            assertArrayEquals(new float[] {0f, 0f, 0f, 1f}, Arrays.copyOfRange(v, 0, 4));
-            assertArrayEquals(new float[] {100f, 50f, 1f, 0f}, Arrays.copyOfRange(v, 16, 20));
+            assertArrayEquals(new float[] { 0f, 0f, 0f, 1f }, Arrays.copyOfRange(v, 0, 4));
+            assertArrayEquals(new float[] { 100f, 50f, 1f, 0f }, Arrays.copyOfRange(v, 16, 20));
         }
 
         @Test

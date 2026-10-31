@@ -50,7 +50,6 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class CodecsAPI {
     private static final Marker IT = MarkerManager.getMarker(CodecsAPI.class.getSimpleName());
-    private CodecsAPI() {}
 
     // ==========================================================================
     // METADATA KEYS — VALUES ARE JDK TYPES ONLY, SO EVERY HOST CAN READ THEM
@@ -100,6 +99,9 @@ public final class CodecsAPI {
     /** GIF application extensions as {@code Map<String, List<byte[]>>}, identifier plus authentication code to payloads. */
     public static final String GIF_METAKEY_APPLICATION_EXTENSION = "gif.application_extension";
 
+    // ==========================================================================
+    // FORMAT SIGNATURES — THE FIRST GROUP DISPATCHES reader, EVERY GROUP FEEDS sniff
+    // ==========================================================================
     private static final byte[] PNG_HEADER = { (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
     private static final byte[] JPEG_HEADER = { (byte) 0xFF, (byte) 0xD8 };
     private static final byte[] GIF87_HEADER = { 'G', 'I', 'F', '8', '7', 'a' };
@@ -180,6 +182,11 @@ public final class CodecsAPI {
     // private static LogCallback nativeLog; // KEEPS THE NATIVE LOG THUNK REACHABLE WHILE FFMPEG MAY CALL IT
     private static volatile boolean vulkanHwDecode; // THE BUILD DECODES WITH VULKAN VIDEO AND ITS BINDINGS LINK (PROBED AT BOOT)
 
+    private CodecsAPI() {}
+
+    // ==========================================================================
+    // READERS, ENCODERS AND SNIFFING
+    // ==========================================================================
     /**
      * Opens an {@link ImageReader} for the given source. The buffer is left positioned after the
      * consumed format header. The reader returns frames in its own {@link PixelFormat}: BGRA for
@@ -550,12 +557,11 @@ public final class CodecsAPI {
     }
 
     /**
-     * Whether this FFmpeg build decodes with Vulkan Video and its natives expose the
+     * Returns whether this FFmpeg build decodes with Vulkan Video and its natives expose the
      * {@code hwcontext_vulkan} bindings (probed once at boot). When {@code true}, a player drawing
      * through a {@code VKEngine} decodes on the engine's own device, or on a twin of it whose images
      * the engine imports, as far as the {@code VKContext.deviceInfo()} of that device allows; every
      * other engine keeps decoding in software or through the host's accelerators.
-     * @return {@code true} when Vulkan decoding is available to Vulkan engines on this system
      */
     public static boolean vulkanDecode() {
         return vulkanHwDecode;
@@ -601,11 +607,8 @@ public final class CodecsAPI {
             System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
 
             final String currentLibPath = System.getProperty("java.library.path");
-            if (currentLibPath == null || currentLibPath.isEmpty()) {
-                System.setProperty("java.library.path", paths);
-            } else if (!currentLibPath.contains(paths)) {
-                System.setProperty("java.library.path", paths + File.pathSeparator + currentLibPath);
-            }
+            if (currentLibPath == null || currentLibPath.isEmpty()) System.setProperty("java.library.path", paths);
+            else if (!currentLibPath.contains(paths)) System.setProperty("java.library.path", paths + File.pathSeparator + currentLibPath);
 
             LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);
 

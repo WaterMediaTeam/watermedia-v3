@@ -20,12 +20,9 @@ import java.util.function.Supplier;
 
 /** Tree the settings screen edits: each WaterConfig spec as sections of settings, with the spec's autosave state. */
 final class SettingsModel {
-
     private SettingsModel() {}
 
-    // ==========================================================================
-    // SPECS AND SECTIONS
-    // ==========================================================================
+    // ==== SPECS AND SECTIONS ====
 
     enum SaveState {
         READY, SAVING, SAVED, FAILED_ONCE, RESAVING, FAILED_TWICE
@@ -42,8 +39,7 @@ final class SettingsModel {
 
     // A CACHED REVERSE-SPEC PARSE TIED TO ITS SOURCE FILE'S mtime (-1 = ABSENT); spec IS null WHEN THE FILE
     // WAS ABSENT/UNPARSEABLE AT THAT mtime, CACHING THE "SKIP THIS TAB" DECISION TOO
-    record ReverseSpec(long mtime, ConfigSpec spec) {
-    }
+    record ReverseSpec(long mtime, ConfigSpec spec) {}
 
     static final class SettingSpec {
         final String title;
@@ -75,8 +71,7 @@ final class SettingsModel {
     }
 
     // THE ONLY VALUES A NUMBER FIELD MAY TAKE, IN ORDER, AND HOW EACH ONE READS; ITS SEEK BAR SPACES THEM EVENLY
-    record Stops(double[] values, DoubleFunction<String> label) {
-    }
+    record Stops(double[] values, DoubleFunction<String> label) {}
 
     static final class SettingSection {
         final String name;
@@ -128,9 +123,7 @@ final class SettingsModel {
         }
     }
 
-    // ==========================================================================
-    // SETTINGS
-    // ==========================================================================
+    // ==== SETTINGS ====
 
     abstract static class Setting {
         protected final String label;
@@ -150,87 +143,34 @@ final class SettingsModel {
 
         abstract String valueLabel();
 
-        String editValue() {
-            return this.valueLabel();
-        }
-
-        boolean editableText() {
-            return false;
-        }
-
-        boolean isEnumControl() {
-            return false;
-        }
-
-        boolean isSeekbarControl() {
-            return false;
-        }
-
-        boolean isSpinnerControl() {
-            return false;
-        }
-
-        boolean booleanValue() {
-            return false;
-        }
-
-        Class<?> valueType() {
-            return Object.class;
-        }
-
-        String widestValueLabel() {
-            return this.valueLabel();
-        }
-
-        List<String> optionLabels() {
-            return List.of();
-        }
-
-        int selectedOptionIndex() {
-            return -1;
-        }
-
-        boolean selectOption(final int index) {
-            return false;
-        }
-
-        Control control() {
-            return Control.LABEL;
-        }
-
-        String suffix() {
-            return "";
-        }
-
-        float rangePercent() {
-            return 0f;
-        }
+        // DEFAULTS OF A READ-ONLY, NON-NUMERIC SETTING; ConfigSetting OVERRIDES WHAT ITS FIELD SUPPORTS
+        String editValue() { return this.valueLabel(); }
+        boolean editableText() { return false; }
+        boolean isEnumControl() { return false; }
+        boolean isSeekbarControl() { return false; }
+        boolean isSpinnerControl() { return false; }
+        boolean booleanValue() { return false; }
+        Class<?> valueType() { return Object.class; }
+        String widestValueLabel() { return this.valueLabel(); }
+        List<String> optionLabels() { return List.of(); }
+        int selectedOptionIndex() { return -1; }
+        boolean selectOption(final int index) { return false; }
+        Control control() { return Control.LABEL; }
+        String suffix() { return ""; }
+        float rangePercent() { return 0f; }
+        boolean adjust(final int direction, final int step) { return false; }
+        void commit(final String value) {}
+        void reset() {}
 
         // SETS A RANGED NUMBER FROM A 0..1 FRACTION (SEEK BAR SKIN ADAPTER)
-        boolean percent(final double pct) {
-            return false;
-        }
+        boolean percent(final double pct) { return false; }
 
         // CURRENT NUMERIC VALUE FOR THE SPINNER SKIN; 0 WHEN THE SETTING IS NOT A NUMBER
-        double number() {
-            return 0d;
-        }
+        double number() { return 0d; }
 
         // SETS A NUMBER DIRECTLY FROM THE SPINNER (STEPPED OR TYPED), CLAMPED THROUGH THE SAME PATH AS
         // commit/adjust; RETURNS WHETHER THE STORED VALUE ACTUALLY CHANGED
-        boolean number(final double value) {
-            return false;
-        }
-
-        boolean adjust(final int direction, final int step) {
-            return false;
-        }
-
-        void commit(final String value) {
-        }
-
-        void reset() {
-        }
+        boolean number(final double value) { return false; }
 
         Color accent() {
             return this.mutable ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
@@ -581,10 +521,9 @@ final class SettingsModel {
             try {
                 this.field.set0(next);
             } catch (final RuntimeException e) {
-                try {
-                    this.field.set0(previous);
-                } catch (final RuntimeException ignored) {
-                }
+                // ROLL BACK TO THE PREVIOUS VALUE; THE ORIGINAL FAILURE IS WHAT THE CALLER SEES
+                try { this.field.set0(previous); }
+                catch (final RuntimeException ignored) {}
                 throw e;
             }
         }
@@ -674,7 +613,7 @@ final class SettingsModel {
         }
     }
 
-    // UTILITY
+    // ==== UTILITY ====
 
     // TURNS AN IDENTIFIER INTO A DISPLAY NAME: _ AND - BECOME SPACES, camelCase SPLITS INTO CAPITALIZED
     // WORDS ("pngUseBKGDChunk" -> "Png Use BKGD Chunk")

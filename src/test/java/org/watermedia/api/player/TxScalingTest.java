@@ -15,12 +15,7 @@ import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies that {@link TxMediaPlayer} uploads at the size {@code scale} and {@link LodLevel} resolve to, asserting on
- * the dimensions the engine is configured with ({@code width()}/{@code height()}) versus the untouched native size
- * ({@code sourceWidth()}/{@code sourceHeight()}). The sizing rule itself is pinned by {@link MediaPlayerBaseTest}; a
- * static image bakes its upload size at preparation, while a streaming animation picks up a LOD change on the fly.
- */
+/** Verifies that {@link TxMediaPlayer} uploads at the size scale and {@link LodLevel} resolve to; {@link MediaPlayerBaseTest} pins the rule. */
 @DisplayName("TxMediaPlayer scaling")
 public class TxScalingTest {
 
@@ -62,7 +57,6 @@ public class TxScalingTest {
             final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
             final TxMediaPlayer player = startStatic(gfx, p -> p.scale(CAP_WIDTH, CAP_HEIGHT));
             try {
-                // THE SOURCE SIZE IS LEFT UNTOUCHED
                 assertEquals(CAP_WIDTH, player.width());
                 assertEquals(CAP_HEIGHT, player.height());
                 assertEquals(NATIVE_WIDTH, player.sourceWidth());
@@ -99,8 +93,7 @@ public class TxScalingTest {
         void testHotLodChangeShrinksUpload() {
             final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
             assertTrue(mrl.await(MRL_TIMEOUT_MS));
-            // HeadlessGFXEngine(false) DISABLES THE FRAME-TEXTURE FAST PATH SO THE GIF RUNS THE
-            // STREAMING LIFECYCLE (MODE 3), WHERE applyTarget() RE-RUNS EVERY LOOP ITERATION.
+            // NO FRAME-TEXTURE PATH: THE GIF RUNS THE STREAMING LOOP, WHICH RESOLVES THE UPLOAD SIZE ON EVERY ITERATION
             final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, new HeadlessGFXEngine(false));
             try {
                 assertTrue(player.start());
@@ -109,7 +102,6 @@ public class TxScalingTest {
                 assertTrue(fullWidth > 0);
                 assertEquals(player.sourceWidth(), fullWidth);
 
-                // CHANGE LOD ON THE FLY — THE STREAMING LOOP MUST PICK IT UP AND UPLOAD SMALLER
                 player.lod(LodLevel.FAR_AWAY);
                 assertTrue(PlayerWait.awaitCondition(() -> player.width() < fullWidth, HOT_CHANGE_MS),
                         "upload width should shrink after a hot LOD change");

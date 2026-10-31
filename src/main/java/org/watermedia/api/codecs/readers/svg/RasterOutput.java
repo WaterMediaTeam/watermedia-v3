@@ -3,16 +3,8 @@ package org.watermedia.api.codecs.readers.svg;
 import org.watermedia.api.codecs.CodecException;
 
 /**
- * Drawing surface that paints user-space {@link Path} geometry into a raw ARGB canvas through the
- * {@link SvgRasterizer}. This is the AWT-free analogue of JSVG's {@code renderer.output.Output} +
- * {@code Graphics2DOutput} seam: the renderer talks only to this surface, so the backend stays a raw
- * pixel buffer instead of a {@code Graphics2D}. Modelled as a record wrapping the rasterizer — a
- * single-implementation interface would add indirection without payoff.
- *
- * <p>The current device transform is supplied per call (it lives on the per-node {@code RenderState}),
- * so the surface holds no mutable transform state.
- *
- * @param ras the backing rasterizer that owns the pixel canvas
+ * AWT-free drawing surface that paints user-space {@link Path} geometry into the raw ARGB canvas of its
+ * {@link SvgRasterizer}; the device transform comes with every call (it lives on the per-node {@code RenderState}).
  */
 record RasterOutput(SvgRasterizer ras) {
     // DEVICE-SPACE FLATTENING TOLERANCE IN PIXELS — SMALL ENOUGH FOR CRISP CURVES AT ANY SCALE

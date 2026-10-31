@@ -7,8 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * IHDR - Image Header Chunk
- * The first chunk in a PNG datastream, contains image metadata
+ * IHDR (image header) chunk: the first chunk of a PNG datastream, holding the image geometry and coding.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11IHDR">PNG Specification - IHDR</a>
  */
@@ -23,13 +22,9 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
 
     /** Converts a generic chunk to IHDR. */
     public static IHDR convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(chunk.type()));
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("Invalid IHDR data length: " + data.length + " (expected 13)");
-        }
+        if (data.length != LENGTH) throw new CodecException("Invalid IHDR data length: " + data.length + " (expected 13)");
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         return new IHDR(

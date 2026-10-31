@@ -12,10 +12,9 @@ import static org.watermedia.api.codecs.readers.webp.lossy.VP8LossyDecoder.IT;
 // MAINTAINS 'VALUE' AND 'RANGE' TO TRACK CURRENT POSITION IN ARITHMETIC CODING INTERVAL
 // KEY CONSTRAINTS: 128 <= RANGE <= 255, VALUE CONTAINS AT LEAST 8 SIGNIFICANT BITS
 final class VP8BoolDecoder {
-    // BYTES THE DECODER MAY FABRICATE PAST THE END OF ITS PARTITION BEFORE THE STREAM IS DECLARED
-    // TRUNCATED. THE RENORMALIZER RUNS UP TO TWO BYTES AHEAD OF THE BITS IT HAS ACTUALLY USED AND
-    // ENCODERS FLUSH WITH A SHORT ZERO TAIL, SO A FEW PHANTOM BYTES ARE NORMAL AT THE VERY END OF A
-    // VALID PARTITION — A FRAME'S WORTH OF THEM IS NOT
+    // BYTES THE DECODER MAY FABRICATE PAST ITS PARTITION END BEFORE THE STREAM COUNTS AS TRUNCATED: THE RENORMALIZER
+    // RUNS UP TO TWO BYTES AHEAD AND ENCODERS FLUSH A SHORT ZERO TAIL, SO A FEW PHANTOM BYTES ARE NORMAL AT THE END
+    // OF A VALID PARTITION — A FRAME'S WORTH OF THEM IS NOT
     private static final int MAX_PAD_BYTES = 16;
 
     private final ByteBuffer buf;
@@ -29,26 +28,20 @@ final class VP8BoolDecoder {
     // READS FIRST TWO BYTES TO INITIALIZE VALUE, SETS RANGE = 255
     VP8BoolDecoder(final ByteBuffer buffer) throws CodecException {
         this.buf = buffer.slice().order(ByteOrder.LITTLE_ENDIAN);
+        if (this.buf.remaining() < 2) throw new CodecException("VP8 bool decoder buffer too small");
 
-        if (this.buf.remaining() < 2) {
-            throw new CodecException("VP8 bool decoder buffer too small");
-        }
-
-        // INIT: VALUE = FIRST 2 INPUT BYTES (BIG-ENDIAN ORDER)
+        // VALUE = FIRST 2 INPUT BYTES (BIG-ENDIAN ORDER)
         this.val = (this.buf.get() & 0xFF) << 8;
         this.val |= (this.buf.get() & 0xFF);
-        this.range = 255;  // INITIAL RANGE IS FULL
-        this.bitCnt = 0;   // NO BITS SHIFTED OUT YET
+        this.range = 255;
+        this.bitCnt = 0;
 
         LOGGER.trace(IT, "Init: val=0x{}, range={}", Integer.toHexString(this.val), this.range);
     }
 
-    // RFC6386 SECTION 7.3 - READ_BOOL IMPLEMENTATION
-    // PROB: 0-255 WHERE PROB IS P(FALSE)*256
-    // SPLIT = 1 + (((RANGE - 1) * PROB) >> 8)
-    // COMPARE VALUE TO SPLIT << 8 TO DETERMINE BIT
+    // RFC6386 SECTION 7.3 - READ_BOOL: prob IS P(FALSE) * 256, AND THE BIT IS VALUE >= SPLIT << 8
+    // WITH SPLIT = 1 + (((RANGE - 1) * PROB) >> 8) (EQ 7.1)
     boolean readBool(final int prob) {
-        // CALCULATE SPLIT POINT PER RFC6386 EQ 7.1
         final int split = 1 + (((this.range - 1) * prob) >> 8);
         final int bigSplit = split << 8;
 
@@ -64,14 +57,13 @@ final class VP8BoolDecoder {
             r = split;
         }
 
-        // RENORMALIZE: BATCH THE SHIFT INSTEAD OF LOOPING ONE BIT AT A TIME.
-        // shift = number of left shifts needed so that range >= 128.
+        // RENORMALIZE IN ONE BATCHED SHIFT: shift IS THE LEFT SHIFTS THAT BRING range BACK TO >= 128
         if (r < 128) {
             final int shift = Integer.numberOfLeadingZeros(r) - 24;
             r <<= shift;
             v <<= shift;
             int bc = this.bitCnt + shift;
-            // bc can be at most 7 + 7 = 14, so at most one byte refill is needed.
+            // bc IS AT MOST 7 + 7 = 14, SO ONE BYTE REFILL IS ENOUGH
             if (bc >= 8) {
                 bc -= 8;
                 if (this.buf.hasRemaining()) {
@@ -100,18 +92,14 @@ final class VP8BoolDecoder {
         return this.readBool(128);
     }
 
-    // RFC6386 SECTION 8 - READ N-BIT UNSIGNED LITERAL (MSB FIRST)
-    // L(N) IN RFC NOTATION
+    // RFC6386 SECTION 8 - N-BIT UNSIGNED LITERAL L(N), MSB FIRST
     int readLit(final int n) {
         int r = 0;
-        for (int i = 0; i < n; i++) {
-            r = (r << 1) | (this.readBool() ? 1 : 0);
-        }
+        for (int i = 0; i < n; i++) r = (r << 1) | (this.readBool() ? 1 : 0);
         return r;
     }
 
-    // RFC6386 SECTION 8 - READ SIGNED LITERAL
-    // MAGNITUDE FIRST, THEN SIGN BIT (1 = NEGATIVE)
+    // RFC6386 SECTION 8 - SIGNED LITERAL: MAGNITUDE FIRST, THEN THE SIGN BIT (1 = NEGATIVE)
     int readSigned(final int n) {
         final int mag = this.readLit(n);
         return this.readBool() ? -mag : mag;

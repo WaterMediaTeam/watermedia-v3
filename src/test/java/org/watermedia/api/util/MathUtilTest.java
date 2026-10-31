@@ -75,7 +75,7 @@ public class MathUtilTest {
     }
 
     @Nested
-    @DisplayName("unit conversion")
+    @DisplayName("Unit conversion")
     class ConversionTests {
 
         @Test
@@ -88,7 +88,7 @@ public class MathUtilTest {
     }
 
     @Nested
-    @DisplayName("byte formatting")
+    @DisplayName("Byte formatting")
     class ByteTests {
 
         @Test
@@ -100,9 +100,9 @@ public class MathUtilTest {
         @Test
         @DisplayName("displayBytes scales to KB, MB and GB")
         void displayBytesUnits() {
-            assertEquals("1.0 KB", MathUtil.displayBytes(1024L));
-            assertEquals("1.5 MB", MathUtil.displayBytes(1024L * 1024L * 3 / 2));
-            assertEquals("2.0 GB", MathUtil.displayBytes(2L * 1024L * 1024L * 1024L));
+            assertEquals("1.0 KB", MathUtil.displayBytes(1_024L));
+            assertEquals("1.5 MB", MathUtil.displayBytes(1_024L * 1_024L * 3 / 2));
+            assertEquals("2.0 GB", MathUtil.displayBytes(2L * 1_024L * 1_024L * 1_024L));
         }
 
         @Test
@@ -111,7 +111,7 @@ public class MathUtilTest {
             final Locale previous = Locale.getDefault();
             try {
                 Locale.setDefault(Locale.forLanguageTag("es-ES"));
-                assertEquals("1.5 KB", MathUtil.displayBytes(1536L));
+                assertEquals("1.5 KB", MathUtil.displayBytes(1_536L));
             } finally {
                 Locale.setDefault(previous);
             }

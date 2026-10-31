@@ -12,10 +12,7 @@ package org.watermedia.api.util;
  * their last chroma column and row.
  */
 public enum PixelFormat {
-    // ===============
-    // SINGLE PLANE
-    // ==============
-
+    // ==== SINGLE PLANE ====
     /** Single-channel luminance (grayscale). 1 byte/pixel at 8-bit (Y only). No color, no alpha. */
     GRAY(1),
     /** Packed RGB. 3 bytes/pixel in [R, G, B] order. No alpha channel. */
@@ -29,19 +26,13 @@ public enum PixelFormat {
     /** Packed YUV 4:2:2 in [U, Y0, V, Y1] order. Same layout as {@link #YUYV} with luma and chroma bytes swapped. */
     UYVY(1),
 
-    // ===============
-    // TWO PLANES (Y + interleaved chroma)
-    // ==============
-
+    // ==== TWO PLANES (Y + INTERLEAVED CHROMA) ====
     /** Biplanar YUV 4:2:0: full-resolution Y plane + half-width/half-height interleaved [U, V] plane. 1.5 bytes/pixel at 8-bit. */
     NV12(2),
     /** Biplanar YUV 4:2:0: full-resolution Y plane + half-width/half-height interleaved [V, U] plane. Same as {@link #NV12} with U and V swapped (Android camera default). */
     NV21(2),
 
-    // ==============
-    // THREE PLANES (Y + U + V)
-    // ==============
-
+    // ==== THREE PLANES (Y + U + V) ====
     /** Planar YUV 4:2:0: separate Y, U, V planes; U and V are half-width and half-height. 1.5 bytes/pixel at 8-bit. The most common video format. */
     YUV420P(3),
     /** Planar YUV 4:2:2: separate Y, U, V planes; U and V are half-width but full height. 2 bytes/pixel at 8-bit. Same plane layout as {@link #YUV420P} with vertical chroma resolution preserved. */
@@ -49,10 +40,7 @@ public enum PixelFormat {
     /** Planar YUV 4:4:4: separate Y, U, V planes all at full resolution — no chroma subsampling. 3 bytes/pixel at 8-bit. Same plane layout as {@link #YUV420P}/{@link #YUV422P} with full chroma. */
     YUV444P(3),
 
-    // ==============
-    // FOUR PLANES (Y + U + V + A)
-    // ==============
-
+    // ==== FOUR PLANES (Y + U + V + A) ====
     /** Planar YUV 4:2:0 with alpha: {@link #YUV420P} plus a full-resolution A plane. 2.5 bytes/pixel at 8-bit. */
     YUVA420P(4),
     /** Planar YUV 4:2:2 with alpha: {@link #YUV422P} plus a full-resolution A plane. 3 bytes/pixel at 8-bit. */
@@ -60,10 +48,7 @@ public enum PixelFormat {
     /** Planar YUV 4:4:4 with alpha: {@link #YUV444P} plus a full-resolution A plane. 4 bytes/pixel at 8-bit. */
     YUVA444P(4),
 
-    // ==============
-    // BLOCK-COMPRESSED (BCn) — GPU SAMPLES THE BLOCKS DIRECTLY, NO SOFTWARE DECODE
-    // ==============
-
+    // ==== BLOCK-COMPRESSED (BCn): THE GPU SAMPLES THE BLOCKS DIRECTLY, NO SOFTWARE DECODE ====
     /** BC1 (DXT1): opaque RGB / 1-bit alpha, 8 bytes per 4x4 block — 1/8 the VRAM of RGBA8. */
     BC1(1, 8),
     /** BC2 (DXT3): RGB + explicit 4-bit alpha, 16 bytes per 4x4 block. */

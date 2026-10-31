@@ -114,7 +114,8 @@ public class FFDecoderTest {
         @Test
         @DisplayName("An abort cuts every open blocked on a held origin short, with more decoders alive than JavaCPP binds callbacks for")
         void abortCutsEveryBlockedOpenShort() throws Exception {
-            final int count = 12; // JAVACPP BINDS AT MOST 10 LIVE INSTANCES OF ONE CALLBACK CLASS
+            // JAVACPP BINDS AT MOST 10 LIVE INSTANCES OF ONE CALLBACK CLASS
+            final int count = 12;
             final List<Recorder> hosts = new ArrayList<>();
             final List<FFDecoder> decoders = new ArrayList<>();
             try (final Origin origin = Origin.of(Fixtures.readAll(Fixtures.MP4_H264), "video/mp4")) {
@@ -151,7 +152,7 @@ public class FFDecoderTest {
             // HALF THE FILE ON A CONNECTION THAT STAYS OPEN: THE DEMUXER WAITS INSIDE av_read_frame FOR THE REST
             try (final Origin origin = Origin.endless(Arrays.copyOf(webm, webm.length / 2), "video/webm")) {
                 final Recorder host = new Recorder();
-                final Reading timeline = new Reading();
+                final Linear timeline = new Linear(false);
                 final FFDecoder decoder = new FFDecoder("FFThread-Read", origin.uri(".webm"), null, new HttpHeaders(), true, false, timeline, host);
                 try {
                     decoder.start();
@@ -170,7 +171,7 @@ public class FFDecoderTest {
     // UTILITY
 
     private static FFDecoder decoder(final URI uri, final Recorder host) {
-        return new FFDecoder("FFThread-Test", uri, null, new HttpHeaders(), true, false, new Held(), host);
+        return new FFDecoder("FFThread-Test", uri, null, new HttpHeaders(), true, false, new Linear(true), host);
     }
 
     private static void assertProbePolicy(final AVFormatContext context, final String what) {
@@ -188,31 +189,22 @@ public class FFDecoderTest {
         return false;
     }
 
-    // A TIMELINE THAT PLAYS WITHOUT SEEKS AND RECORDS WHETHER THE DEMUXER REPORTED THE END OF THE INPUT
-    private static final class Reading implements FFDecoder.Timeline {
+    // A TIMELINE WITHOUT SEEKS THAT RECORDS WHETHER THE DEMUXER REPORTED THE END OF THE INPUT;
+    // A HELD ONE STAYS PAUSED, SO THE DEMUXER PARKS ONCE THE INPUT IS OPEN
+    private static final class Linear implements FFDecoder.Timeline {
+        private final boolean held;
         private volatile boolean finished;
+
+        private Linear(final boolean held) { this.held = held; }
 
         @Override public FFDecoder.Seek consumeSeek() { return null; }
         @Override public boolean seekPending() { return false; }
-        @Override public boolean holding() { return false; }
+        @Override public boolean holding() { return this.held; }
         @Override public void awaitChange(final long timeoutMs) throws InterruptedException { Thread.sleep(timeoutMs > 0 ? timeoutMs : 50); }
         @Override public void serial(final int serial) {}
         @Override public void start() {}
         @Override public void signalDemuxResumed() {}
         @Override public void signalDemuxFinished() { this.finished = true; }
-        @Override public double frameDurationSec() { return 1.0 / 30.0; }
-    }
-
-    // A TIMELINE HELD PAUSED WITHOUT SEEKS: THE DEMUXER PARKS ONCE THE INPUT IS OPEN
-    private static final class Held implements FFDecoder.Timeline {
-        @Override public FFDecoder.Seek consumeSeek() { return null; }
-        @Override public boolean seekPending() { return false; }
-        @Override public boolean holding() { return true; }
-        @Override public void awaitChange(final long timeoutMs) throws InterruptedException { Thread.sleep(timeoutMs > 0 ? timeoutMs : 50); }
-        @Override public void serial(final int serial) {}
-        @Override public void start() {}
-        @Override public void signalDemuxResumed() {}
-        @Override public void signalDemuxFinished() {}
         @Override public double frameDurationSec() { return 1.0 / 30.0; }
     }
 

@@ -58,11 +58,7 @@ public final class DefensiveCheck {
 
     private DefensiveCheck() {}
 
-    /**
-     * Throws when this game process belongs to TLauncher: its injected skin mod, its classes or resources, its files on the
-     * class path, its JVM options, a thread running its code or a parent process of it. Leftovers of a past installation
-     * only log a warning. A null game directory means the working directory.
-     */
+    /** Throws when this game process belongs to TLauncher; leftovers of a past install only warn. A null game directory is the working directory. */
     public static void run(final Path gameDir) {
         final List<String> evidence = new ArrayList<>();
         final ClassLoader own = DefensiveCheck.class.getClassLoader();

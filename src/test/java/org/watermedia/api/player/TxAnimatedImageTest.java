@@ -16,10 +16,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
-/**
- * Verifies the {@link TxMediaPlayer} streaming path on every animated GIF fixture: the animation loads seekable with a
- * known duration and the lifecycle thread keeps uploading frames over time.
- */
+/** Verifies the {@link TxMediaPlayer} streaming path on the animated GIFs: seekable, timed and uploading frames over time. */
 @DisplayName("TxMediaPlayer animated image")
 public class TxAnimatedImageTest {
 
@@ -42,7 +39,7 @@ public class TxAnimatedImageTest {
             final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(path));
             assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
-            // DISABLE FRAME-TEXTURE FAST PATH SO upload() IS CALLED PER FRAME — KEEPS uploadCount() OBSERVABLE.
+            // NO FRAME-TEXTURE PATH: upload() RUNS PER FRAME, SO uploadCount() SHOWS THE STREAMING
             final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
             final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
             try {
@@ -51,7 +48,6 @@ public class TxAnimatedImageTest {
                 assertTrue(player.canSeek());
                 assertTrue(player.duration() > 0L);
 
-                // BASELINE UPLOAD COUNT THEN OBSERVE AT LEAST ONE MORE UPLOAD WHILE THE LIFECYCLE THREAD RUNS.
                 final long baseline = gfx.uploadCount();
                 assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > baseline, PLAYBACK_OBSERVATION_MS));
             } finally {

@@ -23,14 +23,16 @@ public final class AppConfigProbe {
         switch (scenario) {
             case "defaults" -> {
                 expect("vulkan", launcherEngine(), "launcher engine without a file");
-                final ConfigSpec spec = register();
+                WaterConfig.init();
+                final ConfigSpec spec = WaterConfig.registerBlocking(AppConfig.class);
                 if (!spec.path().equals(file)) throw new AssertionError("The launcher reads " + file + " but WaterConfig writes " + spec.path());
                 if (AppConfig.engine != RenderSystem.Engine.VULKAN || AppConfig.scale != 0f || !AppConfig.crt || !AppConfig.sound)
                     throw new AssertionError("Unexpected defaults: " + AppConfig.engine + ", " + AppConfig.scale + ", " + AppConfig.crt + ", " + AppConfig.sound);
             }
             case "shared" -> {
                 // THE SETTINGS SCREEN SAVES THROUGH THE SAME PACKAGE-PRIVATE METHOD
-                final ConfigSpec spec = register();
+                WaterConfig.init();
+                final ConfigSpec spec = WaterConfig.registerBlocking(AppConfig.class);
                 AppConfig.engine = RenderSystem.Engine.OPENGL;
                 AppConfig.scale = 1.25f;
                 final Method save = ConfigSpec.class.getDeclaredMethod("save");
@@ -59,11 +61,6 @@ public final class AppConfigProbe {
         }
         System.out.println("PROBE_OK " + scenario);
         System.exit(0);
-    }
-
-    private static ConfigSpec register() {
-        WaterConfig.init();
-        return WaterConfig.registerBlocking(AppConfig.class);
     }
 
     private static String launcherEngine() throws Exception {

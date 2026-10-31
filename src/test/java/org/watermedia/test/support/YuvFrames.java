@@ -8,11 +8,7 @@ import java.util.function.IntBinaryOperator;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
-/**
- * Builds raw frame planes for the engine tests and computes the colors they must show, straight from the
- * standard formulas (BT.601/709/2020 matrices, limited and full range, SMPTE ST 2084) so a wrong shader constant
- * cannot hide behind the same wrong constant in the test.
- */
+/** Builds raw frame planes for the engine tests and computes their expected colors from the standard formulas, never from shader constants. */
 public final class YuvFrames {
     /** Nits of SDR white (BT.2408); HDR at this level shows as full white before the highlight knee. */
     public static final double SDR_WHITE_NITS = 203.0;
@@ -43,15 +39,7 @@ public final class YuvFrames {
         return buffer;
     }
 
-    /**
-     * Returns the 8-bit RGB an SDR YCbCr sample shows.
-     *
-     * @param kr   red luma weight of the matrix (0.299 BT.601, 0.2126 BT.709, 0.2627 BT.2020)
-     * @param kb   blue luma weight of the matrix (0.114 BT.601, 0.0722 BT.709, 0.0593 BT.2020)
-     * @param full full range codes instead of limited range
-     * @param bits sample depth
-     * @return red, green and blue in 0..255
-     */
+    /** Returns the 8-bit RGB an SDR YCbCr sample of {@code bits} depth shows under luma weights kr and kb, in full or limited range. */
     public static int[] rgb(final double kr, final double kb, final boolean full, final int bits,
                             final int y, final int cb, final int cr) {
         final double unit = 1 << (bits - 8);

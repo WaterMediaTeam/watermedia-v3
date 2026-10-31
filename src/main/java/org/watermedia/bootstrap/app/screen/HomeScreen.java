@@ -84,11 +84,8 @@ public class HomeScreen extends Screen {
     private static final List<Keybind> KEYS_MENU = List.of(
             new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Exit"));
 
-    private record MenuEntry(String label, String meta, Action action, int groupIndex) {
-    }
-
-    private record RepoTarget(String name, String slug, String url, Color accent) {
-    }
+    private record MenuEntry(String label, String meta, Action action, int groupIndex) {}
+    private record RepoTarget(String name, String slug, String url, Color accent) {}
 
     private final Consumer<Action> navigator;
     private final List<MenuEntry> actions = new ArrayList<>();
@@ -120,7 +117,7 @@ public class HomeScreen extends Screen {
     private int repoSelected;
 
     // CACHE-SIZE LABEL FOR THE CLEANUP ENTRY, COMPUTED OFF THE RENDER THREAD (Files.walk BLOCKS ON LARGE
-    // CACHES). rebuildMenu() READS THE LAST PUBLISHED VALUE; cacheWalking COALESCES OVERLAPPING WALKS.
+    // CACHES); rebuildMenu() READS THE LAST PUBLISHED VALUE AND cacheWalking COALESCES OVERLAPPING WALKS
     private volatile String cacheLabel = "--";
     private volatile boolean cacheWalking;
     private volatile boolean cacheWarned;
@@ -171,9 +168,7 @@ public class HomeScreen extends Screen {
         if (this.grid != null) this.grid.sync();
     }
 
-    // ==========================================================================
-    // TREE CONSTRUCTION
-    // ==========================================================================
+    // ==== TREE CONSTRUCTION ====
 
     @Override
     protected Element<?> build() {
@@ -272,7 +267,8 @@ public class HomeScreen extends Screen {
             row.bar.visible(row.twoLine)
                     .progress(MathUtil.clamp(this.ctx.cleanup.progress, 0, 100) / 100f);
             row.size.text(this.ctx.cleanup.sizeLabel);
-            row.tag.label(this.cleanupStateLabel()).color(this.cleanupStateColor());
+            row.tag.label(this.ctx.cleanup.stage == 2 && this.ctx.cleanup.working
+                    ? MathUtil.clamp(this.ctx.cleanup.progress, 0, 100) + "%" : this.ctx.cleanup.state).color(this.cleanupStateColor());
         });
         row.size(MAX_PARENT, CLEANUP_ROW_H);
         final Parent panel = Parent.column()
@@ -297,9 +293,8 @@ public class HomeScreen extends Screen {
                 .actions(this.cleanupCancel, this.cleanupPrimary);
     }
 
-    // ==========================================================================
-    // FRAME BINDING — PULLS ctx.upload / ctx.cleanup INTO THE RETAINED DIALOGS
-    // ==========================================================================
+    // ==== FRAME BINDING ====
+    // PULLS ctx.upload / ctx.cleanup INTO THE RETAINED DIALOGS
 
     @Override
     protected void onUpdate() {
@@ -307,9 +302,7 @@ public class HomeScreen extends Screen {
 
         final var up = this.ctx.upload;
         final boolean report = up.stage >= 3;
-        if (this.uploadDialog.visible() != up.visible || this.cleanupDialog.visible() != this.ctx.cleanup.visible) {
-            this.invalidate();
-        }
+        if (this.uploadDialog.visible() != up.visible || this.cleanupDialog.visible() != this.ctx.cleanup.visible) this.invalidate();
 
         this.uploadDialog.visible(up.visible)
                 .title(up.done ? "SUCCESS" : "UPLOAD LOG FILES")
@@ -349,7 +342,8 @@ public class HomeScreen extends Screen {
 
         this.uploadCancel.label(up.done ? "CLOSE" : "CANCEL");
         final boolean upEnabled = this.uploadPrimaryEnabled();
-        final String upLabel = this.uploadPrimaryLabel();
+        final String upLabel = up.stage <= 1 ? "UPLOAD TO MCLO.GS" : up.stage == 2 ? "GENERATE REPORT"
+                : "OPEN " + this.selectedRepo().name().toUpperCase(Locale.ROOT);
         final Color upColor = !upEnabled ? AppTheme.TEXT_FAINT : up.done || up.uploadsDone ? AppTheme.GREEN : AppTheme.CYAN;
         this.uploadPrimary.label(upLabel)
                 .icon(upLabel.startsWith("UPLOAD") ? "upload" : upLabel.startsWith("OPEN") ? "link" : upLabel.startsWith("GENERATE") ? "check" : "")
@@ -364,7 +358,7 @@ public class HomeScreen extends Screen {
         // ONCE THE CLEAN RAN THE PRIMARY ALREADY SAYS CLOSE — HIDE CANCEL SO THE FOOTER NEVER SHOWS TWO CLOSE BUTTONS
         this.cleanupCancel.visible(cl.stage <= 1);
         final boolean clEnabled = this.cleanupPrimaryEnabled();
-        final String clLabel = this.cleanupPrimaryLabel();
+        final String clLabel = cl.stage <= 1 ? "CLEAN CACHE" : "CLOSE";
         final Color clColor = !clEnabled ? AppTheme.TEXT_FAINT : cl.done ? AppTheme.GREEN : AppTheme.CYAN;
         this.cleanupPrimary.label(clLabel)
                 .icon(clLabel.startsWith("CLEAN") ? "broom" : "x")
@@ -372,9 +366,7 @@ public class HomeScreen extends Screen {
                 .enabled(clEnabled);
     }
 
-    // ==========================================================================
-    // INPUT / SCREEN HOOKS
-    // ==========================================================================
+    // ==== INPUT / SCREEN HOOKS ====
 
     @Override
     public boolean dispatchKey(final int key, final int action) {
@@ -386,17 +378,9 @@ public class HomeScreen extends Screen {
             case GLFW_KEY_DOWN -> this.moveSelection(1);
             case GLFW_KEY_LEFT -> this.switchPanel(0);
             case GLFW_KEY_RIGHT -> this.switchPanel(this.mediaTests.isEmpty() && !this.entertainment.isEmpty() ? 2 : 1);
-            case GLFW_KEY_U -> {
-                final int idx = this.actionIndex(Action.UPLOAD_LOGS);
-                if (idx >= 0) {
-                    this.selectedPanel = 0;
-                    this.selectedAction = idx;
-                    this.confirmSelection();
-                }
-            }
-            case GLFW_KEY_S -> {
-                // RESOLVE BY ACTION, NOT A HARDCODED SLOT — A MENU REORDER MUST NOT RETARGET S AT ANOTHER ENTRY
-                final int idx = this.actionIndex(Action.SETTINGS);
+            case GLFW_KEY_U, GLFW_KEY_S -> {
+                // RESOLVE BY ACTION, NOT A HARDCODED SLOT — A MENU REORDER MUST NOT RETARGET A SHORTCUT AT ANOTHER ENTRY
+                final int idx = this.actionIndex(key == GLFW_KEY_U ? Action.UPLOAD_LOGS : Action.SETTINGS);
                 if (idx >= 0) {
                     this.selectedPanel = 0;
                     this.selectedAction = idx;
@@ -424,34 +408,24 @@ public class HomeScreen extends Screen {
         return this.ctx.backendsLoading || this.ctx.upload.working || this.ctx.cleanup.working;
     }
 
-    // ==========================================================================
-    // MENU BEHAVIOR
-    // ==========================================================================
+    // ==== MENU BEHAVIOR ====
 
     private void handleSelect(final MenuEntry entry) {
-        if (entry.groupIndex() >= 0 && entry.groupIndex() < this.ctx.catalog.uriGroups.length) {
+        // THE CUSTOM GROUP (-2) IS BUILT FROM THE LINKS ADDED THIS RUN; ACTION ENTRIES CARRY NO GROUP
+        if (entry.groupIndex() >= 0 && entry.groupIndex() < this.ctx.catalog.uriGroups.length)
             this.openGroup(this.ctx.catalog.uriGroups[entry.groupIndex()]);
-        } else if (entry.groupIndex() == -2) {
-            this.openCustomTests();
-        } else if (entry.action() != null) {
-            if (!this.actionEnabled(entry)) return;
+        else if (entry.groupIndex() == -2 && !this.ctx.catalog.customTests.isEmpty())
+            this.openGroup(new MediaCatalog.URIGroup("CUSTOM", this.ctx.catalog.customTests.toArray(new MediaCatalog.TestURI[0])));
+        else if (entry.action() != null && this.actionEnabled(entry))
             this.navigator.accept(entry.action());
-        }
     }
 
     private void openGroup(final MediaCatalog.URIGroup group) {
         this.ctx.media.selectedGroup = group;
         this.ctx.media.groupMRLs.clear();
-        for (final MediaCatalog.TestURI testUri: group.uris()) {
+        for (final MediaCatalog.TestURI testUri: group.uris())
             this.ctx.media.groupMRLs.put(testUri.name(), PlayerAPI.mrl(testUri.uri()));
-        }
         this.navigator.accept(Action.MRL_SELECTOR);
-    }
-
-    private void openCustomTests() {
-        if (this.ctx.catalog.customTests.isEmpty()) return;
-        this.openGroup(new MediaCatalog.URIGroup("CUSTOM",
-                this.ctx.catalog.customTests.toArray(new MediaCatalog.TestURI[0])));
     }
 
     private boolean actionEnabled(final MenuEntry entry) {
@@ -476,10 +450,6 @@ public class HomeScreen extends Screen {
             case EXIT -> "x";
             default -> "info";
         };
-    }
-
-    private static Color categoryColor(final int index) {
-        return CATEGORY_PALETTE[Math.floorMod(index, CATEGORY_PALETTE.length)];
     }
 
     private void moveSelection(final int delta) {
@@ -517,13 +487,12 @@ public class HomeScreen extends Screen {
     }
 
     private void confirmSelection() {
-        if (this.selectedPanel == 0 && this.selectedAction < this.actions.size()) {
+        if (this.selectedPanel == 0 && this.selectedAction < this.actions.size())
             this.handleSelect(this.actions.get(this.selectedAction));
-        } else if (this.selectedPanel == 1 && this.selectedMedia < this.visibleMediaCount) {
+        else if (this.selectedPanel == 1 && this.selectedMedia < this.visibleMediaCount)
             this.handleSelect(this.mediaTests.get(this.selectedMedia));
-        } else if (this.selectedPanel == 2 && this.selectedEntertainment < this.entertainment.size()) {
+        else if (this.selectedPanel == 2 && this.selectedEntertainment < this.entertainment.size())
             this.handleSelect(this.entertainment.get(this.selectedEntertainment));
-        }
     }
 
     private void refreshCacheSize() {
@@ -548,9 +517,8 @@ public class HomeScreen extends Screen {
         });
     }
 
-    // ==========================================================================
-    // UPLOAD DIALOG BEHAVIOR — STATE AND FLOW LIVE IN ctx.upload, REACHED THROUGH navigateAction
-    // ==========================================================================
+    // ==== UPLOAD DIALOG BEHAVIOR ====
+    // STATE AND FLOW LIVE IN ctx.upload, REACHED THROUGH navigateAction
 
     private void closeUpload() {
         this.ctx.upload.visible = false;
@@ -568,33 +536,24 @@ public class HomeScreen extends Screen {
         this.ctx.sound.play();
     }
 
-    private String uploadPrimaryLabel() {
-        if (this.ctx.upload.stage <= 1) return "UPLOAD TO MCLO.GS";
-        if (this.ctx.upload.stage == 2) return "GENERATE REPORT";
-        return "OPEN " + this.selectedRepo().name().toUpperCase(Locale.ROOT);
-    }
-
     private boolean uploadPrimaryEnabled() {
         if (this.ctx.upload.working) return false;
-        if (this.ctx.upload.stage <= 1) {
-            for (final LogUploader.FileEntry entry: this.ctx.upload.files) if (entry.present) return true;
-            return false;
-        }
-        if (this.ctx.upload.stage == 2) {
-            for (final LogUploader.FileEntry entry: this.ctx.upload.files) if (entry.uploaded) return true;
-            return false;
-        }
-        return true;
+        // RUNS ON EVERY UPDATE PASS, SO PLAIN LOOPS INSTEAD OF STREAMS
+        if (this.ctx.upload.stage > 2) return true;
+        final boolean scan = this.ctx.upload.stage <= 1;
+        for (final LogUploader.FileEntry entry: this.ctx.upload.files)
+            if (scan ? entry.present : entry.uploaded) return true;
+        return false;
     }
 
     private List<LogUploader.FileEntry> visibleUploadFiles() {
+        // SCAN SHOWS EVERY FILE, UPLOAD THE CANDIDATES AND THE FAILURES, THE REPORT ONLY THE UPLOADED ONES
         final List<LogUploader.FileEntry> files = new ArrayList<>();
         for (final LogUploader.FileEntry entry: this.ctx.upload.files) {
             if (this.ctx.upload.stage <= 1) {
                 files.add(entry);
             } else if (this.ctx.upload.stage == 2) {
-                if (entry.present && entry.valid) files.add(entry);
-                else if ("FAILED".equals(entry.state) || "READ ERROR".equals(entry.state)) files.add(entry);
+                if ((entry.present && entry.valid) || "FAILED".equals(entry.state) || "READ ERROR".equals(entry.state)) files.add(entry);
             } else if (entry.uploaded) {
                 files.add(entry);
             }
@@ -606,12 +565,11 @@ public class HomeScreen extends Screen {
         final String wmUrl = this.ctx.upload.issueUrl != null ? this.ctx.upload.issueUrl : "https://github.com/" + LogUploader.REPO + "/issues/new";
         final List<RepoTarget> repos = new ArrayList<>();
         repos.add(new RepoTarget("WaterMedia", LogUploader.REPO, wmUrl, AppTheme.GREEN));
-        // ONLY LIST SUSPECT MODS WHOSE JAR WAS ACTUALLY FOUND IN THE INSTANCE (SEE LogUploader.scanSuspectMods)
+        // ONLY THE SUSPECT MODS WHOSE JAR THE UPLOAD SCAN FOUND; THE ACCENT FOLLOWS THE CATALOG POSITION
         int idx = 0;
         for (final LogUploader.SuspectMod mod: LogUploader.SUSPECT_MODS) {
-            if (this.ctx.upload.suspectModIds.contains(mod.id())) {
+            if (this.ctx.upload.suspectModIds.contains(mod.id()))
                 repos.add(new RepoTarget(mod.name(), mod.slug(), mod.url(), REPO_PALETTE[idx % REPO_PALETTE.length]));
-            }
             idx++;
         }
         return repos;
@@ -633,11 +591,8 @@ public class HomeScreen extends Screen {
         final List<RepoTarget> targets = this.repoTargets.isEmpty() ? this.uploadRepoTargets() : this.repoTargets;
         this.repoSelected = MathUtil.clamp(this.repoSelected + delta, 0, targets.size() - 1);
         // DRIVE THE LIST SELECTION SO THE PICKED MOD CARD (TARGETS 1..n) STAYS INSIDE THE SCROLL VIEWPORT
-        if (this.repoSelected >= 1) {
-            this.repoList.moveSelection(this.repoSelected - 1 - Math.max(0, this.repoList.selectedIndex()));
-        } else {
-            this.repoList.selection(-1);
-        }
+        if (this.repoSelected >= 1) this.repoList.moveSelection(this.repoSelected - 1 - Math.max(0, this.repoList.selectedIndex()));
+        else this.repoList.selection(-1);
         this.ctx.sound.play();
         this.invalidate();
     }
@@ -683,9 +638,8 @@ public class HomeScreen extends Screen {
         return entry.present ? StatusSquare.Status.OFF : StatusSquare.Status.ERROR;
     }
 
-    // ==========================================================================
-    // CLEANUP DIALOG BEHAVIOR — STATE AND FLOW LIVE IN ctx.cleanup, REACHED THROUGH navigateAction
-    // ==========================================================================
+    // ==== CLEANUP DIALOG BEHAVIOR ====
+    // STATE AND FLOW LIVE IN ctx.cleanup, REACHED THROUGH navigateAction
 
     private void dismissCleanup() {
         this.closeCleanupDialog();
@@ -694,16 +648,9 @@ public class HomeScreen extends Screen {
 
     private void cleanupPrimaryAction() {
         if (!this.cleanupPrimaryEnabled()) return;
-        if (this.ctx.cleanup.stage > 1) {
-            this.closeCleanupDialog();
-        } else {
-            this.navigator.accept(Action.CLEANUP);
-        }
+        if (this.ctx.cleanup.stage > 1) this.closeCleanupDialog();
+        else this.navigator.accept(Action.CLEANUP);
         this.ctx.sound.play();
-    }
-
-    private String cleanupPrimaryLabel() {
-        return this.ctx.cleanup.stage <= 1 ? "CLEAN CACHE" : "CLOSE";
     }
 
     private boolean cleanupPrimaryEnabled() {
@@ -719,13 +666,6 @@ public class HomeScreen extends Screen {
         return AppTheme.TEXT_FAINT;
     }
 
-    private String cleanupStateLabel() {
-        if (this.ctx.cleanup.stage == 2 && this.ctx.cleanup.working) {
-            return MathUtil.clamp(this.ctx.cleanup.progress, 0, 100) + "%";
-        }
-        return this.ctx.cleanup.state;
-    }
-
     private void closeCleanupDialog() {
         this.ctx.cleanup.visible = false;
         this.rebuildMenu();
@@ -733,14 +673,11 @@ public class HomeScreen extends Screen {
         this.invalidate();
     }
 
-    // ==========================================================================
-    // MENU GRID
-    // ==========================================================================
+    // ==== MENU GRID ====
 
     // TWO-PANEL GRID: ACTIONS ON THE LEFT, MEDIA AND ENTERTAINMENT TILES ON THE RIGHT, WITH THE SECTION HEADS
     // AND THE UPLOAD TOOLTIP
     private final class HomeBody extends Group<HomeBody> {
-
         private static final int TILE_H = 94;
         private final List<ActionTile> actionElements = new ArrayList<>();
         private final List<MediaTile> mediaElements = new ArrayList<>();
@@ -867,13 +804,11 @@ public class HomeScreen extends Screen {
             if (this.entHeadVisible) SectionHead.draw(canvas, "ENTERTAINMENT", HomeScreen.this.entertainment.size() + " AVAILABLE", this.rightXAbs, this.entYAbs, rightW);
             super.onDraw(canvas); // TILES, THEN THE TOOLTIP ON TOP
         }
-
     }
 
     // ONE ACTION ROW: HOVER SELECTS IT AND CHIMES WHEN THE SELECTION MOVES. DISABLED ACTIONS STAY HOVERABLE
     // AND CLICKABLE; handleSelect IGNORES THEM
     private final class ActionTile extends Element<ActionTile> {
-
         private final int index;
 
         private ActionTile(final int index) {
@@ -947,9 +882,8 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // ONE MEDIA-TEST TILE — DECOR FROM LIVE STATE, FOLDER ICON AND TITLES THROUGH THE CANVAS.
+    // ONE MEDIA-TEST TILE — DECOR FROM LIVE STATE, FOLDER ICON AND TITLES THROUGH THE CANVAS
     private final class MediaTile extends Element<MediaTile> {
-
         private final int index;
 
         private MediaTile(final int index) {
@@ -975,7 +909,7 @@ public class HomeScreen extends Screen {
         @Override
         protected void onDraw(final Canvas canvas) {
             final MenuEntry entry = HomeScreen.this.mediaTests.get(this.index);
-            final Color folderColor = categoryColor(entry.groupIndex());
+            final Color folderColor = CATEGORY_PALETTE[Math.floorMod(entry.groupIndex(), CATEGORY_PALETTE.length)];
             final int x = this.left;
             final int y = this.top;
             PixelIcon.draw("folder", x + 14, y + 15, 18, folderColor);
@@ -989,9 +923,8 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // ONE ENTERTAINMENT ROW — DECOR FROM LIVE STATE, CENTERED TV ICON + LABEL THROUGH THE CANVAS.
+    // ONE ENTERTAINMENT ROW — DECOR FROM LIVE STATE, CENTERED TV ICON + LABEL THROUGH THE CANVAS
     private final class EntertainmentTile extends Element<EntertainmentTile> {
-
         private final int index;
 
         private EntertainmentTile(final int index) {
@@ -1035,9 +968,12 @@ public class HomeScreen extends Screen {
     // UPLOAD-LOGS TOOLTIP, SHOWN WHILE ITS TILE IS SELECTED AND THE DIALOG IS CLOSED; IT IGNORES INPUT SO
     // THE TILES UNDER IT KEEP THEIR HOVER AND CLICKS
     private final class UploadTip extends Element<UploadTip> {
-
         private static final int BOX_H = 82;
         private static final int NOTCH_H = 10;
+        private static final boolean BLOCKED = !LogUploader.WORKDIR_IS_MODS;
+        private static final String TITLE = BLOCKED ? "NO MC CONTEXT" : "SENDS LOGS TO MCLO.GS";
+        private static final String LINE_1 = BLOCKED ? "Upload logs is blocked outside" : "Reads logs/latest.log and crash reports,";
+        private static final String LINE_2 = BLOCKED ? "the Minecraft mods folder." : "then uploads.";
 
         @Override
         protected void onUpdate() {
@@ -1047,13 +983,9 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            final boolean blocked = !LogUploader.WORKDIR_IS_MODS;
             final TextRenderer text = HomeScreen.this.ctx.text;
-            final String title = blocked ? "NO MC CONTEXT" : "SENDS LOGS TO MCLO.GS";
-            final String line1 = blocked ? "Upload logs is blocked outside" : "Reads logs/latest.log and crash reports,";
-            final String line2 = blocked ? "the Minecraft mods folder." : "then uploads.";
-            final int desiredW = Math.max(text.width(title, AppTheme.TEXT_BUTTON),
-                    Math.max(text.width(line1, AppTheme.TEXT_BODY), text.width(line2, AppTheme.TEXT_BODY))) + 24;
+            final int desiredW = Math.max(text.width(TITLE, AppTheme.TEXT_BUTTON),
+                    Math.max(text.width(LINE_1, AppTheme.TEXT_BODY), text.width(LINE_2, AppTheme.TEXT_BODY))) + 24;
             this.contentWidth = MathUtil.clamp(desiredW, 340, Math.max(120, innerAvailWidth - 24));
             this.contentHeight = BOX_H + NOTCH_H;
         }
@@ -1070,11 +1002,7 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final boolean blocked = !LogUploader.WORKDIR_IS_MODS;
-            final String title = blocked ? "NO MC CONTEXT" : "SENDS LOGS TO MCLO.GS";
-            final String line1 = blocked ? "Upload logs is blocked outside" : "Reads logs/latest.log and crash reports,";
-            final String line2 = blocked ? "the Minecraft mods folder." : "then uploads.";
-            final Color color = blocked ? AppTheme.RED : AppTheme.AMBER;
+            final Color color = BLOCKED ? AppTheme.RED : AppTheme.AMBER;
             final int x = this.left;
             final int y = this.top + NOTCH_H;
             final int w = this.measuredWidth;
@@ -1087,20 +1015,17 @@ public class HomeScreen extends Screen {
                 if (half <= 0) continue;
                 canvas.fill(x + 23 - half, y - 2 * (k + 1), half * 2, 2, color);
             }
-            canvas.text(title, x + 12, y + 12, color, AppTheme.TEXT_BUTTON, true);
-            canvas.text(line1, x + 12, y + 36, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
-            canvas.text(line2, x + 12, y + 56, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
+            canvas.text(TITLE, x + 12, y + 12, color, AppTheme.TEXT_BUTTON, true);
+            canvas.text(LINE_1, x + 12, y + 36, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
+            canvas.text(LINE_2, x + 12, y + 56, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
         }
     }
 
-    // ==========================================================================
-    // DIALOG BUILDING BLOCKS
-    // ==========================================================================
+    // ==== DIALOG BUILDING BLOCKS ====
 
     // ONE FILE OR SUMMARY ROW: STATUS PIP, NAME (WITH THE URL OR A PROGRESS BAR UNDER IT), SIZE AND STATE BADGE; A
     // ListRow WHOSE ONLY ADDITION IS THIS TWO-LINE LAYOUT OF LIVE ELEMENTS, BOUND EVERY FRAME BY ITS BINDER
     private static final class FileRow extends ListRow {
-
         private final StatusSquare pip = new StatusSquare();
         private final Text name = new Text();
         private final Text url = new Text().color(AppTheme.CYAN).scale(AppTheme.TEXT_SUBTITLE);
@@ -1153,9 +1078,8 @@ public class HomeScreen extends Screen {
     }
 
     // REPORT PANE — HOSTS THE CLIPBOARD STRIP, HERO AND MOD LIST, AND OWNS THE STAGE-3 UP/DOWN KEYS
-    // (RUNNING BEFORE THE DIALOG'S OWN ESC/ENTER FALLBACK).
+    // (RUNNING BEFORE THE DIALOG'S OWN ESC/ENTER FALLBACK)
     private final class ReportPane extends Parent {
-
         private ReportPane() {
             super(Orientation.VERTICAL);
         }
@@ -1171,9 +1095,8 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // CLIPBOARD CONFIRMATION STRIP — GREEN "COPIED" OR MUTED "UNAVAILABLE", RESOLVED LIVE PER DRAW.
+    // CLIPBOARD CONFIRMATION STRIP — GREEN "COPIED" OR MUTED "UNAVAILABLE", RESOLVED LIVE PER DRAW
     private final class CopyStrip extends Element<CopyStrip> {
-
         @Override
         protected void onDraw(final Canvas canvas) {
             final boolean copied = HomeScreen.this.ctx.upload.issueCopied;
@@ -1194,10 +1117,9 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // WATERMEDIA HERO BANNER (PRIMARY REPORT TARGET) — LOGO, PRIMARY BADGE, COPY AND ITS SUBMIT BUTTON.
-    // CLICKS ROUTE BY COORDINATE: THE SUBMIT BOX FIRES THE REPO ACTION, THE BODY ONLY SELECTS.
+    // WATERMEDIA HERO BANNER (PRIMARY REPORT TARGET) — LOGO, PRIMARY BADGE, COPY AND ITS SUBMIT BUTTON;
+    // CLICKS ROUTE BY COORDINATE: THE SUBMIT BOX FIRES THE REPO ACTION, THE BODY ONLY SELECTS
     private final class RepoHero extends Element<RepoHero> {
-
         private static final int PAD = 14;
         private int submitX;
         private int submitY;
@@ -1293,9 +1215,8 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // ONE SUSPECTED-MOD CARD IN THE REPORT LIST — ACCENT STRIPE, NAME/SLUG AND ITS OWN SUBMIT BUTTON.
+    // ONE SUSPECTED-MOD CARD IN THE REPORT LIST — ACCENT STRIPE, NAME/SLUG AND ITS OWN SUBMIT BUTTON
     private final class RepoCard extends Element<RepoCard> {
-
         private final RepoTarget repo;
         private final int targetIdx; // INDEX INTO repoTargets (1..n — 0 IS THE HERO)
         private int submitX;

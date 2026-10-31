@@ -39,34 +39,36 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class PlatformAPI {
     private static final Marker IT = MarkerManager.getMarker(PlatformAPI.class.getSimpleName());
+
+    // SEARCH TUNING
     /** Connect and read timeout in milliseconds of every built-in search request; a slow platform holds a worker this long, not the configured network timeout. */
     public static final int SEARCH_TIMEOUT_MS = 5_000;
-    private static final int HISTORY_LIMIT = 10;
-    private static final int SEARCH_CACHE_LIMIT = 32;
     private static final int SEARCH_WORKERS = 4;
+    private static final int SEARCH_CACHE_LIMIT = 32;
+    private static final int HISTORY_LIMIT = 10;
     private static final long SEARCH_TYPING_DELAY_MS = 300L;
     private static final float SEARCH_TYPING_SIMILARITY = 0.7f; // JARO-WINKLER SCORE FROM WHICH TWO QUERIES ARE ONE INTENTION STILL BEING TYPED
-    private static final Object SEARCH_LOCK = new Object();
-    // COPY-ON-WRITE: REGISTRATION IS RARE WHILE THE MRL LOADER THREADS ITERATE HOT AND MUST NEVER SEE A CME.
-    // APPLICATION HANDLERS ARE PROBED FIRST; THE BUILT-IN ONES ARE ENLISTED ONCE AT CLASS LOAD
+
+    // REGISTRY: COPY-ON-WRITE, SINCE REGISTRATION IS RARE WHILE THE MRL LOADER THREADS ITERATE IT HOT AND MUST NEVER
+    // SEE A CME. APPLICATION HANDLERS ARE PROBED FIRST; THE BUILT-IN ONES ARE ENLISTED ONCE AT CLASS LOAD
     static final CopyOnWriteArrayList<Platform> CUSTOM = new CopyOnWriteArrayList<>();
     static final CopyOnWriteArrayList<Platform> BUILTIN = new CopyOnWriteArrayList<>();
-    // RECENT QUERIES, MOST RECENT FIRST, CAPPED AT HISTORY_LIMIT — GUARDED BY SEARCH_LOCK
-    private static final ArrayDeque<String> HISTORY = new ArrayDeque<>();
+
+    // ==== SEARCH STATE — GUARDED BY SEARCH_LOCK ====
+    private static final Object SEARCH_LOCK = new Object();
+    private static final ArrayDeque<String> HISTORY = new ArrayDeque<>(); // RECENT QUERIES, NEWEST FIRST
     // QUERY -> ITS SEARCH, SERVED AS THE SAME READ-ONLY LIST WHILE IT FILLS AND AFTER. ACCESS-ORDER LRU, FLUSHED
-    // EVERY platforms.searchCleanupInterval MINUTES AND WHENEVER THE REGISTRY CHANGES — GUARDED BY SEARCH_LOCK
+    // EVERY platforms.searchCleanupInterval MINUTES AND WHENEVER THE REGISTRY CHANGES
     private static final Map<String, Search> SEARCH_CACHE = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(final Map.Entry<String, Search> eldest) {
             return this.size() > SEARCH_CACHE_LIMIT;
         }
     };
+    private static final List<Future<?>> searchProbes = new ArrayList<>();
     private static long nextCacheClean;
-
-    // ==== SEARCH IN FLIGHT — GUARDED BY SEARCH_LOCK ====
     // THE WORKERS LIVE FOR THE WHOLE PROCESS ONCE THE FIRST SEARCH CREATES THEM; EVERY PLATFORM PROBE IS ONE TASK ON THEM
     private static ScheduledExecutorService searchers;
-    private static final List<Future<?>> searchProbes = new ArrayList<>();
     private static String searchQuery; // THE LAST QUERY PROBED; TYPING IS DETECTED AGAINST IT
     private static int searchRemaining; // PROBES STILL TO ANSWER; ZERO WHEN NO SEARCH IS IN FLIGHT
     private static long searchGeneration; // BUMPED PER SEARCH, SO A PROBE OF A DISCARDED SEARCH NEVER WRITES
@@ -113,8 +115,8 @@ public final class PlatformAPI {
      * Starts a search across every registered {@link Platform} and returns at once the read-only list its results
      * land in, up to {@code limit} per platform in answer order; {@link #searching(String)} tells when every platform
      * answered. Searches serve one intention at a time: a new query discards the one in flight, its probes interrupted
-     * and its partial list dropped, so only the latest list keeps filling. A query one keystroke away from the last
-     * one probed (a letter more, less or fixed) is that intention still being typed and waits
+     * and its partial list dropped, so only the latest list keeps filling. A query close to the last one probed (a
+     * letter more, less or fixed) is that intention still being typed and waits
      * {@value #SEARCH_TYPING_DELAY_MS} ms for the next keystroke before touching the network; any other query probes
      * at once. A query already searched with the same limit is served the same list from the cache, finished or
      * still filling, unless {@code reSearch} is set; a blank query returns an empty list and leaves a running
@@ -161,8 +163,8 @@ public final class PlatformAPI {
                 searchers = pool;
             }
 
-            // A QUERY ONE KEYSTROKE AWAY FROM THE LAST ONE PROBED IS THE USER STILL TYPING, SO THE PROBES WAIT FOR THE NEXT
-            // KEY; THE SAME TEXT AGAIN (ENTER, A DROPPED CACHE) IS NOT TYPING
+            // A QUERY CLOSE TO THE LAST ONE PROBED IS THE USER STILL TYPING, SO THE PROBES WAIT FOR THE NEXT KEY;
+            // THE SAME TEXT AGAIN (ENTER, A DROPPED CACHE) IS NOT TYPING
             final boolean typing = searchQuery != null && !text.equals(searchQuery) && DataTool.similarity(text, searchQuery) >= SEARCH_TYPING_SIMILARITY;
             final long delay = typing ? SEARCH_TYPING_DELAY_MS : 0L;
             final List<PlatformResult> results = new CopyOnWriteArrayList<>(); // THE WORKERS APPEND WHILE THE CALLER READS EVERY FRAME
@@ -190,12 +192,7 @@ public final class PlatformAPI {
         }
     }
 
-    /**
-     * Snapshot of the recent-query history (most recent first, at most {@value #HISTORY_LIMIT}
-     * entries), the single list every {@link #search(String) search} records its query in.
-     *
-     * @return an immutable snapshot of the recent queries, newest first
-     */
+    /** Returns an immutable snapshot of the recent queries every {@link #search(String) search} records, newest first and at most {@value #HISTORY_LIMIT}. */
     public static List<String> searchHistory() {
         synchronized (SEARCH_LOCK) {
             return List.copyOf(HISTORY);
@@ -225,7 +222,8 @@ public final class PlatformAPI {
             final Platform.Resolution data;
             try {
                 data = platform.resolve(uri);
-            } catch (final RuntimeException | LinkageError e) { // BUG IN THE HANDLER, OR A CANCELLED WAIT IT DID NOT TRANSLATE; A PlatformException PASSES THROUGH
+            } catch (final RuntimeException | LinkageError e) {
+                // A BUG IN THE HANDLER, OR A CANCELLED WAIT IT DID NOT TRANSLATE; A PlatformException PASSES THROUGH
                 if (Thread.currentThread().isInterrupted()) throw new PlatformException(platform.name(), "Resolution of " + uri + " was cancelled", e);
                 throw new PlatformException(platform.name(), "Unexpected error resolving " + uri + " (" + e + ")", e);
             }
@@ -234,15 +232,13 @@ public final class PlatformAPI {
                 return data;
             }
         }
-        return null; // NOTHING FOUND
+        return null;
     }
 
     /**
-     * Registers an application handler. Application handlers are probed before the built-in ones,
-     * newest first, so an app can override a built-in handler with a more specific one; a handler
-     * registered twice stays registered once. Cached searches are dropped.
-     *
-     * @throws IllegalArgumentException when {@code platform} is null
+     * Registers an application handler, probed before the built-in ones and newest first, so an app can override a
+     * built-in handler with a more specific one; a handler registered twice stays registered once. Cached searches
+     * are dropped. Throws {@link IllegalArgumentException} when {@code platform} is null.
      */
     public static void register(final Platform platform) {
         if (platform == null) throw new IllegalArgumentException("Platform cannot be null");
@@ -254,10 +250,7 @@ public final class PlatformAPI {
         LOGGER.info(IT, "Registered {} platform", platform.name());
     }
 
-    /**
-     * Removes a registered handler, built-in or application-provided, for the rest of the process; a
-     * no-op when it was never registered. Cached searches are dropped.
-     */
+    /** Removes a registered handler, built-in or application-provided, for the rest of the process and drops the cached searches; a no-op when it was never registered. */
     public static void unregister(final Platform platform) {
         if (!CUSTOM.remove(platform) && !BUILTIN.remove(platform)) return;
         synchronized (SEARCH_LOCK) {
@@ -267,11 +260,7 @@ public final class PlatformAPI {
         LOGGER.info(IT, "Unregistered {} platform", platform.name());
     }
 
-    /**
-     * Returns an immutable snapshot of the registered handlers in probe order: application handlers
-     * newest first, then the built-in ones newest first. Lets a consumer enumerate the active registry
-     * without triggering a {@link #fetch(URI)}.
-     */
+    /** Returns an immutable snapshot of the registered handlers in probe order: application handlers newest first, then the built-in ones newest first. */
     public static List<Platform> platforms() {
         return List.of(probeOrder());
     }

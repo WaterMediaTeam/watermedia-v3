@@ -12,18 +12,9 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 
 /**
- * Pure-Java SVG reader: parses the document, rasterizes it once into a single static frame and
- * exposes it through the {@link ImageReader} contract. Unlike the binary readers, the whole buffer
- * is the body (SVG has no fixed header), so {@code CodecsAPI} hands this reader the document from its
- * very first byte.
- *
- * <p>SVG is resolution-independent. The output size is the intrinsic size uniformly downscaled so
- * the larger side never exceeds {@link WaterMediaConfig.Codecs.Svg#maxSize} (default 512 px), and
- * it is never upscaled.
- *
- * <p>The frame is {@link PixelFormat#BGRA} natively; a {@link PixelFormat#RGBA} request is honored by
- * swizzling the two colour channels during the canvas-to-buffer copy, and a {@link PixelFormat#GRAY}
- * request is reduced to luma by the {@link ImageReader} conversion pass.
+ * Pure-Java SVG reader that rasterizes the document once into a single static frame. SVG has no fixed header, so
+ * {@code CodecsAPI} hands over the document from its first byte. The output is the intrinsic size downscaled until
+ * the larger side fits {@link WaterMediaConfig.Codecs.Svg#maxSize} (never upscaled), in BGRA, or RGBA on request.
  */
 public final class SvgReader extends ImageReader {
     private final int w, h;
@@ -37,11 +28,8 @@ public final class SvgReader extends ImageReader {
         // RGBA COSTS A SWIZZLE IN THE CANVAS COPY; GRAY RENDERS BGRA AND LEAVES THE LUMA PASS TO THE BASE READER
         this.format = requestedFormat == PixelFormat.RGBA ? PixelFormat.RGBA : PixelFormat.BGRA;
 
-        // STREAM StAX STRAIGHT OFF A ByteBuffer VIEW — NO FULL-DOCUMENT byte[] COPY
         final SvgNode root = SvgParser.parse(new ByteBufferInputStream(this.data.duplicate()));
-        if (root == null || !root.tag().equals("svg")) {
-            throw new CodecException("Document root is not <svg>");
-        }
+        if (root == null || !root.tag().equals("svg")) throw new CodecException("Document root is not <svg>");
         this.document = new SvgDocument(root);
 
         final double iw = this.document.intrinsicWidth(), ih = this.document.intrinsicHeight();
@@ -65,7 +53,20 @@ public final class SvgReader extends ImageReader {
 
     @Override
     protected ByteBuffer decode() throws IOException {
-        if (this.rendered == null) this.rendered = this.rasterize();
+        if (this.rendered == null) {
+            final RasterOutput out = new RasterOutput(this.w, this.h);
+            this.document.render(out);
+            final int[] canvas = out.canvas(); // 0xAARRGGBB, EXACTLY w*h INTS
+            if (this.format == PixelFormat.RGBA) {
+                // 0xAARRGGBB → RGBA MEMORY ORDER: KEEP A/G, SWAP R AND B (LITTLE-ENDIAN INT = A<<24|B<<16|G<<8|R)
+                for (int i = 0; i < canvas.length; i++) {
+                    final int c = canvas[i];
+                    canvas[i] = (c & 0xFF00FF00) | ((c >>> 16) & 0xFF) | ((c & 0xFF) << 16);
+                }
+            }
+            // THE INTS ARE ALREADY IN THE TARGET LAYOUT, SO THE BGRA COPY SERVES RGBA TOO
+            this.rendered = DataTool.bgraToBuffer(canvas);
+        }
         this.rendered.rewind(); // RE-ARM POSITION 0 SO A SECOND PASS (AFTER reset()) READS THE FULL FRAME
         this.consumed = true;
         return this.rendered;
@@ -81,21 +82,6 @@ public final class SvgReader extends ImageReader {
     protected void dispose() {
         // THE RENDERED FRAME LIVES OFF-HEAP; DROPPING IT LETS THE Cleaner FREE IT BEFORE THE READER BECOMES UNREACHABLE
         this.rendered = null;
-    }
-
-    private ByteBuffer rasterize() throws IOException {
-        final RasterOutput out = new RasterOutput(this.w, this.h);
-        this.document.render(out);
-        final int[] canvas = out.canvas(); // 0xAARRGGBB, EXACTLY w*h INTS
-        if (this.format == PixelFormat.RGBA) {
-            // 0xAARRGGBB → RGBA MEMORY ORDER: KEEP A/G, SWAP R AND B (LITTLE-ENDIAN INT = A<<24|B<<16|G<<8|R)
-            for (int i = 0; i < canvas.length; i++) {
-                final int c = canvas[i];
-                canvas[i] = (c & 0xFF00FF00) | ((c >>> 16) & 0xFF) | ((c & 0xFF) << 16);
-            }
-        }
-        // INT CANVAS → DIRECT LITTLE-ENDIAN BUFFER (SHARED HELPER; THE INTS ARE ALREADY IN THE TARGET LAYOUT)
-        return DataTool.bgraToBuffer(canvas);
     }
 
     // MINIMAL InputStream VIEW OVER A ByteBuffer SO StAX READS THE DOCUMENT WITHOUT COPYING IT TO A byte[]

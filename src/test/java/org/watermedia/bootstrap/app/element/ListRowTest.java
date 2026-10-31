@@ -65,7 +65,7 @@ public class ListRowTest {
             listed.selected(true);
             assertTrue(listed.isPicked());
 
-            final boolean[] lod = {false};
+            final boolean[] lod = { false };
             final ListRow free = new ListRow().picked(() -> lod[0]);
             free.selected(true);
             assertFalse(free.isPicked(), "a row outside a list ignores a stale stamp");

@@ -40,21 +40,18 @@ public final class JFXEngine extends SWEngine {
         return this.image;
     }
 
+    /** Re-marks the current frame dirty; software Prism repaints only on a fresh {@code updateBuffer}, so pump it for a still image. */
+    public void repaint() {
+        final PixelBuffer<ByteBuffer> pb = this.pixelBuffer;
+        if (pb != null) Platform.runLater(() -> pb.updateBuffer(b -> null));
+    }
+
     @Override
     void allocSurface(final int width, final int height, final ByteBuffer bgra) {
         // A FAILURE PROPAGATES TO SWEngine, WHICH REFUSES THE FORMAT AND LEAVES NO SURFACE BEHIND
         final PixelBuffer<ByteBuffer> buffer = new PixelBuffer<>(width, height, bgra, PixelFormat.getByteBgraPreInstance());
         this.image = new WritableImage(buffer);
         this.pixelBuffer = buffer;
-    }
-
-    /**
-     * Re-marks the current frame dirty. The software Prism pulse only repaints on a fresh
-     * {@code updateBuffer}, so a static single-frame image needs this pumped to stay on screen.
-     */
-    public void repaint() {
-        final PixelBuffer<ByteBuffer> pb = this.pixelBuffer;
-        if (pb != null) Platform.runLater(() -> pb.updateBuffer(b -> null));
     }
 
     @Override

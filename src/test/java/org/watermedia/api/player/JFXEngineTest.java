@@ -23,18 +23,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies what {@link JFXEngine} adds to the software sink {@code AWTEngineTest} covers: frames land premultiplied
- * in the {@code PixelBuffer}-backed image and release drops it. Skips when the JavaFX toolkit cannot start (headless
- * machines).
- */
+/** Verifies that {@link JFXEngine} lands frames premultiplied in its {@code PixelBuffer} image; skips without a JavaFX toolkit. */
 @DisplayName("JFXEngine")
 public class JFXEngineTest {
+
     private static final long FX_TIMEOUT_MS = 5_000L;
 
     @BeforeAll
     static void boot() throws InterruptedException {
-        // ENGINE CONSTRUCTION IS CLIENT-GATED BY THE GFXEngine BASE — BOOT A CLIENT ENVIRONMENT ONCE
+        // ENGINE CONSTRUCTION IS CLIENT-GATED BY THE GFXEngine BASE
         MediaBootstrap.client();
         // PixelBuffer IMAGES AND Platform.runLater NEED A STARTED TOOLKIT; ANOTHER CLASS MAY HAVE STARTED IT ALREADY
         final CountDownLatch started = new CountDownLatch(1);
@@ -57,18 +54,19 @@ public class JFXEngineTest {
             assertTrue(engine.format(PixelFormat.BGRA, 2, 1, 8));
             // PIXEL 0 IS OPAQUE; PIXEL 1 (A=128) PREMULTIPLIES TO ROUND(C * 128 / 255)
             final ByteBuffer frame = YuvFrames.direct(10, 20, 30, 255, 40, 50, 60, 128);
+            final byte[] premultiplied = { 10, 20, 30, (byte) 255, 20, 25, 30, (byte) 128 };
             engine.upload(new ByteBuffer[] { frame }, new int[] { 0 });
 
             final Image image = engine.image();
             assertEquals(2, image.getWidth());
             assertEquals(1, image.getHeight());
             assertEquals(Type.BYTE_BGRA_PRE, image.getPixelReader().getPixelFormat().getType(), "PixelBuffer only takes premultiplied BGRA");
-            assertArrayEquals(bytes(10, 20, 30, 255, 20, 25, 30, 128), pixels(image));
+            assertArrayEquals(premultiplied, pixels(image));
             assertEquals(0, frame.position(), "the frame keeps its position");
             assertEquals(40, frame.get(4), "the caller's frame is never premultiplied in place");
 
             engine.upload(new ByteBuffer[] { frame }, new int[] { 0 });
-            assertArrayEquals(bytes(10, 20, 30, 255, 20, 25, 30, 128), pixels(image), "a repeated frame is premultiplied once");
+            assertArrayEquals(premultiplied, pixels(image), "a repeated frame is premultiplied once");
 
             engine.release();
             assertNull(engine.image(), "release drops the PixelBuffer image");
@@ -78,12 +76,6 @@ public class JFXEngineTest {
     }
 
     // UTILITY
-
-    private static byte[] bytes(final int... values) {
-        final byte[] out = new byte[values.length];
-        for (int i = 0; i < values.length; i++) out[i] = (byte) values[i];
-        return out;
-    }
 
     // READS THE IMAGE AS PREMULTIPLIED BGRA ON THE FX THREAD; runLater IS FIFO, SO EVERY updateBuffer POSTED BY present() RAN FIRST
     private static byte[] pixels(final Image image) throws Exception {

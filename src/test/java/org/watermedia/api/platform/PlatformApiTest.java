@@ -50,42 +50,6 @@ public class PlatformApiTest {
         this.registered.clear();
     }
 
-    // RESOLVER SUPPLIES data; name() IS FIXED. KEEPS THE STUBS A ONE-LINER EACH.
-    @FunctionalInterface
-    private interface Resolver {
-        Resolution resolve(URI uri) throws PlatformException;
-    }
-
-    private static Platform stub(final String name, final Resolver resolver) {
-        return new Platform() {
-            @Override public String name() { return name; }
-            @Override public Resolution resolve(final URI uri) throws PlatformException { return resolver.resolve(uri); }
-        };
-    }
-
-    private Platform register(final Resolver resolver) {
-        final Platform platform = stub("stub", resolver);
-        PlatformAPI.register(platform);
-        this.registered.add(platform);
-        return platform;
-    }
-
-    // A BUILT-IN STAND-IN: THE SESSION OWNS IT AND IT IS PROBED AFTER EVERY APPLICATION HANDLER
-    private Platform builtin(final Resolver resolver) {
-        final Platform platform = stub("builtin", resolver);
-        PlatformAPI.BUILTIN.add(platform);
-        this.registered.add(platform);
-        return platform;
-    }
-
-    private static Resolution marker(final String url) {
-        final Source entry = new Source(MediaType.VIDEO, null, null,
-                new HttpHeaders(),
-                List.of(new Quality(URI.create(url), 0, 0)),
-                null, null);
-        return new Resolution(null, entry);
-    }
-
     // ==========================================================================
     // CLAIM RESOLUTION TESTS
     // ==========================================================================
@@ -94,7 +58,6 @@ public class PlatformApiTest {
     @DisplayName("Claim Resolution")
     class ClaimTests {
 
-        // PLATFORMS THAT RETURN NULL ARE SKIPPED, THE NEXT CLAIMANT WINS AND ITS OWN RESOLUTION IS RETURNED
         @Test
         @DisplayName("fetch skips platforms that return null")
         void testFetchSkipsPlatformsThatReturnNull() throws Exception {
@@ -164,10 +127,10 @@ public class PlatformApiTest {
     @DisplayName("Exception Propagation")
     class ExceptionTests {
 
-        // STATE: EXCEPTION — A PlatformException TRAVELS UNTOUCHED, SO ITS SUBTYPE (MATURE) SURVIVES
         @Test
         @DisplayName("PlatformException from a platform passes through untouched")
         void testFetchPassesPlatformException() {
+            // THE EXCEPTION TRAVELS UNTOUCHED, SO ITS SUBTYPE (MATURE) SURVIVES
             final PlatformException boom = new MatureContentException("stub", "blocked");
             PlatformApiTest.this.register(uri -> { throw boom; });
 
@@ -176,10 +139,10 @@ public class PlatformApiTest {
             assertSame(boom, thrown, "The platform's own exception must reach the caller");
         }
 
-        // STATE: EXCEPTION — A HANDLER BUG IS WRAPPED WITH THE PLATFORM NAME AND THE ORIGINAL AS CAUSE
         @Test
         @DisplayName("A runtime exception escaping a handler is wrapped in PlatformException")
         void testFetchWrapsHandlerBug() {
+            // A HANDLER BUG IS WRAPPED WITH THE PLATFORM NAME AND THE ORIGINAL AS CAUSE
             final RuntimeException boom = new IllegalStateException("parse blew up");
             PlatformApiTest.this.register(uri -> { throw boom; });
 
@@ -227,5 +190,40 @@ public class PlatformApiTest {
             assertThrows(IllegalArgumentException.class, () -> new Resolution(null, (List<Source>) null));
             assertEquals(0, new Resolution(null, List.of()).sourceCount());
         }
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // RESOLVER SUPPLIES THE RESOLUTION WHILE name() STAYS FIXED, SO EVERY STUB IS A ONE-LINER
+    @FunctionalInterface
+    private interface Resolver {
+        Resolution resolve(URI uri) throws PlatformException;
+    }
+
+    private static Platform stub(final String name, final Resolver resolver) {
+        return new Platform() {
+            @Override public String name() { return name; }
+            @Override public Resolution resolve(final URI uri) throws PlatformException { return resolver.resolve(uri); }
+        };
+    }
+
+    private Platform register(final Resolver resolver) {
+        final Platform platform = stub("stub", resolver);
+        PlatformAPI.register(platform);
+        this.registered.add(platform);
+        return platform;
+    }
+
+    // A BUILT-IN STAND-IN: THE SESSION OWNS IT AND IT IS PROBED AFTER EVERY APPLICATION HANDLER
+    private Platform builtin(final Resolver resolver) {
+        final Platform platform = stub("builtin", resolver);
+        PlatformAPI.BUILTIN.add(platform);
+        this.registered.add(platform);
+        return platform;
+    }
+
+    private static Resolution marker(final String url) {
+        return new Resolution(null, new Source(MediaType.VIDEO, null, null, new HttpHeaders(), List.of(new Quality(URI.create(url), 0, 0)), null, null));
     }
 }

@@ -38,14 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-/**
- * Verifies the {@link FFMediaPlayer} control contract: a pause or seek while the source opens is latched for the run, a
- * speed chosen before {@code start()} survives into playback, a {@code stop()} during the load returns at once and lands
- * STOPPED without leaking pipeline threads or opening the source it abandoned, an HTTP source without Content-Length plays
- * while the network cache is on, a seek after ENDED restarts paused at the target, a still stays up for its display time,
- * and a terminal callback cannot release its own player. Loopback origins hold their requests so every load case observes
- * a real LOADING window.
- */
+/** Verifies the {@link FFMediaPlayer} control contract: controls while loading, stops on held origins and terminal states. */
 @DisplayName("FFMediaPlayer control contract")
 public class FFControlContractTest {
 
@@ -313,7 +306,7 @@ public class FFControlContractTest {
                 if (terminal == Status.ENDED) {
                     assertTrue(PlayerWait.awaitCondition(() -> graphics.uploadCount() > 0, LOAD_TIMEOUT_MS));
                     assertTrue(player.duration() > 0);
-                    assertTrue(player.seek(Math.max(0, player.duration() - 1000)));
+                    assertTrue(player.seek(Math.max(0, player.duration() - 1_000)));
                 }
                 assertInstanceOf(IllegalStateException.class, callback.get(LOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS));
                 assertNotSame(Thread.currentThread(), callbackThread[0]);

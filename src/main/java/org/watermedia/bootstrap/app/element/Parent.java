@@ -1,6 +1,5 @@
 package org.watermedia.bootstrap.app.element;
 
-
 /**
  * Stacks its children along one axis; weighted children, and main-axis {@code MAX_PARENT} ones as weight 1, share the
  * leftover space in proportion. Each child's {@link Element#gravity} aligns it on the cross axis.
@@ -39,8 +38,8 @@ public class Parent extends Group<Parent> {
         int visibleCount = 0;
         float totalWeight = 0f;
 
-        // FIRST PASS — MEASURE THE FIXED CHILDREN AND TALLY THE SPACE THEY TAKE; WEIGHTED CHILDREN AND
-        // MAIN-AXIS MAX_PARENT CHILDREN (EFFECTIVE WEIGHT 1) FOLD INTO THE WEIGHTED SECOND PASS
+        // FIRST PASS: MEASURE THE FIXED CHILDREN AND TALLY THE SPACE THEY TAKE; WEIGHTED CHILDREN AND MAIN-AXIS
+        // MAX_PARENT CHILDREN (EFFECTIVE WEIGHT 1) FOLD INTO THE WEIGHTED SECOND PASS
         for (final Element<?> child: this.children) {
             if (!child.visible) continue;
             visibleCount++;
@@ -64,7 +63,7 @@ public class Parent extends Group<Parent> {
         final int mainAvail = this.orientation == Orientation.VERTICAL ? innerAvailHeight : innerAvailWidth;
         final int leftover = Math.max(0, mainAvail - usedMain - gaps);
 
-        // SECOND PASS — WEIGHTED CHILDREN SPLIT THE LEFTOVER MAIN-AXIS SPACE; WEIGHT FORCES THAT SIZE
+        // SECOND PASS: WEIGHTED CHILDREN SPLIT THE LEFTOVER MAIN-AXIS SPACE AND TAKE EXACTLY THEIR SHARE
         for (final Element<?> child: this.children) {
             if (!child.visible) continue;
             final float mainWeight = this.mainWeight(child);
@@ -90,13 +89,6 @@ public class Parent extends Group<Parent> {
             this.contentWidth = usedMain + gaps;
             this.contentHeight = maxCross;
         }
-    }
-
-    // EFFECTIVE MAIN-AXIS WEIGHT: AN EXPLICIT WEIGHT WINS; A MAIN-AXIS MAX_PARENT CHILD ACTS AS WEIGHT 1
-    private float mainWeight(final Element<?> child) {
-        if (child.weight > 0f) return child.weight;
-        final int main = this.orientation == Orientation.VERTICAL ? child.height : child.width;
-        return main == MAX_PARENT ? 1f : 0f;
     }
 
     @Override
@@ -138,5 +130,12 @@ public class Parent extends Group<Parent> {
                 x += child.measuredWidth + child.margin.right();
             }
         }
+    }
+
+    private float mainWeight(final Element<?> child) {
+        // AN EXPLICIT WEIGHT WINS; A MAIN-AXIS MAX_PARENT CHILD ACTS AS WEIGHT 1
+        if (child.weight > 0f) return child.weight;
+        final int main = this.orientation == Orientation.VERTICAL ? child.height : child.width;
+        return main == MAX_PARENT ? 1f : 0f;
     }
 }

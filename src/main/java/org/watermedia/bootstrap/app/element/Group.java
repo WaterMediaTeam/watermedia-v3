@@ -33,9 +33,7 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
         return this.self();
     }
 
-    public List<Element<?>> children() {
-        return this.children;
-    }
+    public List<Element<?>> children() { return this.children; }
 
     @Override
     public void attach(final AppContext context) {
@@ -61,11 +59,9 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
         if (!this.visible || !this.enabled) return false;
         for (int i = this.children.size() - 1; i >= 0; i--) {
             if (this.children.get(i).dispatchClick(mx, my)) {
-                // BLUR ANY FOCUSED TEXT INPUT THE CONSUMED CLICK DID NOT LAND IN — Group.dispatchClick
-                // SHORT-CIRCUITS TOPMOST-FIRST, SO A CONSUMING SIBLING WOULD OTHERWISE NEVER REACH IT
-                for (int j = this.children.size() - 1; j >= 0; j--) {
-                    if (j != i) this.children.get(j).clearFocus();
-                }
+                // BLUR ANY FOCUSED TEXT INPUT THE CONSUMED CLICK DID NOT LAND IN: THE DISPATCH SHORT-CIRCUITS
+                // TOPMOST-FIRST, SO THE CLICK NEVER REACHES THE SIBLINGS BELOW A CONSUMING ONE
+                for (int j = this.children.size() - 1; j >= 0; j--) if (j != i) this.children.get(j).clearFocus();
                 return true;
             }
         }
@@ -81,21 +77,18 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
     public boolean dispatchHover(final double mx, final double my) {
         if (!this.visible) return false;
         boolean consumed = false;
-        // TOPMOST-FIRST: THE FIRST CHILD (IN PAINT ORDER FROM THE TOP) THAT CONSUMES THE HOVER WINS AND
-        // EVERY LAYER BELOW IT IS FORCE-CLEARED — ELEMENTS UNDER A MODAL MUST NOT KEEP REACTING
+        // TOPMOST-FIRST: THE FIRST CHILD (IN PAINT ORDER FROM THE TOP) THAT CONSUMES THE HOVER WINS AND EVERY LAYER
+        // BELOW IT IS FORCE-CLEARED, SO ELEMENTS UNDER A MODAL STOP REACTING
         for (int i = this.children.size() - 1; i >= 0; i--) {
             final Element<?> child = this.children.get(i);
-            if (consumed) {
-                child.clearHover();
-            } else if (child.dispatchHover(mx, my)) {
-                consumed = true;
-            }
+            if (consumed) child.clearHover();
+            else if (child.dispatchHover(mx, my)) consumed = true;
         }
         final boolean inside = this.enabled && this.contains(mx, my);
         this.hovered = inside;
         if (inside && this.onHover != null) this.onHover.accept(this.self());
-        // A CONTAINER ONLY CONSUMES BY ITSELF WHEN IT IS INTERACTIVE — A BARE FULL-RECT FRAME (SCREEN
-        // OVERLAY, DIALOG LAYER) MUST STAY HOVER-TRANSPARENT OR IT WOULD CLEAR EVERY LAYER BELOW IT
+        // A CONTAINER CONSUMES BY ITSELF ONLY WHEN IT IS INTERACTIVE: A BARE FULL-RECT FRAME (SCREEN OVERLAY, DIALOG
+        // LAYER) MUST STAY HOVER-TRANSPARENT OR IT WOULD CLEAR EVERY LAYER BELOW IT
         return consumed || (inside && (this.consumeTouch || this.onClick != null || this.onHover != null));
     }
 
@@ -122,33 +115,25 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
 
     @Override
     public boolean textInputActive() {
-        for (final Element<?> child: this.children) {
-            if (child.textInputActive()) return true;
-        }
+        for (final Element<?> child: this.children) if (child.textInputActive()) return true;
         return false;
     }
 
     @Override
     public boolean dispatchScroll(final double mx, final double my, final double amount) {
-        for (int i = this.children.size() - 1; i >= 0; i--) {
-            if (this.children.get(i).dispatchScroll(mx, my, amount)) return true;
-        }
+        for (int i = this.children.size() - 1; i >= 0; i--) if (this.children.get(i).dispatchScroll(mx, my, amount)) return true;
         return false;
     }
 
     @Override
     public boolean dispatchKey(final int key, final int action) {
-        for (int i = this.children.size() - 1; i >= 0; i--) {
-            if (this.children.get(i).dispatchKey(key, action)) return true;
-        }
+        for (int i = this.children.size() - 1; i >= 0; i--) if (this.children.get(i).dispatchKey(key, action)) return true;
         return false;
     }
 
     @Override
     public boolean dispatchChar(final int codepoint) {
-        for (int i = this.children.size() - 1; i >= 0; i--) {
-            if (this.children.get(i).dispatchChar(codepoint)) return true;
-        }
+        for (int i = this.children.size() - 1; i >= 0; i--) if (this.children.get(i).dispatchChar(codepoint)) return true;
         return false;
     }
 }

@@ -75,7 +75,6 @@ public final class GifReader extends ImageReader {
     private static final long BROWSER_DELAY_MS = 100L;
     private static final int OPAQUE_BLACK = 0xFF000000;
 
-
     // PARSED HEADER STATE
     private final ScreenDescriptor lsd;
     private final ColorTable globalColorTable;
@@ -194,12 +193,11 @@ public final class GifReader extends ImageReader {
             // 3 THE CANVAS SAVED BEFORE IT WAS DRAWN
             final ImageDescriptor p = this.previousId;
             final int disposal = this.previousGce != null ? this.previousGce.disposalMethod() : 0;
-            if (disposal == 2) {
+            if (disposal == 2)
                 Canvas.fill(this.canvas, this.lsd.width(), this.lsd.height(), p.left(), p.top(), p.width(), p.height(),
                         this.previousGce.transparentColorFlag() ? 0 : this.backgroundColor);
-            } else if (disposal == 3 && this.restoreFrame != null) {
+            else if (disposal == 3 && this.restoreFrame != null)
                 Canvas.restore(this.canvas, this.restoreFrame, this.lsd.width(), this.lsd.height(), p.left(), p.top(), p.width(), p.height());
-            }
         }
         if (this.gce != null && this.gce.disposalMethod() == 3) {
             if (this.restoreFrame == null) this.restoreFrame = new int[this.canvas.length];
@@ -299,9 +297,7 @@ public final class GifReader extends ImageReader {
                                final boolean rowFullyVisible,
                                final int[] colors, final int colorLen,
                                final int transparentIndex) {
-        if (canvasY < clipYStart || canvasY >= clipYEnd) {
-            return start + idWidth;
-        }
+        if (canvasY < clipYStart || canvasY >= clipYEnd) return start + idWidth;
         int srcIdx = start;
         final int rowOff = canvasY * canvasWidth;
         if (rowFullyVisible) {
@@ -492,9 +488,8 @@ public final class GifReader extends ImageReader {
                     final int payloadStart = start + (header == 0 ? 0 : 1 + header);
                     final String identifier = new String(blocks(buffer, start, header), StandardCharsets.ISO_8859_1);
                     if (loops < 0 && (identifier.equals(NETSCAPE_LOOP) || identifier.equals(ANIMEXTS_LOOP))
-                            && total - header >= 3 && (buffer.get(payloadStart) & 0xFF) >= 3 && buffer.get(payloadStart + 1) == 1) {
+                            && total - header >= 3 && (buffer.get(payloadStart) & 0xFF) >= 3 && buffer.get(payloadStart + 1) == 1)
                         loops = DataTool.u16(buffer, payloadStart + 2, ByteOrder.LITTLE_ENDIAN);
-                    }
                     if (records >= MAX_METADATA_RECORDS || total - header > MAX_METADATA_BYTES - bytes) {
                         dropped++;
                         continue;

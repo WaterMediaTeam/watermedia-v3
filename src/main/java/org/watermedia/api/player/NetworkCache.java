@@ -50,7 +50,7 @@ final class NetworkCache {
     private static final String FILE_PREFIX = "wm_";
     private static final String FILE_SUFFIX = ".tmp";
     private static final String PART_SUFFIX = ".part";
-    private static final long DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1000;
+    private static final long DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1_000;
     // LEFTOVERS YOUNGER THAN THIS MAY BELONG TO ANOTHER PROCESS SHARING THE FOLDER, SO THE STARTUP SWEEP SPARES THEM
     private static final long SWEEP_GRACE_MS = 60_000L;
     // DAEMON WORKERS FOR NETWORK TRANSFERS, ONE PER CONCURRENT DOWNLOAD, RETIRED AFTER A MINUTE IDLE
@@ -119,13 +119,11 @@ final class NetworkCache {
         return fetchShared(store, hex, hash, uri, headers, accept, maxBytes, false).body();
     }
 
-    /**
-     * Returns a cached media file, or null when the cache is off, the source is not HTTP(S), or the body is a playlist, not
-     * cacheable by its headers or could not be stored. Only bounded responses are downloaded: a body over {@code maxBytes},
-     * a missing Content-Length or an ICY stream fails with an IOException so the caller streams the source directly.
-     */
+    /** Returns a cached media file, or null when the cache is off, the source is not HTTP(S) or the body is a playlist, uncacheable or unstored. */
     public static CachedFile readFile(final URI uri, final HttpHeaders headers, final String accept,
                                       final long maxBytes, final boolean enabled) throws IOException {
+        // ONLY BOUNDED RESPONSES DOWNLOAD: A BODY OVER maxBytes, A MISSING Content-Length OR AN ICY STREAM THROWS AN IOException
+        // SO THE CALLER STREAMS THE SOURCE DIRECTLY
         final Store store = active;
         if (!enabled || !isHttp(uri) || store == null) return null;
         final byte[] hash = keyHash(uri, headers, accept);
@@ -372,8 +370,8 @@ final class NetworkCache {
                 if (directive.startsWith("max-age=")) maxAge = DataTool.parseLong(directive.substring("max-age=".length()).replace("\"", ""), -1L);
             }
             if (maxAge >= 0L) {
-                if (maxAge >= Long.MAX_VALUE / 1000L) return Long.MAX_VALUE;
-                final long millis = maxAge * 1000L;
+                if (maxAge >= Long.MAX_VALUE / 1_000L) return Long.MAX_VALUE;
+                final long millis = maxAge * 1_000L;
                 return millis >= Long.MAX_VALUE - now ? Long.MAX_VALUE : now + millis;
             }
         }
@@ -413,9 +411,7 @@ final class NetworkCache {
                 key.append(entry.name().toLowerCase(Locale.ROOT)).append(':').append(entry.value()).append('\n');
             }
         }
-        if (accept != null && (headers == null || !headers.has("Accept"))) {
-            key.append("accept:").append(accept);
-        }
+        if (accept != null && (headers == null || !headers.has("Accept"))) key.append("accept:").append(accept);
         return DataTool.sha256(key.toString().getBytes(StandardCharsets.UTF_8));
     }
 

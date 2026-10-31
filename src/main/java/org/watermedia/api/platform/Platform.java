@@ -22,12 +22,7 @@ public interface Platform {
     String name();
 
     /**
-     * Resolves the URI to one or more sources with their qualities and
-     * metadata. The returned structure is platform-agnostic and intentionally
-     * decoupled from {@link MRL.Source}: callers (including {@link MRL})
-     * decide how to consume it.
-     * <p>
-     * The contract has three outcomes:
+     * Resolves the URI to one or more sources with their qualities and metadata. The contract has three outcomes:
      * <ul>
      *   <li>{@code null} — the URI does not belong to this platform (foreign host or scheme); the
      *       caller must keep probing other handlers.</li>
@@ -49,17 +44,13 @@ public interface Platform {
     Resolution resolve(URI uri) throws PlatformException;
 
     /**
-     * Searches this platform for {@code query} and returns up to {@code limit} raw results — a
-     * page URL, title and thumbnail per hit, deliberately <i>not</i> resolved to playback (see
-     * {@link PlatformResult}). Resolution happens later, when the user picks a result.
+     * Searches this platform for {@code query} and returns up to {@code limit} unresolved hits (see
+     * {@link PlatformResult}); the default returns an empty list for platforms without a public search.
      * <p>
-     * Most platforms expose no public search and keep this default, which returns an empty list;
-     * only the handful that do (YouTube, Twitch, Kick, Imgur) override it. {@link PlatformAPI} probes
-     * every platform concurrently on a shared daemon pool, so an implementation must be internally
-     * thread-safe and may block on network I/O, but it should bail out promptly once its thread is
-     * {@link Thread#isInterrupted() interrupted} — a newer search has superseded this one. Its requests
-     * cap their connect and read timeouts at {@link PlatformAPI#SEARCH_TIMEOUT_MS}, as the built-in
-     * handlers do, so one slow platform never holds a worker for long.
+     * {@link PlatformAPI} probes every platform concurrently on a shared daemon pool, so an implementation must be
+     * thread-safe, may block on network I/O and should bail out promptly once its thread is
+     * {@link Thread#isInterrupted() interrupted} by a newer search. Its requests cap their connect and read timeouts
+     * at {@link PlatformAPI#SEARCH_TIMEOUT_MS}, so one slow platform never holds a worker for long.
      *
      * @param query the user's search text (never {@code null} or blank)
      * @param limit the maximum number of results to return
@@ -79,10 +70,9 @@ public interface Platform {
      * @param sources copied sources; may be empty but never null or contain nulls
      */
     record Resolution(Instant expires, List<Source> sources) {
-
         public Resolution {
             if (sources == null) throw new IllegalArgumentException("Resolution requires a source list");
-            // DEFENSIVE COPY: RECORD COMPONENT MUST NOT EXPOSE A MUTABLE LIST SHARED WITH THE PLATFORM
+            // THE LIST THE PLATFORM BUILT STAYS MUTABLE ON ITS SIDE: THE RECORD KEEPS ITS OWN COPY
             sources = List.copyOf(sources);
         }
 
@@ -106,13 +96,12 @@ public interface Platform {
      */
     record Source(MediaType type, URI thumbnail, Metadata metadata, HttpHeaders headers, List<Quality> qualities,
                   List<Track> audioTracks, List<Track> subtitleTracks) {
-
         public Source {
             if (type == null) throw new IllegalArgumentException("Source requires a media type");
             if (qualities == null || qualities.isEmpty()) throw new IllegalArgumentException("Source constructed with no qualities");
             headers = new HttpHeaders(headers).freeze(); // SHARED WITH PLAYER THREADS ONCE RESOLVED: NEVER MUTABLE
 
-            // DEFENSIVE COPIES: RECORD COMPONENTS MUST NOT EXPOSE MUTABLE STATE SHARED WITH THE PLATFORM
+            // THE LISTS THE PLATFORM BUILT STAY MUTABLE ON ITS SIDE: THE RECORD KEEPS ITS OWN COPIES
             qualities = List.copyOf(qualities);
             audioTracks = audioTracks == null ? List.of() : List.copyOf(audioTracks);
             subtitleTracks = subtitleTracks == null ? List.of() : List.copyOf(subtitleTracks);
@@ -131,7 +120,6 @@ public interface Platform {
      * The URI is mandatory and no dimension may be negative.
      */
     record Quality(URI uri, int width, int height, float fps) {
-
         public Quality {
             if (uri == null) throw new IllegalArgumentException("Quality requires a URI");
             if (width < 0 || height < 0 || fps < 0f) throw new IllegalArgumentException("Quality dimensions cannot be negative");

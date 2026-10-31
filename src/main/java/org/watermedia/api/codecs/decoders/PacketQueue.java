@@ -7,19 +7,12 @@ import java.util.ArrayDeque;
 
 /**
  * Thread-safe queue of AVPackets between the demux thread and the decode threads.
- * <p>
- * Unlike {@link FrameQueue} (a fixed ring buffer), PacketQueue uses an {@link ArrayDeque} because:
- * <ul>
- *   <li>Packets are small (metadata plus a pointer to compressed data)</li>
- *   <li>Packet count varies widely (keyframes are large, P-frames are small)</li>
- *   <li>No need to pre-allocate slots — {@code av_packet_clone} is cheap</li>
- * </ul>
- * Serial system: each {@link #flush()} increments the serial. The decode thread compares the
- * packet serial with the current serial to discard stale packets after a seek.
- * <p>
- * Capacity: no packet count limit, but a byte total limit ({@code maxBytes}). If the demux thread
- * exceeds the limit, {@link #put(AVPacket)} blocks until the decode thread consumes enough packets.
- * This prevents OOM on network streams with large buffers.
+ *
+ * <p>Unlike {@link FrameQueue} (a fixed ring buffer), packets go in an {@link ArrayDeque}: they are small, their
+ * count varies widely and {@code av_packet_clone} is cheap, so no slot is pre-allocated. Each {@link #flush()}
+ * increments the serial, and a decode thread drops packets of an older serial after a seek. There is no count
+ * limit, only a byte limit ({@code maxBytes}): {@link #put(AVPacket)} blocks above it until the decoder catches
+ * up, which keeps network streams with large buffers from running out of memory.
  */
 final class PacketQueue {
     private final ArrayDeque<Entry> packets = new ArrayDeque<>();
@@ -33,22 +26,15 @@ final class PacketQueue {
     // THE PACKET IS OWNED: CLONED IN put() AND FREED WHEN THE ENTRY LEAVES THE QUEUE
     private record Entry(AVPacket packet, int serial) {}
 
-    /**
-     * @param maxBytes byte limit for the queue. 16MB is reasonable for video.
-     *                 Use Long.MAX_VALUE for no limit.
-     */
+    /** Creates a queue whose {@link #put(AVPacket)} blocks once {@code maxBytes} are queued; {@code Long.MAX_VALUE} lifts the limit. */
     public PacketQueue(final long maxBytes) {
         if (maxBytes <= 0) throw new IllegalArgumentException("Packet queue byte limit must be positive");
         this.maxBytes = maxBytes;
     }
 
     /**
-     * Enqueues a packet. Does {@code av_packet_clone} internally.
-     * The caller retains ownership of its original packet.
-     * <p>
-     * Blocks if {@code totalBytes >= maxBytes} (backpressure to the demux thread).
-     *
-     * @return false when the queue was aborted or finished, the wait was interrupted or the clone failed
+     * Enqueues a clone of the packet, blocking while the byte limit is reached (backpressure to the demux thread); the
+     * caller keeps its packet. Returns false when the queue was aborted or finished, the wait was interrupted or the clone failed.
      */
     public boolean put(final AVPacket packet) {
         synchronized (this.lock) {
@@ -90,12 +76,8 @@ final class PacketQueue {
     }
 
     /**
-     * Dequeues a packet. Blocks if empty.
-     * The caller receives ownership of the AVPacket — must call {@code av_packet_free}.
-     *
-     * @param serialOut array of at least 1 element. {@code serialOut[0]} receives
-     *                  the packet serial for post-seek comparison.
-     * @return packet owned by the caller, or null when the queue was aborted, finished and drained, or the wait was interrupted
+     * Dequeues a packet the caller owns and frees with {@code av_packet_free}, blocking while empty; {@code serialOut[0]}
+     * receives its serial. Returns null when the queue was aborted, finished and drained, or the wait was interrupted.
      */
     public AVPacket get(final int[] serialOut) {
         synchronized (this.lock) {
@@ -119,15 +101,10 @@ final class PacketQueue {
         }
     }
 
-    /**
-     * Flush: discards all packets and increments the serial.
-     * Decode threads that receive packets with the old serial will discard them without decoding.
-     */
+    /** Discards every packet and increments the serial, so decode threads drop packets of the old one without decoding. */
     public void flush() {
         synchronized (this.lock) {
-            while (!this.packets.isEmpty()) {
-                avcodec.av_packet_free(this.packets.pollFirst().packet());
-            }
+            while (!this.packets.isEmpty()) avcodec.av_packet_free(this.packets.pollFirst().packet());
             this.totalBytes = 0;
             this.serial++;
             this.lock.notifyAll();
@@ -138,10 +115,8 @@ final class PacketQueue {
     public int serial() { return this.serial; }
 
     /**
-     * True when a {@code null} from {@link #get(int[])} means a clean end-of-stream
-     * ({@link #finish()} was signalled) rather than a {@link #abort()} teardown.
-     * The decode threads use this to decide whether to flush the decoder's buffered
-     * frames at EOF — on an abort those frames are stale and must be dropped.
+     * Returns whether a {@code null} from {@link #get(int[])} means a clean end of stream ({@link #finish()}) rather
+     * than an {@link #abort()} teardown; decode threads drain the decoder's buffered frames only at a clean end.
      */
     public boolean endOfFile() { return this.finished && !this.aborted; }
 
@@ -150,11 +125,7 @@ final class PacketQueue {
         synchronized (this.lock) { return this.totalBytes; }
     }
 
-    /**
-     * Signals EOF: no more packets will be added.
-     * {@link #get(int[])} will drain the remaining packets, then return null.
-     * Unlike {@link #abort()}, this does not discard pending packets.
-     */
+    /** Signals EOF: {@link #get(int[])} drains the pending packets, then returns null; unlike {@link #abort()} nothing is discarded. */
     public void finish() {
         synchronized (this.lock) {
             this.finished = true;
@@ -179,16 +150,10 @@ final class PacketQueue {
         }
     }
 
-    /**
-     * Releases all pending packets during final cleanup — the counterpart of
-     * {@link FrameQueue#free()}. PacketQueue pre-allocates no native structs, so this only
-     * drains the outstanding clones; unlike {@link #flush()} it does not bump the serial.
-     */
+    /** Frees the pending packet clones at final cleanup, the counterpart of {@link FrameQueue#free()}; the serial stays. */
     public void free() {
         synchronized (this.lock) {
-            while (!this.packets.isEmpty()) {
-                avcodec.av_packet_free(this.packets.pollFirst().packet());
-            }
+            while (!this.packets.isEmpty()) avcodec.av_packet_free(this.packets.pollFirst().packet());
             this.totalBytes = 0;
             this.lock.notifyAll();
         }

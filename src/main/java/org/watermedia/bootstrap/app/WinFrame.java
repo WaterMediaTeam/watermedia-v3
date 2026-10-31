@@ -35,20 +35,16 @@ import static org.lwjgl.system.windows.User32.*;
  * resizing, the caption menu and the DWM animations while the app draws its own titlebar; a no-op elsewhere.
  */
 public final class WinFrame {
-
     /** Whether the native Windows frame integration applies on this platform. */
     public static final boolean ACTIVE = "windows".equals(IOTool.os());
-
-    // WM_DPICHANGED IS NOT EXPOSED BY LWJGL'S User32 BINDING
-    private static final int WM_DPICHANGED = 0x02E0;
+    private static final int WM_DPICHANGED = 0x02E0; // NOT EXPOSED BY LWJGL'S User32 BINDING
 
     private static AppContext ctx;
     private static long hwnd;
     private static long prevProc; // ORIGINAL (GLFW) WNDPROC — EVERYTHING UNHANDLED CHAINS HERE
     private static WindowProc proc;
 
-    private WinFrame() {
-    }
+    private WinFrame() {}
 
     /** Subclasses the Win32 window of a GLFW window, replacing any previous install; call it after every window rebuild. */
     public static void install(final long window, final AppContext context) {
@@ -57,12 +53,12 @@ public final class WinFrame {
         ctx = context;
         hwnd = glfwGetWin32Window(window);
         // SUBCLASS FIRST: THE SWP_FRAMECHANGED BELOW SENDS WM_NCCALCSIZE, AND OUR HANDLER MUST ANSWER
-        // IT — THE DEFAULT ONE WOULD INSET THE CLIENT AREA BY THE NEW CAPTION/FRAME UNTIL A LATER RESIZE.
+        // IT — THE DEFAULT ONE WOULD INSET THE CLIENT AREA BY THE NEW CAPTION/FRAME UNTIL A LATER RESIZE
         prevProc = GetWindowLongPtr(null, hwnd, GWL_WNDPROC);
         proc = WindowProc.create(WinFrame::wndProc);
         SetWindowLongPtr(null, hwnd, GWL_WNDPROC, proc.address());
         // FRAME STYLES: WS_THICKFRAME ENABLES EDGE RESIZE + SNAP, WS_CAPTION/BOXES ENABLE SNAP LAYOUTS,
-        // WIN+ARROWS AND THE DWM MIN/MAX ANIMATIONS. THE VISUAL FRAME IS REMOVED IN WM_NCCALCSIZE.
+        // WIN+ARROWS AND THE DWM MIN/MAX ANIMATIONS; THE VISUAL FRAME IS REMOVED IN WM_NCCALCSIZE
         final long style = GetWindowLongPtr(null, hwnd, GWL_STYLE);
         SetWindowLongPtr(null, hwnd, GWL_STYLE,
                 style | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
@@ -117,6 +113,23 @@ public final class WinFrame {
         }
     }
 
+    /** Returns the monitor whose full bounds contain the point, else the primary; the caller lends two scratch buffers. */
+    public static long monitorAt(final double cx, final double cy, final IntBuffer pa, final IntBuffer pb) {
+        long monitor = 0L;
+        final PointerBuffer monitors = glfwGetMonitors();
+        if (monitors != null) {
+            for (int i = 0; i < monitors.limit() && monitor == 0L; i++) {
+                final long m = monitors.get(i);
+                glfwGetMonitorPos(m, pa, pb);
+                final GLFWVidMode mode = glfwGetVideoMode(m);
+                if (mode != null && cx >= pa.get(0) && cx < pa.get(0) + mode.width()
+                        && cy >= pb.get(0) && cy < pb.get(0) + mode.height())
+                    monitor = m;
+            }
+        }
+        return monitor != 0L ? monitor : glfwGetPrimaryMonitor();
+    }
+
     // CLAMPS THE PROPOSED WM_NCCALCSIZE RECT (FIRST RECT AT lParam) TO ITS MONITOR'S WORK AREA, REMOVING THE
     // MAXIMIZED FRAME OVERHANG WITHOUT SHRINKING A RECT THAT FITS
     private static void clampZoomed(final long rectPtr) {
@@ -149,27 +162,8 @@ public final class WinFrame {
         }
     }
 
-    // MONITOR WHOSE FULL BOUNDS CONTAIN THE GIVEN POINT (PRIMARY AS FALLBACK); SCRATCH BUFFERS PROVIDED
-    // BY THE CALLER SO THE LOOKUP STAYS ALLOCATION-FREE
-    private static long monitorAt(final double cx, final double cy, final IntBuffer pa, final IntBuffer pb) {
-        long monitor = 0L;
-        final PointerBuffer monitors = glfwGetMonitors();
-        if (monitors != null) {
-            for (int i = 0; i < monitors.limit() && monitor == 0L; i++) {
-                final long m = monitors.get(i);
-                glfwGetMonitorPos(m, pa, pb);
-                final GLFWVidMode mode = glfwGetVideoMode(m);
-                if (mode != null && cx >= pa.get(0) && cx < pa.get(0) + mode.width()
-                        && cy >= pb.get(0) && cy < pb.get(0) + mode.height()) {
-                    monitor = m;
-                }
-            }
-        }
-        return monitor != 0L ? monitor : glfwGetPrimaryMonitor();
-    }
-
-    // SUBCLASSED WNDPROC — RUNS ON THE GLFW MAIN THREAD (INSIDE THE MESSAGE PUMP). EVERYTHING NOT
-    // HANDLED HERE CHAINS TO THE ORIGINAL GLFW PROC SO ALL GLFW CALLBACKS KEEP FIRING.
+    // SUBCLASSED WNDPROC — RUNS ON THE GLFW MAIN THREAD (INSIDE THE MESSAGE PUMP); EVERYTHING NOT
+    // HANDLED HERE CHAINS TO THE ORIGINAL GLFW PROC SO ALL GLFW CALLBACKS KEEP FIRING
     private static long wndProc(final long hwnd, final int msg, final long wParam, final long lParam) {
         switch (msg) {
             case WM_NCCALCSIZE -> {
@@ -204,8 +198,8 @@ public final class WinFrame {
             final int cw = r.right() - r.left();
             final int ch = r.bottom() - r.top();
 
-            // RESIZE BORDERS — FLOATING ONLY; CORNERS GET A DOUBLE-SIZED BAND FOR A COMFORTABLE GRIP.
-            // THE TOP BAND WINS OVER THE TITLEBAR: RESIZING FROM THE TOP EDGE IS THE STANDARD BEHAVIOR.
+            // RESIZE BORDERS — FLOATING ONLY; CORNERS GET A DOUBLE-SIZED BAND FOR A COMFORTABLE GRIP;
+            // THE TOP BAND WINS OVER THE TITLEBAR: RESIZING FROM THE TOP EDGE IS THE STANDARD BEHAVIOR
             if (!IsZoomed(hwnd)) {
                 final int fx = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
                 final int fy = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
@@ -220,9 +214,8 @@ public final class WinFrame {
             final AppContext c = ctx;
             final float scale = c == null ? 1f : c.uiScale;
             if (cx >= 0 && cy >= 0 && cy < Math.round(TitleBar.H * scale)
-                    && cx < cw - Math.round(TitleBar.BUTTON_W * 3 * scale)) {
+                    && cx < cw - Math.round(TitleBar.BUTTON_W * 3 * scale))
                 return HTCAPTION;
-            }
             return HTCLIENT;
         }
     }

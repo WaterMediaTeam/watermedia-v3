@@ -45,21 +45,17 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the {@link SFXEngine} implementations that the MasterClock/FFMediaPlayer sync contract
- * depends on: the channel-support gate and volume of both engines, {@link JSEngine} line uploads and
- * inertness after release, and the OpenAL table, gain, speed and queue ownership. Cases that need a
- * Java Sound output line or an OpenAL device skip when the machine has none.
- */
+/** Verifies the {@link SFXEngine} implementations the player clock depends on; cases needing an output device skip without one. */
 @DisplayName("SFXEngine")
 public class SFXEngineTest {
+
     // STREAMING LAYOUT OF THE JAVA SOUND LINE CASES
     private static final int RATE_HZ = 48_000;
     private static final int MS_BYTES = RATE_HZ / 1_000 * 4; // ONE MILLISECOND OF S16 STEREO
 
     @BeforeAll
     static void boot() {
-        // ENGINE CONSTRUCTION IS CLIENT-GATED BY THE SFXEngine BASE — BOOT A CLIENT ENVIRONMENT ONCE
+        // ENGINE CONSTRUCTION IS CLIENT-GATED BY THE SFXEngine BASE
         MediaBootstrap.client();
     }
 
@@ -518,7 +514,7 @@ public class SFXEngineTest {
             // A THREAD-LOCAL CONTEXT MOVES ONLY THIS THREAD, SO THE PLAYER'S AUDIO THREAD KEEPS ITS OWN
             Assumptions.assumeTrue(ALC.getCapabilities().ALC_EXT_thread_local_context, "thread-local contexts unavailable");
             final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
-            assertTrue(mrl.await(3000));
+            assertTrue(mrl.await(3_000));
             final ALEngine engine = PlayerAPI.alEngine();
             final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, null, engine);
             final long other = ALC10.alcCreateContext(this.al.device(), (IntBuffer) null);

@@ -18,7 +18,6 @@ import org.watermedia.test.support.PixelDiff;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -55,10 +54,15 @@ public class SvgTest {
 
     @TestFactory
     @DisplayName("Decode contract")
-    Iterable<DynamicTest> contract() {
+    Iterable<DynamicTest> contract() throws IOException {
         final List<DynamicTest> tests = new ArrayList<>();
         final int cap = WaterMediaConfig.codecs.svg.maxSize;
-        for (final Path svg: svgFiles()) {
+        final List<Path> files;
+        try (final Stream<Path> entries = Files.list(Fixtures.SVG_DIR)) {
+            files = entries.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".svg")).sorted().toList();
+        }
+        assertFalse(files.isEmpty(), "No SVG fixtures under " + Fixtures.SVG_DIR);
+        for (final Path svg: files) {
             final String name = svg.getFileName().toString();
             tests.add(dynamicTest("SVG contract [" + name + "]", () -> {
                 final ByteBuffer bb = ByteBuffer.wrap(Fixtures.readAll(svg));
@@ -313,6 +317,17 @@ public class SvgTest {
                             + "<rect width=\"10\" height=\"10\" fill=\"#00ff00\"/></switch>")), 5, 5);
             assertTrue(c[0] > 200 && c[1] < 60 && c[2] < 60, "the first eligible child (red) must paint, got " + Arrays.toString(c));
         }
+
+        @Test
+        @DisplayName("<switch> skips definition elements whatever their tag case")
+        void switchSkipsDefinitionElements() throws IOException {
+            // camelCase DEFINITION TAGS ARE NO CANDIDATES: SELECTING ONE WOULD PAINT NOTHING INSTEAD OF THE RED RECT
+            final int[] c = rgba(CodecsAPI.decode(svg("0 0 10 10",
+                    "<switch><linearGradient id=\"g\"><stop offset=\"0\" stop-color=\"#0000ff\"/></linearGradient>"
+                            + "<radialGradient id=\"r\"/><clipPath id=\"c\"><rect width=\"1\" height=\"1\"/></clipPath>"
+                            + "<rect width=\"10\" height=\"10\" fill=\"#ff0000\"/></switch>")), 5, 5);
+            assertTrue(c[0] > 200 && c[1] < 60 && c[2] < 60, "the rect after the definitions must paint, got " + Arrays.toString(c));
+        }
     }
 
     @Nested
@@ -337,7 +352,7 @@ public class SvgTest {
         @Test
         @DisplayName("Pathologically deep nesting fails with IOException, not StackOverflowError/hang")
         void deepNestingIsBounded() {
-            final byte[] svg = svg("0 0 100 100", "<g>".repeat(4000) + "<rect width=\"10\" height=\"10\"/>" + "</g>".repeat(4000));
+            final byte[] svg = svg("0 0 100 100", "<g>".repeat(4_000) + "<rect width=\"10\" height=\"10\"/>" + "</g>".repeat(4_000));
             assertTimeoutPreemptively(Duration.ofSeconds(10), () -> assertThrows(IOException.class, () -> CodecsAPI.decode(svg)));
         }
 
@@ -356,7 +371,8 @@ public class SvgTest {
             try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(svg("0 0 10 10", "<rect width=\"10\" height=\"10\" fill=\"#00ff00\"/>")))) {
                 final ByteBuffer first = reader.next();
                 final int cap = first.capacity();
-                while (first.hasRemaining()) first.get(); // DRAIN THE BUFFER LIKE A GL UPLOAD WOULD
+                // DRAIN THE BUFFER LIKE A GL UPLOAD WOULD
+                while (first.hasRemaining()) first.get();
                 assertTrue(reader.reset());
                 final ByteBuffer second = reader.next();
                 assertEquals(0, second.position(), "frame must be rewound to position 0 on the second pass");
@@ -365,6 +381,7 @@ public class SvgTest {
         }
     }
 
+    // UTILITY
     private static byte[] svg(final String viewBox, final String body) {
         return ("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\""
                 + viewBox + "\">" + body + "</svg>").getBytes(StandardCharsets.UTF_8);
@@ -375,15 +392,5 @@ public class SvgTest {
         final ByteBuffer bgra = img.frames()[0];
         final int i = (y * img.width() + x) * 4;
         return new int[] { bgra.get(i + 2) & 0xFF, bgra.get(i + 1) & 0xFF, bgra.get(i) & 0xFF, bgra.get(i + 3) & 0xFF };
-    }
-
-    private static List<Path> svgFiles() {
-        try (final Stream<Path> entries = Files.list(Fixtures.SVG_DIR)) {
-            final List<Path> files = entries.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".svg")).sorted().toList();
-            assertFalse(files.isEmpty(), "No SVG fixtures under " + Fixtures.SVG_DIR);
-            return files;
-        } catch (final IOException e) {
-            throw new UncheckedIOException("Failed to list SVG fixtures", e);
-        }
     }
 }

@@ -12,11 +12,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/**
- * Verifies the {@link Sync} snapshot and its fixed binary form. Decoding is the trust boundary between the host's
- * transport and playback, so every snapshot must round-trip byte for byte from any buffer, and every malformed
- * payload must be rejected without consuming a byte.
- */
+/** Verifies the {@link Sync} wire form: byte-exact round trips from any buffer and rejections that consume no byte. */
 @DisplayName("Sync snapshot")
 public class SyncTest {
 

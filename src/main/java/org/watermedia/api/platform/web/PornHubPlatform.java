@@ -22,9 +22,10 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves PornHub video pages through their {@code flashvars} media definitions; blocked entirely while mature content is off. */
 public final class PornHubPlatform implements Platform {
-    public static final String NAME = "PornHub";
     private static final Marker IT = MarkerManager.getMarker(PornHubPlatform.class.getSimpleName());
+    public static final String NAME = "PornHub";
     private static final Pattern FLASHVARS_PATTERN = Pattern.compile("\\bvar\\s+flashvars_\\d+\\s*=\\s*(\\{[\\s\\S]*?\\});");
 
     @Override
@@ -32,8 +33,8 @@ public final class PornHubPlatform implements Platform {
 
     @Override
     public Resolution resolve(final URI uri) throws PlatformException {
-        // VALIDATE THE HOST WITH A DOT BOUNDARY (pornhub.com OR *.pornhub.com) SO LOOKALIKES LIKE
-        // "notpornhub.com" ARE REJECTED. A NULL HOST (e.g. file:// URIs) IS NOT OURS
+        // THE HOST MATCH KEEPS A DOT BOUNDARY (pornhub.com OR *.pornhub.com) SO LOOKALIKES LIKE "notpornhub.com"
+        // STAY FOREIGN; A NULL HOST (file:// URIs) IS NOT OURS
         final String raw = uri.getHost();
         final String host = raw == null ? null : raw.toLowerCase(Locale.ROOT);
         if (host == null || !(host.equals("pornhub.com") || host.endsWith(".pornhub.com"))) return null;

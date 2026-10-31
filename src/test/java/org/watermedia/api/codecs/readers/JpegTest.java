@@ -93,7 +93,7 @@ public class JpegTest {
                 assertEquals(reference.height(), image.height(), fixture.encoding);
                 assertEquals(1, image.frames().length, fixture.encoding);
 
-                // COMPARE ONLY RGB CHANNELS — PAM REFERENCE IS DEPTH 3, BGRA HAS AN EXTRA A
+                // COMPARE ONLY RGB CHANNELS, REORDERED FROM BGRA: THE PAM REFERENCE IS DEPTH 3, BGRA HAS AN EXTRA A
                 final ByteBuffer bgra = image.frames()[0].duplicate();
                 final int pixelCount = reference.width() * reference.height();
                 final byte[] refRgb = reference.pixels();
@@ -101,9 +101,9 @@ public class JpegTest {
                 for (int i = 0; i < pixelCount; i++) {
                     final int srcOffset = i * 4;
                     final int dstOffset = i * 3;
-                    actualRgb[dstOffset] = bgra.get(srcOffset + 2);     // R
-                    actualRgb[dstOffset + 1] = bgra.get(srcOffset + 1); // G
-                    actualRgb[dstOffset + 2] = bgra.get(srcOffset);     // B
+                    actualRgb[dstOffset] = bgra.get(srcOffset + 2);
+                    actualRgb[dstOffset + 1] = bgra.get(srcOffset + 1);
+                    actualRgb[dstOffset + 2] = bgra.get(srcOffset);
                 }
 
                 final PixelDiff diff = PixelDiff.compare(refRgb, actualRgb, SMALL_DIFF);

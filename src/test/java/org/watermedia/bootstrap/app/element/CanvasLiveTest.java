@@ -137,7 +137,7 @@ public class CanvasLiveTest {
                 backend.clips.clear();
                 canvas.paintLive(false);
                 assertEquals(1, backend.clips.size());
-                assertArrayEquals(new int[] {10, 20, 15, 40}, backend.clips.get(0), "the nested clip, intersected");
+                assertArrayEquals(new int[] { 10, 20, 15, 40 }, backend.clips.get(0), "the nested clip, intersected");
                 assertEquals(128 / 255f, backend.lastVertices[7], 1e-6f, "the painter keeps its half fade");
             }
 

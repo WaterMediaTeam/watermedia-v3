@@ -3,9 +3,7 @@ package org.watermedia.api.codecs.readers.webp.lossless;
 import org.watermedia.api.codecs.CodecException;
 
 final class LZ77 {
-
-    // DISTANCE CODE TO (xi, yi) OFFSET MAPPING FOR CODES 1-120
-    // FROM THE WEBP SPEC: (xi, yi) PAIRS IN ORDER
+    // THE WEBP SPEC (xi, yi) NEIGHBOURHOOD OFFSETS OF DISTANCE CODES 1-120, IN ORDER
     private static final int[][] DISTANCE_MAP = {
             {0, 1}, {1, 0}, {1, 1}, {-1, 1}, {0, 2}, {2, 0}, {1, 2}, {-1, 2},
             {2, 1}, {-2, 1}, {2, 2}, {-2, 2}, {0, 3}, {3, 0}, {1, 3}, {-1, 3},
@@ -24,32 +22,20 @@ final class LZ77 {
             {-6, 7}, {7, 6}, {-7, 6}, {8, 5}, {7, 7}, {-7, 7}, {8, 6}, {8, 7}
     };
 
-    private LZ77() {
-    }
+    private LZ77() {}
 
-    /** Expands a WebP length or distance prefix, consuming its extra bits from the reader. */
+    // EXPANDS A WEBP LENGTH OR DISTANCE PREFIX, CONSUMING ITS EXTRA BITS FROM THE READER
     public static int prefixToValue(final int prefixCode, final BitReader reader) throws CodecException {
-        if (prefixCode < 4) {
-            return prefixCode + 1;
-        }
+        if (prefixCode < 4) return prefixCode + 1;
         final int extraBits = (prefixCode - 2) >> 1;
         final int offset = (2 + (prefixCode & 1)) << extraBits;
         return offset + reader.read(extraBits) + 1;
     }
 
-    /** Maps a positive WebP distance code to a backward pixel offset for the given row width. */
+    // MAPS A POSITIVE WEBP DISTANCE CODE TO A BACKWARD PIXEL OFFSET FOR THE GIVEN ROW WIDTH
     public static int distanceToOffset(final int distanceCode, final int width) {
-        if (distanceCode > 120) {
-            // LINEAR DISTANCE (OFFSET BY 120)
-            return distanceCode - 120;
-        }
-
-        // SPECIAL NEIGHBORHOOD MAPPING
+        if (distanceCode > 120) return distanceCode - 120; // LINEAR DISTANCE PAST THE NEIGHBOURHOOD CODES
         final int[] offset = DISTANCE_MAP[distanceCode - 1];
-        final int xi = offset[0];
-        final int yi = offset[1];
-
-        final int dist = xi + yi * width;
-        return Math.max(1, dist);
+        return Math.max(1, offset[0] + offset[1] * width);
     }
 }

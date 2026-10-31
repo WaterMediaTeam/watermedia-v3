@@ -18,8 +18,8 @@ public class NeoBootstrap {
         }
     }
 
-    // FML 10+ (NEOFORGE 21.11+ AND 26.x) MOVED getDist() BEHIND THE getCurrent() INSTANCE; FML <= 9
-    // (MC 1.21.1 SHIPS FML 4.x) ONLY HAS THE OLD STATIC getDist(), SO IT FALLS BACK VIA REFLECTION
+    // FML 10+ (NEOFORGE 21.11+ AND 26.x) EXPOSES getDist() ON THE getCurrent() INSTANCE; FML <= 9
+    // (MC 1.21.1 SHIPS FML 4.x) ONLY HAS THE STATIC getDist(), REACHED THROUGH REFLECTION
     private static boolean clientSide() {
         try {
             return FMLLoader.getCurrent().getDist().isClient();

@@ -37,12 +37,11 @@ public final class Stepper extends Element<Stepper> {
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         int w = 0;
-        if (this.ctx != null && this.ctx.text != null) {
+        if (this.ctx != null && this.ctx.text != null)
             for (int i = 0; i < this.labels.length; i++) {
                 if (i > 0) w += STEP_GAP;
                 w += LABEL_X + this.ctx.text.width(this.labels[i], AppTheme.TEXT_BODY);
             }
-        }
         this.contentWidth = w;
         this.contentHeight = CELL;
     }
@@ -58,11 +57,8 @@ public final class Stepper extends Element<Stepper> {
             final Color color = done ? AppTheme.GREEN : act ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
             canvas.fill(x, y, CELL, CELL, AppTheme.alpha(AppTheme.BG_2, 220));
             canvas.stroke(x, y, CELL, CELL, color, act || done ? Theme.BORDER_HEAVY : Theme.BORDER_HAIRLINE);
-            if (done) {
-                canvas.icon("check", x + 8, y + 8, 14, color);
-            } else {
-                canvas.text(String.valueOf(step), x + 11, y + 7, color, AppTheme.TEXT_BODY, false);
-            }
+            if (done) canvas.icon("check", x + 8, y + 8, 14, color);
+            else canvas.text(String.valueOf(step), x + 11, y + 7, color, AppTheme.TEXT_BODY, false);
             canvas.text(this.labels[i], x + LABEL_X, y + 8, color, AppTheme.TEXT_BODY, false);
             final int end = x + LABEL_X + canvas.textWidth(this.labels[i], AppTheme.TEXT_BODY, false);
             // THE RULE TO THE NEXT STEP STARTS 10 PX AFTER THIS LABEL AND STOPS 12 PX BEFORE THE NEXT CELL

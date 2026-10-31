@@ -20,7 +20,7 @@ import org.watermedia.bootstrap.app.ui.TextRenderer;
  * module being loaded. Its elements pull {@link WaterMedia#loading()} and {@link WaterMedia#step()} every frame.
  */
 public final class LoadingScreen extends Screen {
-    private static final int BANNER_MAX_W = 1000;
+    private static final int BANNER_MAX_W = 1_000;
     private static final int BANNER_MAX_H = 170;
     private static final int BANNER_UP_SHIFT = 18;
     private static final int ICON_SIZE = 72;
@@ -75,12 +75,10 @@ public final class LoadingScreen extends Screen {
                 glowW * sx, glowH * sy, null);
     }
 
-    private record Fit(int w, int h) {
-    }
+    private record Fit(int w, int h) {}
 
     // CENTERS THE CONTENT COLUMN IN THE SLOT, KEEPING IT AT LEAST 32px BELOW THE SLOT TOP
     private static final class CenterFrame extends Group<CenterFrame> {
-
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             for (final Element<?> child: this.children) {
@@ -103,7 +101,6 @@ public final class LoadingScreen extends Screen {
     // THE BANNER MEASURES BANNER_UP_SHIFT TALLER THAN ITS IMAGE AND PAINTS AT ITS TOP, LEAVING THE SLACK
     // BELOW IT AS EXTRA SPACE BEFORE THE DUCK
     private static final class Banner extends Element<Banner> {
-
         private int imgW;
         private int imgH;
 
@@ -137,7 +134,6 @@ public final class LoadingScreen extends Screen {
     // ANIMATED DUCK, OR THE GLOWING PACK ICON WITHOUT DUCK FRAMES; THE SLOT ALWAYS SPANS THE FULL DUCK OR
     // ICON BOX HEIGHT EVEN WHEN THE IMAGE FITS SMALLER
     private static final class Duck extends Element<Duck> {
-
         private boolean duck;
         private int frame;
         private int imgW;
@@ -179,8 +175,7 @@ public final class LoadingScreen extends Screen {
 
     // BOOT PROGRESS BAR CAPTIONED WITH THE MODULE BEING LOADED AND THE DONE/TOTAL COUNT; THE SHOWN VALUE
     // EASES TOWARD THE GOAL OVER PROGRESS_ANIM_MS
-    private final class ModuleBar extends Element<ModuleBar> {
-
+    private static final class ModuleBar extends Element<ModuleBar> {
         private String caption = "";
         private float shown;
         private float from;

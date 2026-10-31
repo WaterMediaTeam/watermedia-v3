@@ -16,9 +16,10 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves {@code prnt.sc} screenshot pages to the image their markup embeds. */
 public final class LightshotPlatform implements Platform {
-    public static final String NAME = "Lightshot";
     private static final Marker IT = MarkerManager.getMarker(LightshotPlatform.class.getSimpleName());
+    public static final String NAME = "Lightshot";
     private static final Pattern IMG_PATTERN = Pattern.compile("<img[^>]*class=\"no-click screenshot-image\"[^>]*src=\"(https://[^\"]+)\"");
     private static final String[] HOSTS = { "prnt.sc" };
 

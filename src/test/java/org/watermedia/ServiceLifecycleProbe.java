@@ -8,11 +8,11 @@ import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.PlatformResult;
+import org.watermedia.api.util.HttpHeaders;
+import org.watermedia.api.util.MediaType;
 import org.watermedia.test.support.LocalHttp;
 import org.watermedia.test.support.PlayerWait;
 import org.watermedia.tools.ThreadTool;
-import org.watermedia.api.util.MediaType;
-import org.watermedia.api.util.HttpHeaders;
 
 import java.io.IOException;
 import java.net.URI;
@@ -34,7 +34,7 @@ public final class ServiceLifecycleProbe {
         WaterConfig.setPath(root.resolve("config"));
         WaterMediaConfig.codecs.ffmpeg.disable = true;
         WaterMediaConfig.network.server = WaterMediaConfig.Network.Server.OFF;
-        WaterMediaConfig.network.timeout = 2000;
+        WaterMediaConfig.network.timeout = 2_000;
         final boolean client = !arguments[0].equals("uploads");
         WaterMedia.start("SERVICE_TEST", root.resolve("temp"), root, client);
         switch (arguments[0]) {
@@ -89,7 +89,7 @@ public final class ServiceLifecycleProbe {
                 try { return !loadingField.getBoolean(mrl); }
                 catch (final IllegalAccessException failure) { throw new AssertionError(failure); }
             }
-        }, 3000)) throw new AssertionError("Loader did not become idle");
+        }, 3_000)) throw new AssertionError("Loader did not become idle");
     }
 
     private static void platforms() throws Exception {
@@ -128,7 +128,8 @@ public final class ServiceLifecycleProbe {
                         try {
                             WaterMedia.start("SERVICE_TEST", null, null, true);
                             throw new AssertionError("Worker initiated a load");
-                        } catch (final IllegalStateException expected) { // THE WORKER GUARD ANSWERS BEFORE THE ALREADY-STARTED CHECK
+                        } catch (final IllegalStateException expected) {
+                            // THE WORKER GUARD ANSWERS BEFORE THE ALREADY-STARTED CHECK
                             callbackGuard.set(expected.getMessage().startsWith("Start WaterMedia from a host thread"));
                         }
                     }
@@ -139,7 +140,7 @@ public final class ServiceLifecycleProbe {
             final List<PlatformResult> old = PlatformAPI.search("old");
             if (!entered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Old probe did not enter");
             final List<PlatformResult> fresh = PlatformAPI.search("fresh");
-            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("fresh"), 3000)) throw new AssertionError("New search was blocked behind a cancelled probe");
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("fresh"), 3_000)) throw new AssertionError("New search was blocked behind a cancelled probe");
             if (!callbackGuard.get() || fresh.size() != 1 || !fresh.get(0).title().equals("fresh"))
                 throw new AssertionError("Fresh search has incorrect results");
             if (!PlatformAPI.searchHistory().equals(List.of("fresh", "old")))
@@ -148,10 +149,10 @@ public final class ServiceLifecycleProbe {
             final MRL held = PlayerAPI.mrl(URI.create("fixture:held"));
             if (!resolveEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Resolver did not enter");
             final List<PlatformResult> during = PlatformAPI.search("during-resolve");
-            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("during-resolve"), 3000) || during.size() != 1)
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("during-resolve"), 3_000) || during.size() != 1)
                 throw new AssertionError("A held resolution blocked the search service");
             resolveResume.countDown();
-            if (!held.await(3000) || held.status() != MRL.Status.LOADED) throw new AssertionError("Held resolution did not finish");
+            if (!held.await(3_000) || held.status() != MRL.Status.LOADED) throw new AssertionError("Held resolution did not finish");
             // THE DISCARDED SEARCH NEVER PUBLISHES, EVEN ONCE ITS PROBE FINALLY RETURNS
             if (!old.isEmpty()) throw new AssertionError("The discarded search gained results");
             resume.countDown();
@@ -168,7 +169,7 @@ public final class ServiceLifecycleProbe {
                 }
             });
             final List<PlatformResult> again = PlatformAPI.search("fresh");
-            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("fresh"), 3000) || again.size() != 1
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("fresh"), 3_000) || again.size() != 1
                     || !again.get(0).title().equals("replacement") || !PlatformAPI.searchHistory().equals(List.of("fresh", "during-resolve", "old")))
                 throw new AssertionError("Search cache survived the registry change or the history lost a query");
         } finally {
@@ -217,7 +218,7 @@ public final class ServiceLifecycleProbe {
             if (PlayerWait.awaitCondition(() -> !PlatformAPI.searching("failure contract"), 250))
                 throw new AssertionError("Search completed while another probe was still running");
             releaseSlow.countDown();
-            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("failure contract"), 3000) || search.size() != 1
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching("failure contract"), 3_000) || search.size() != 1
                     || !search.get(0).title().equals("late success"))
                 throw new AssertionError("Successful late probe was lost");
             final List<PlatformResult> cached = PlatformAPI.search("failure contract");
@@ -233,14 +234,12 @@ public final class ServiceLifecycleProbe {
         final CountDownLatch entered = new CountDownLatch(4);
         final CountDownLatch respond = new CountDownLatch(1);
         final var handlers = Executors.newFixedThreadPool(4, ThreadTool.factory("Upload-Origin", Thread.NORM_PRIORITY));
-        final Path file = Files.write(root.resolve("upload.bin"), new byte[8192]);
+        final Path file = Files.write(root.resolve("upload.bin"), new byte[8_192]);
         final boolean handlersStopped;
         try (final LocalHttp origin = LocalHttp.start("/upload", exchange -> {
             exchange.getRequestBody().readAllBytes();
             entered.countDown();
-            try {
-                if (!respond.await(5, TimeUnit.SECONDS)) throw new IOException("Held upload timed out");
-            }
+            try { if (!respond.await(5, TimeUnit.SECONDS)) throw new IOException("Held upload timed out"); }
             catch (final InterruptedException interrupted) { Thread.currentThread().interrupt(); }
             try { LocalHttp.respond(exchange, "text/plain", "stored12".getBytes(StandardCharsets.UTF_8), 0); }
             catch (final IOException closed) { exchange.close(); }
@@ -248,7 +247,7 @@ public final class ServiceLifecycleProbe {
             // A BAD REMOTE FAILS THE STATUS INSTEAD OF THROWING, SO A MISCONFIGURED HOST NEVER CRASHES ITS CALLER
             WaterMediaConfig.network.remoteUrl = "remote.invalid/upload";
             final NetworkAPI.UploadStatus misconfigured = NetworkAPI.upload(file.toFile());
-            if (!PlayerWait.awaitCondition(misconfigured::failed, 3000) || misconfigured.completed()
+            if (!PlayerWait.awaitCondition(misconfigured::failed, 3_000) || misconfigured.completed()
                     || misconfigured.error() == null || !misconfigured.error().contains("remoteUrl"))
                 throw new AssertionError("A misconfigured remote did not fail the upload: " + misconfigured.error());
             WaterMediaConfig.network.remoteUrl = origin.uri("").toString();

@@ -109,11 +109,11 @@ public enum MathEases {
 
     // UTILITY
     private static float sin(final float value) {
-        return SIN[(int) (value * 10430.378F) & 0xFFFF];
+        return SIN[(int) (value * 10_430.378F) & 0xFFFF];
     }
 
     private static float cos(final float value) {
-        return SIN[(int) (value * 10430.378F + 16384.0F) & 0xFFFF];
+        return SIN[(int) (value * 10_430.378F + 16_384.0F) & 0xFFFF];
     }
 
     // PENNER'S OUT-BOUNCE OVER THE UNIT RANGE, THE BUILDING BLOCK OF THE THREE BOUNCE CURVES

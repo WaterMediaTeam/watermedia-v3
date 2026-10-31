@@ -13,7 +13,6 @@ import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.test.support.Fixtures;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -54,8 +53,14 @@ public class NetpbmTest {
 
     @TestFactory
     @DisplayName("Decode first frame and reset")
-    Iterable<DynamicTest> testNetpbmDecode() {
-        final List<Path> fixtures = netpbmFixtures();
+    Iterable<DynamicTest> testNetpbmDecode() throws IOException {
+        final List<Path> fixtures;
+        try (final Stream<Path> entries = Files.list(Fixtures.NETPBM_DIR)) {
+            fixtures = entries.filter(p -> {
+                final String n = p.getFileName().toString();
+                return n.endsWith(".pbm") || n.endsWith(".pgm") || n.endsWith(".ppm") || n.endsWith(".pam");
+            }).sorted().toList();
+        }
         // A DELETED OR RENAMED FIXTURE FAILS LOUDLY INSTEAD OF SILENTLY DROPPING ITS CASE
         final Set<String> names = new HashSet<>();
         for (final Path file: fixtures) names.add(file.getFileName().toString());
@@ -166,9 +171,9 @@ public class NetpbmTest {
         void invalidVersion() {
             assertThrows(IllegalArgumentException.class, () -> new NetpbmReader(ByteBuffer.wrap(bytes(" 1 1 255\n", new byte[1])), 8));
         }
-
     }
 
+    // UTILITY
     private static ImageData decode(final String text) throws IOException {
         return decode(text, new byte[0]);
     }
@@ -180,19 +185,5 @@ public class NetpbmTest {
     private static byte[] bytes(final String header, final byte[] raster) {
         final byte[] head = header.getBytes(StandardCharsets.US_ASCII);
         return ByteBuffer.allocate(head.length + raster.length).put(head).put(raster).array();
-    }
-
-    private static List<Path> netpbmFixtures() {
-        try (final Stream<Path> entries = Files.list(Fixtures.NETPBM_DIR)) {
-            return entries
-                    .filter(p -> {
-                        final String n = p.getFileName().toString();
-                        return n.endsWith(".pbm") || n.endsWith(".pgm") || n.endsWith(".ppm") || n.endsWith(".pam");
-                    })
-                    .sorted()
-                    .toList();
-        } catch (final IOException e) {
-            throw new UncheckedIOException("Failed to enumerate netpbm fixtures", e);
-        }
     }
 }

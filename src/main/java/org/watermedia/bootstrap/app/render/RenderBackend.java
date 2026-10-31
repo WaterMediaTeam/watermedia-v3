@@ -11,23 +11,14 @@ import java.util.function.Supplier;
 public interface RenderBackend {
 
     void init();
-
     void cleanup();
-
     void configureFrameState();
-
     void clear(float r, float g, float b, float a);
-
     void viewport(int width, int height);
-
     TextureHandle createTexture(int width, int height, ByteBuffer rgba);
-
     void deleteTexture(TextureHandle texture);
-
     void bindTexture(int textureId);
-
     void useProjection(Matrix4f projection);
-
     void draw(DrawMode mode, float[] vertices, int vertexCount, boolean textured);
 
     /** Returns whether {@link #softRect} draws in one pass; otherwise the engine stacks translucent fills. */
@@ -41,9 +32,7 @@ public interface RenderBackend {
     }
 
     void lineWidth(float width);
-
     void clip(int x, int y, int width, int height, int canvasHeight);
-
     void clearClip();
 
     /** Builds the media engine of this backend ({@code GLEngine} or {@code VKEngine}); only OpenGL uses the thread and executor. */

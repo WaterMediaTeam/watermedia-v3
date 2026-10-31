@@ -12,8 +12,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 
 /**
- * tIME - Image Last-Modification Time Chunk
- * Stores the time of the last image modification
+ * tIME (image last-modification time) chunk: the UTC time of the last image modification.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11tIME">PNG Specification - tIME</a>
  */
@@ -28,14 +27,10 @@ public record TIME(int year, int month, int day, int hour, int minute, int secon
 
     /** Converts a generic chunk to tIME. */
     public static TIME convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for tIME: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for tIME: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("tIME data must be 7 bytes, got " + data.length);
-        }
+        if (data.length != LENGTH) throw new CodecException("tIME data must be 7 bytes, got " + data.length);
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         return new TIME(
@@ -48,28 +43,21 @@ public record TIME(int year, int month, int day, int hour, int minute, int secon
         );
     }
 
-    /**
-     * Returns the modification time as a LocalDateTime
-     */
+    /** Returns the modification time as a LocalDateTime, every field clamped to its valid range. */
     public LocalDateTime toLocalDateTime() {
         // CLAMP EVERY FIELD: THE CHUNK CARRIES RAW BYTES, AND LocalDateTime.of THROWS DateTimeException
         // ON ANYTHING OUT OF RANGE (LEAP SECOND 60, MONTH 0, DAY 31 IN FEBRUARY, ...)
         final int m = Math.min(Math.max(this.month, 1), 12);
         final int d = Math.min(Math.max(this.day, 1), YearMonth.of(this.year, m).lengthOfMonth());
-        return LocalDateTime.of(this.year, m, d,
-                Math.min(this.hour, 23), Math.min(this.minute, 59), Math.min(this.second, 59));
+        return LocalDateTime.of(this.year, m, d, Math.min(this.hour, 23), Math.min(this.minute, 59), Math.min(this.second, 59));
     }
 
-    /**
-     * Returns the modification time as UTC ZonedDateTime
-     */
+    /** Returns the modification time as a UTC ZonedDateTime. */
     public ZonedDateTime toZonedDateTime() {
         return this.toLocalDateTime().atZone(ZoneOffset.UTC);
     }
 
-    /**
-     * Returns the clamped modification time as an ISO 8601 UTC string
-     */
+    /** Returns the clamped modification time as an ISO 8601 UTC string. */
     public String toISO8601() {
         return this.toLocalDateTime().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z";
     }

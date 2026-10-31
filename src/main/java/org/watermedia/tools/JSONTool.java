@@ -17,38 +17,17 @@ public final class JSONTool {
 
     private JSONTool() {}
 
-    /**
-     * Binds a parsed JSON tree to {@code type} through the shared {@link Gson} instance.
-     *
-     * @param json the JSON tree, may be {@code null}
-     * @param type the class to bind to
-     * @param <T> the bound type
-     * @return the bound instance, or {@code null} when {@code json} is {@code null}
-     * @throws JsonSyntaxException when the tree does not match {@code type}
-     */
+    /** Binds a JSON tree to {@code type}, or returns null for a null tree; a shape mismatch throws {@link JsonSyntaxException}. */
     public static <T> T parse(final JsonElement json, final Class<T> type) {
         return json == null ? null : GSON.fromJson(json, type);
     }
 
-    /**
-     * Parses a raw JSON string and binds it to {@code type} through the shared {@link Gson} instance.
-     *
-     * @param json the raw JSON text, may be {@code null}
-     * @param type the class to bind to
-     * @param <T> the bound type
-     * @return the bound instance, or {@code null} when {@code json} is {@code null}, empty or holds only JSON {@code null}
-     * @throws JsonSyntaxException when the text is not valid JSON or does not match {@code type}
-     */
+    /** Parses JSON text into {@code type}, or returns null for null, empty or {@code null} text; invalid or mismatched JSON throws {@link JsonSyntaxException}. */
     public static <T> T parse(final String json, final Class<T> type) {
         return json == null ? null : GSON.fromJson(json, type);
     }
 
-    /**
-     * Serializes {@code value} to its JSON representation through the shared {@link Gson} instance.
-     *
-     * @param value the value to serialize, may be {@code null}
-     * @return the JSON text ({@code "null"} when {@code value} is {@code null})
-     */
+    /** Serializes {@code value} to JSON text, {@code "null"} for null. */
     public static String write(final Object value) {
         return GSON.toJson(value);
     }

@@ -3,15 +3,11 @@ package org.watermedia.api.codecs.readers.svg;
 import java.util.Arrays;
 
 /**
- * Resolved fill/stroke paint. A paint is turned into a per-pixel {@link Paint} sampler at draw time
- * via {@link #sampler(Affine, double, double, double, double)}, which receives the current device
- * transform and the shape's user-space bounds (needed for {@code objectBoundingBox} gradients).
- *
- * <p>Sealed over two record carriers — a solid colour and a linear gradient. "No paint"
- * ({@code fill="none"}) is represented by a {@code null} {@code SVGPaint} at the call site.
+ * Resolved fill or stroke paint, a solid colour or a linear gradient; {@code fill="none"} is a {@code null} paint.
+ * {@link #sampler} turns it into a per-pixel {@link Paint} from the device transform and the shape's user-space
+ * bounds (which {@code objectBoundingBox} gradients need).
  */
 sealed interface SvgPaint permits SvgPaint.Solid, SvgPaint.Linear {
-
     Paint sampler(Affine ctm, double minX, double minY, double maxX, double maxY);
 
     static SvgPaint solid(final int argb) {
@@ -26,14 +22,13 @@ sealed interface SvgPaint permits SvgPaint.Solid, SvgPaint.Linear {
         }
     }
 
-    // LINEAR GRADIENT. offsets ARE ASCENDING IN [0,1]; colors ARE STRAIGHT ARGB.
-    // gradientTransform IS ALWAYS NON-NULL (SVGParser.parseTransform DEFAULTS TO IDENTITY).
+    // offsets ARE ASCENDING IN [0,1] AND colors STRAIGHT ARGB; gradientTransform IS NEVER NULL
+    // (SvgParser.parseTransform DEFAULTS TO IDENTITY)
     record Linear(double x1, double y1, double x2, double y2, boolean userSpace,
                   Affine gradientTransform, float[] offsets, int[] colors) implements SvgPaint {
-
         @Override
         public Paint sampler(final Affine ctm, final double minX, final double minY, final double maxX, final double maxY) {
-            if (this.offsets.length == 0) { final int c = 0; return (px, py) -> c; }
+            if (this.offsets.length == 0) return (px, py) -> 0;
             if (this.offsets.length == 1) { final int c = this.colors[0]; return (px, py) -> c; }
 
             // BUILD gradient-space → user-space, THEN COMPOSE WITH THE DEVICE TRANSFORM AND INVERT

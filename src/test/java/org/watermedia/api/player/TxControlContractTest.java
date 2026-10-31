@@ -23,12 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the shared control contract on {@link TxMediaPlayer}: boolean controls answer whether the local state changed,
- * stop() rewinds to zero, a scrub or toggle after stop restarts the media, a scrub after ENDED restarts a streaming
- * animation paused at the target while the frame-texture mode rewinds and pauses in place, every restart clears the
- * previous failure, a timed still ends from PLAYING even with repeat on, and the status listener hears every transition.
- */
+/** Verifies the shared control contract on {@link TxMediaPlayer}: boolean controls, stop and restarts, timed stills and listeners. */
 @DisplayName("TxMediaPlayer control contract")
 public class TxControlContractTest {
 
@@ -40,12 +35,6 @@ public class TxControlContractTest {
 
     @BeforeAll
     static void boot() { MediaBootstrap.client(); }
-
-    private static TxMediaPlayer open(final Path fixture, final HeadlessGFXEngine gfx) {
-        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(fixture));
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
-        return new TxMediaPlayer(mrl, 0, gfx);
-    }
 
     @Nested
     @DisplayName("Terminal states")
@@ -209,5 +198,13 @@ public class TxControlContractTest {
             assertTrue(seen.contains(Status.PAUSED));
             assertFalse(player.canPlay(), "released players are not playable");
         }
+    }
+
+    // UTILITY
+
+    private static TxMediaPlayer open(final Path fixture, final HeadlessGFXEngine gfx) {
+        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(fixture));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        return new TxMediaPlayer(mrl, 0, gfx);
     }
 }

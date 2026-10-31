@@ -255,13 +255,14 @@ tasks.register('javadocInventory') {
 }
 
 // NORMALIZE ENHANCED-FOR COLONS IN JAVA SOURCES.
-def javaSources = fileTree(dir: 'src', include: '**/*.java')
+def javaSources = files(['src', 'binaries/src', 'binaries/tools'].collect { fileTree(dir: it, include: '**/*.java') })
 tasks.register('removeSemicolonSpace') {
     group = 'formatting'
-    description = 'Removes the space before the enhanced-for colon across src/**/*.java'
+    description = 'Removes the space before the enhanced-for colon in the WaterMedia and Binaries Java sources'
     doLast {
-        // (?m) ANCHORS ^ PER LINE; [ \t] AND [^:\r\n] KEEP EACH MATCH INSIDE ONE LINE SO LINE ENDINGS SURVIVE
-        def regex = ~/(?m)(^[ \t]*for[ \t]*\([^:\r\n]*\w)[ \t]+:/
+        // (?m) ANCHORS ^ PER LINE AND [^:;=\r\n] KEEPS EACH MATCH INSIDE ONE LINE; AN '=' OR ';' MEANS A COUNTED for,
+        // WHOSE COLONS BELONG TO TERNARIES
+        def regex = ~/(?m)(^[ \t]*for[ \t]*\([^:;=\r\n]*\w)[ \t]+:/
         javaSources.each { file ->
             def text = file.getText('UTF-8')
             def updated = text.replaceAll(regex, '$1:')

@@ -17,18 +17,9 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Builds an {@link SvgNode} tree from SVG bytes using the JDK StAX reader, and hosts the small value
- * parsers shared by the renderer (transform lists, lengths, inline styles, point lists).
- *
- * <p>The reader is hardened against XXE/SSRF: external entities are disabled and an {@link XMLResolver}
- * returns an empty stream for every external DTD/entity, so a {@code SYSTEM} DTD is never fetched over
- * the network. Real-world SVGs commonly declare {@code <!DOCTYPE svg PUBLIC ... "http://.../svg11.dtd">};
- * the resolver lets them parse (an empty DTD) instead of failing, while still touching no network.
- *
- * <p>Entity expansion is budgeted twice over: explicitly on the factory (the JDK defaults swing from
- * 64,000 expansions / 50 MB on 17-21 to a couple of thousand on newer releases, so relying on them
- * would leave the shipping JDKs wide open) and again by this class, which caps the element count and
- * the attribute text it is willing to retain.
+ * Builds the {@link SvgNode} tree from SVG bytes with the JDK StAX reader and hosts the value parsers the renderer
+ * shares (transform lists, lengths, point lists). Hardened against XXE, SSRF and entity bombs: external entities are
+ * off, every external DTD resolves through an {@link XMLResolver} to an empty stream, and expansion is capped twice.
  */
 final class SvgParser {
     // DECODER-OWN PARSE BUDGETS. EVERY EXPANDED START_ELEMENT RETAINS A NODE (RECORD + MAP + LIST + TAG)
@@ -38,14 +29,13 @@ final class SvgParser {
     private static final int MAX_ATTR_CHARS = 1_000_000;   // ONE ATTRIBUTE VALUE (A LONG d="" IS LEGITIMATE)
     private static final long MAX_DOC_CHARS = 16_000_000L; // ALL ATTRIBUTE VALUES OF THE DOCUMENT
 
-    // RESOLVER RETURNS EMPTY FOR EVERY EXTERNAL DTD/ENTITY: TOLERATES <!DOCTYPE> (INTERNAL OR WITH AN
-    // EXTERNAL SYSTEM ID LIKE INKSCAPE/W3C SVGs) WITHOUT EVER MAKING A NETWORK REQUEST. THIS IS SAFER
-    // THAN ACCESS_EXTERNAL_DTD="" WHICH THROWS A FATAL PARSE ERROR ON ANY EXTERNAL SYSTEM DTD.
     private static final XMLInputFactory FACTORY;
     static {
         final XMLInputFactory f = XMLInputFactory.newFactory();
         setProperty(f, XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, Boolean.FALSE);
         setProperty(f, XMLInputFactory.SUPPORT_DTD, Boolean.TRUE);
+        // EVERY EXTERNAL DTD/ENTITY RESOLVES EMPTY: A <!DOCTYPE> WITH A SYSTEM ID (INKSCAPE, W3C) PARSES WITHOUT A
+        // NETWORK REQUEST, WHERE ACCESS_EXTERNAL_DTD="" WOULD FAIL THE WHOLE PARSE
         f.setXMLResolver((publicID, systemID, baseURI, namespace) -> new ByteArrayInputStream(new byte[0]));
         // NAMESPACE-UNAWARE: STAY LENIENT LIKE THE REST OF THE DECODER. NAMESPACE-AWARE MODE MAKES AN
         // UNDECLARED PREFIX (e.g. xlink:href WITH NO xmlns:xlink) A FATAL ERROR; ATTRIBUTES ARE READ
@@ -75,9 +65,7 @@ final class SvgParser {
                 final int ev = r.next();
                 if (ev == XMLStreamConstants.START_ELEMENT) {
                     // BUDGETS CHECKED BEFORE ANY ALLOCATION — THE WHOLE POINT IS TO NOT RETAIN THE NODE
-                    if (++elements > MAX_ELEMENTS) {
-                        throw new CodecException("SVG element count exceeds " + MAX_ELEMENTS);
-                    }
+                    if (++elements > MAX_ELEMENTS) throw new CodecException("SVG element count exceeds " + MAX_ELEMENTS);
                     final Map<String, String> attrs = new HashMap<>();
                     final int count = r.getAttributeCount();
                     for (int i = 0; i < count; i++) {
@@ -85,18 +73,24 @@ final class SvgParser {
                         // MILLIONS OF CHARACTERS AND HAND THE PATH PARSER A SEGMENT BOMB
                         final String value = r.getAttributeValue(i);
                         chars += value.length();
-                        if (value.length() > MAX_ATTR_CHARS || chars > MAX_DOC_CHARS) {
+                        if (value.length() > MAX_ATTR_CHARS || chars > MAX_DOC_CHARS)
                             throw new CodecException("SVG attribute data exceeds the decoder budget");
-                        }
                         attrs.put(r.getAttributeLocalName(i), value);
                     }
+                    // THE INLINE style="prop: value; ..." DECLARATIONS OVERLAY THE PRESENTATION ATTRIBUTES
                     final String style = attrs.get("style");
-                    if (style != null) parseStyleInto(attrs, style);
+                    if (style != null) {
+                        for (final String decl: style.split(";")) {
+                            final int sep = decl.indexOf(':');
+                            if (sep <= 0) continue;
+                            final String prop = decl.substring(0, sep).trim().toLowerCase(Locale.ROOT);
+                            final String val = decl.substring(sep + 1).trim();
+                            if (!prop.isEmpty() && !val.isEmpty()) attrs.put(prop, val);
+                        }
+                    }
 
-                    // NAMESPACE-UNAWARE StAX RETURNS THE RAW QNAME (e.g. "svg:svg") — STRIP THE PREFIX
-                    // SO PREFIXED DOCUMENTS (<svg:svg><svg:path/>) DISPATCH LIKE UNPREFIXED ONES.
-                    // LOWERCASE ONCE HERE: EVERY DISPATCH SITE COMPARES THE TAG CASE-INSENSITIVELY AND
-                    // THE RAW CASING IS NEVER NEEDED, SO STORE THE CANONICAL FORM ON THE NODE
+                    // NAMESPACE-UNAWARE StAX RETURNS THE RAW QNAME ("svg:svg"): STRIP THE PREFIX SO PREFIXED DOCUMENTS
+                    // DISPATCH LIKE UNPREFIXED ONES, AND LOWERCASE ONCE, SINCE EVERY DISPATCH SITE COMPARES LOWERCASE TAGS
                     String tag = r.getLocalName();
                     final int colon = tag.indexOf(':');
                     if (colon >= 0) tag = tag.substring(colon + 1);
@@ -118,34 +112,21 @@ final class SvgParser {
             throw new CodecException("Malformed SVG document: " + e.getMessage(), e);
         } finally {
             if (r != null) {
-                try { r.close(); } catch (final XMLStreamException ignored) { /* BEST EFFORT */ }
+                try { r.close(); }
+                catch (final XMLStreamException ignored) {} // BEST EFFORT
             }
         }
     }
 
     private static void setProperty(final XMLInputFactory factory, final String name, final Object value) {
-        // SOME IMPLEMENTATIONS REJECT UNKNOWN PROPERTIES — TREAT AS BEST EFFORT
-        try {
-            factory.setProperty(name, value);
-        } catch (final IllegalArgumentException ignored) {
-            // PROPERTY NOT SUPPORTED BY THIS PARSER
-        }
+        try { factory.setProperty(name, value); }
+        catch (final IllegalArgumentException ignored) {} // SOME IMPLEMENTATIONS REJECT UNKNOWN PROPERTIES: BEST EFFORT
     }
 
-    // ----- INLINE STYLE: "prop: value; prop2: value2" OVERLAYS THE ATTRIBUTE MAP -----
-
-    static void parseStyleInto(final Map<String, String> attrs, final String style) {
-        for (final String decl: style.split(";")) {
-            final int colon = decl.indexOf(':');
-            if (colon <= 0) continue;
-            final String prop = decl.substring(0, colon).trim().toLowerCase(Locale.ROOT);
-            final String value = decl.substring(colon + 1).trim();
-            if (!prop.isEmpty() && !value.isEmpty()) attrs.put(prop, value);
-        }
-    }
-
-    // ----- TRANSFORM LIST → AFFINE (functions composed left to right) -----
-
+    // ==========================================================================
+    // VALUE PARSERS
+    // ==========================================================================
+    // TRANSFORM LIST → AFFINE, FUNCTIONS COMPOSED LEFT TO RIGHT
     static Affine parseTransform(final String s) throws CodecException {
         if (s == null || s.isBlank()) return Affine.IDENTITY;
         Affine m = Affine.IDENTITY;
@@ -162,29 +143,22 @@ final class SvgParser {
             if (open < 0 || close < 0) break;
             final double[] a = numbers(s.substring(open + 1, close));
             i = close + 1;
-            m = m.concat(transformOf(name, a));
+            m = m.concat(switch (name) {
+                case "translate" -> Affine.translate(a.length > 0 ? a[0] : 0, a.length > 1 ? a[1] : 0);
+                case "scale" -> Affine.scale(a.length > 0 ? a[0] : 1, a.length > 1 ? a[1] : (a.length > 0 ? a[0] : 1));
+                case "rotate" -> a.length >= 3 ? Affine.rotate(a[0], a[1], a[2]) : Affine.rotate(a.length > 0 ? a[0] : 0);
+                case "matrix" -> a.length >= 6 ? new Affine(a[0], a[1], a[2], a[3], a[4], a[5]) : Affine.IDENTITY;
+                case "skewX" -> Affine.skewX(a.length > 0 ? a[0] : 0);
+                case "skewY" -> Affine.skewY(a.length > 0 ? a[0] : 0);
+                default -> Affine.IDENTITY;
+            });
         }
         return m;
     }
 
-    private static Affine transformOf(final String name, final double[] a) {
-        return switch (name) {
-            case "translate" -> Affine.translate(a.length > 0 ? a[0] : 0, a.length > 1 ? a[1] : 0);
-            case "scale" -> Affine.scale(a.length > 0 ? a[0] : 1, a.length > 1 ? a[1] : (a.length > 0 ? a[0] : 1));
-            case "rotate" -> a.length >= 3 ? Affine.rotate(a[0], a[1], a[2]) : Affine.rotate(a.length > 0 ? a[0] : 0);
-            case "matrix" -> a.length >= 6 ? new Affine(a[0], a[1], a[2], a[3], a[4], a[5]) : Affine.IDENTITY;
-            case "skewX" -> Affine.skewX(a.length > 0 ? a[0] : 0);
-            case "skewY" -> Affine.skewY(a.length > 0 ? a[0] : 0);
-            default -> Affine.IDENTITY;
-        };
-    }
-
-    // ----- LENGTHS AND NUMBERS -----
-
-    // NO NUMBER PARSED OUT OF A DOCUMENT MAY BE NON-FINITE. THE SCANNERS BELOW ACCEPT EXPONENTS, SO
-    // "1e999" READS AS INFINITY, AND AN INFINITE COORDINATE OR STROKE WIDTH POISONS EVERYTHING
-    // DOWNSTREAM: FLATNESS TESTS BECOME FALSE-BY-NaN AND SUBDIVIDE TO FULL DEPTH, AND SCANLINE
-    // CROSSINGS BECOME 0*Infinity == NaN. THE DOCUMENT IS REJECTED INSTEAD OF RENDERED WRONG
+    // NO NUMBER PARSED OUT OF A DOCUMENT MAY BE NON-FINITE: THE SCANNERS ACCEPT EXPONENTS, SO "1e999" READS AS
+    // INFINITY, WHICH MAKES FLATNESS TESTS FALSE-BY-NaN (FULL-DEPTH SUBDIVISION) AND SCANLINE CROSSINGS NaN.
+    // THE DOCUMENT IS REJECTED INSTEAD OF RENDERED WRONG
     private static double finite(final double v) throws CodecException {
         if (!Double.isFinite(v)) throw new CodecException("Non-finite number in SVG document");
         return v;
@@ -213,11 +187,8 @@ final class SvgParser {
         }
         if (end == 0) return def;
         final double num;
-        try {
-            num = Double.parseDouble(s.substring(0, end));
-        } catch (final NumberFormatException e) {
-            return def;
-        }
+        try { num = Double.parseDouble(s.substring(0, end)); }
+        catch (final NumberFormatException e) { return def; }
         final String unit = s.substring(end).trim().toLowerCase(Locale.ROOT);
         return finite(switch (unit) {
             case "", "px" -> num;
@@ -237,11 +208,8 @@ final class SvgParser {
         final String s = v.trim();
         if (s.endsWith("%")) {
             final double pct;
-            try {
-                pct = Double.parseDouble(s.substring(0, s.length() - 1));
-            } catch (final NumberFormatException e) {
-                return def;
-            }
+            try { pct = Double.parseDouble(s.substring(0, s.length() - 1)); }
+            catch (final NumberFormatException e) { return def; }
             return finite(pct / 100.0 * ref);
         }
         return length(s, def);
@@ -295,11 +263,8 @@ final class SvgParser {
             }
             if (!digits) { i = start + 1; continue; } // SKIP A STRAY NON-NUMERIC CHARACTER
             final double num;
-            try {
-                num = Double.parseDouble(s.substring(start, i));
-            } catch (final NumberFormatException e) {
-                continue; // DROP MALFORMED TOKEN WITHOUT CONSUMING A SLOT
-            }
+            try { num = Double.parseDouble(s.substring(start, i)); }
+            catch (final NumberFormatException e) { continue; } // DROP MALFORMED TOKEN WITHOUT CONSUMING A SLOT
             if (k == out.length) out = Arrays.copyOf(out, out.length * 2);
             out[k++] = finite(num);
         }

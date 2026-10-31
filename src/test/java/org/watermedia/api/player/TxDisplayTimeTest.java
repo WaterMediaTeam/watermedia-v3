@@ -12,10 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies that a {@link TxMediaPlayer} static image without a {@link TxMediaPlayer#displayTime(long)} shows forever and
- * reports no duration; the timed case is covered by {@link TxControlContractTest}.
- */
+/** Verifies that a static image without a display time never ends and has no duration; {@link TxControlContractTest} times it. */
 @DisplayName("TxMediaPlayer static image display time")
 public class TxDisplayTimeTest {
 

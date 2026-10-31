@@ -68,7 +68,7 @@ public class AppConfigTest {
         @Test
         @DisplayName("the settings stops run from automatic through every factor")
         void stops() {
-            assertArrayEquals(new double[] {0, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3}, AppConfig.scales());
+            assertArrayEquals(new double[] { 0, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3 }, AppConfig.scales());
         }
 
         @Test

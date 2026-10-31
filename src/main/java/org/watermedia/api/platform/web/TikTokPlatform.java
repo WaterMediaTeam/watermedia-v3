@@ -29,11 +29,11 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.*;
 
+/** Resolves TikTok videos from the rehydration JSON of their page, solving the WAF proof-of-work challenge when it shows up. */
 public final class TikTokPlatform implements Platform {
-    public static final String NAME = "TikTok";
     private static final Marker IT = MarkerManager.getMarker(TikTokPlatform.class.getSimpleName());
+    public static final String NAME = "TikTok";
     private static final String TIKTOK_REFERER = "https://www.tiktok.com/";
-
     private static final Pattern VIDEO_ID_PATTERN = Pattern.compile("/video/(\\d+)");
     private static final Pattern EMBED_ID_PATTERN = Pattern.compile("/embed(?:/v2)?/(\\d+)");
     private static final Pattern UNIVERSAL_DATA_PATTERN = Pattern.compile("<script[^>]+id=\"__UNIVERSAL_DATA_FOR_REHYDRATION__\"[^>]*>\\s*(\\{.*?})\\s*</script>", Pattern.DOTALL);
@@ -61,13 +61,11 @@ public final class TikTokPlatform implements Platform {
             final String path = shortLink.getPath();
             final URI uri = path != null && path.startsWith("/t/") ? WebRequests.follow(shortLink) : shortLink;
 
-            Matcher matcher = VIDEO_ID_PATTERN.matcher(uri.toString());
-            if (!matcher.find()) matcher = EMBED_ID_PATTERN.matcher(uri.toString());
-            if (!matcher.find()) throw PlatformException.unsupported(NAME, uri);
-            final String videoId = matcher.group(1);
+            final String videoId = videoId(uri.toString());
+            if (videoId == null) throw PlatformException.unsupported(NAME, uri);
 
-            // THREAD THE CAPTURED WAF COOKIES THROUGH INSTEAD OF A STATIC FIELD — CONCURRENT RESOLUTIONS
-            // ON THE SEARCH POOL WOULD OTHERWISE STAMP EACH OTHER'S COOKIES ONTO THEIR SOURCES.
+            // THE WAF COOKIES STAY LOCAL TO THIS RESOLUTION: CONCURRENT ONES MUST NOT STAMP EACH OTHER'S COOKIES ONTO
+            // THEIR SOURCES
             String cookies = null;
             Webpage page = fetchWebpage(uri, null);
             if (page.cookies() != null) cookies = page.cookies();
@@ -93,10 +91,13 @@ public final class TikTokPlatform implements Platform {
 
     // WAF CHALLENGE SOLVER (PORTED FROM yt-dlp _solve_challenge_and_set_cookies)
     private static String solveChallenge(final String html) throws PlatformException {
-        final String csData = extractElementClass(html, "cs");
+        final String csData = elementClass(html, "cs");
         if (csData == null || csData.isEmpty()) throw new PlatformException(NAME, "Unable to extract WAF challenge data");
 
-        final JsonObject challengeData = JSONTool.parse(new String(base64Decode(csData), StandardCharsets.UTF_8), JsonObject.class);
+        // THE CHALLENGE DATA MAY CARRY WRONG OR NO BASE64 PADDING, SO THE PADDING IS REBUILT BEFORE DECODING
+        final String unpadded = csData.replaceAll("=+$", "");
+        final byte[] csBytes = Base64.getDecoder().decode(unpadded + "=".repeat((4 - unpadded.length() % 4) % 4));
+        final JsonObject challengeData = JSONTool.parse(new String(csBytes, StandardCharsets.UTF_8), JsonObject.class);
         final JsonObject v = obj(challengeData, "v");
         final String a = str(v, "a");
         final String c = str(v, "c");
@@ -114,50 +115,39 @@ public final class TikTokPlatform implements Platform {
                 final MessageDigest testDigest = (MessageDigest) baseDigest.clone();
                 testDigest.update(String.valueOf(i).getBytes(StandardCharsets.UTF_8));
                 if (MessageDigest.isEqual(testDigest.digest(), expectedDigest)) {
-                    challengeData.addProperty("d",
-                            Base64.getEncoder().encodeToString(String.valueOf(i).getBytes(StandardCharsets.UTF_8)));
+                    challengeData.addProperty("d", Base64.getEncoder().encodeToString(String.valueOf(i).getBytes(StandardCharsets.UTF_8)));
                     solved = true;
                     LOGGER.debug(IT, "TikTok WAF challenge solved at iteration {}", i);
                     break;
                 }
             }
-        } catch (final NoSuchAlgorithmException | CloneNotSupportedException e) { // SHA-256 IS MANDATED BY THE JVM SPEC
+        } catch (final NoSuchAlgorithmException | CloneNotSupportedException e) {
+            // SHA-256 IS MANDATED BY THE JVM SPEC
             throw new IllegalStateException("SHA-256 is unavailable", e);
         }
 
         if (!solved) throw new PlatformException(NAME, "Unable to solve WAF challenge");
 
-        final String cookieValue = Base64.getEncoder().encodeToString(
-                challengeData.toString().getBytes(StandardCharsets.UTF_8));
-
-        String cookieName = extractElementClass(html, "wci");
+        final String cookieValue = Base64.getEncoder().encodeToString(challengeData.toString().getBytes(StandardCharsets.UTF_8));
+        String cookieName = elementClass(html, "wci");
         if (cookieName == null || cookieName.isEmpty()) cookieName = "_wafchallengeid";
+        final StringBuilder cookies = new StringBuilder(cookieName).append('=').append(cookieValue);
 
-        final StringBuilder cookies = new StringBuilder();
-        cookies.append(cookieName).append('=').append(cookieValue);
-
-        final String rciName = extractElementClass(html, "rci");
-        final String rciValue = extractElementClass(html, "rs");
+        final String rciName = elementClass(html, "rci");
+        final String rciValue = elementClass(html, "rs");
         if (rciName != null && !rciName.isEmpty() && rciValue != null && !rciValue.isEmpty())
             cookies.append("; ").append(rciName).append('=').append(rciValue);
 
         return cookies.toString();
     }
 
-    private static String extractElementClass(final String html, final String id) {
-        final Matcher tagMatcher = Pattern.compile(
-                "<p\\s([^>]*\\bid=\"" + Pattern.quote(id) + "\"[^>]*)>"
-        ).matcher(html);
+    // THE class ATTRIBUTE OF THE <p> ELEMENT WITH THE GIVEN id, WHERE THE CHALLENGE PAGE HIDES ITS VALUES
+    private static String elementClass(final String html, final String id) {
+        final Matcher tagMatcher = Pattern.compile("<p\\s([^>]*\\bid=\"" + Pattern.quote(id) + "\"[^>]*)>").matcher(html);
         if (!tagMatcher.find()) return null;
 
         final Matcher classMatcher = Pattern.compile("\\bclass=\"([^\"]+)\"").matcher(tagMatcher.group(1));
         return classMatcher.find() ? classMatcher.group(1) : null;
-    }
-
-    private static byte[] base64Decode(final String input) {
-        final String stripped = input.replaceAll("=+$", "");
-        final int pad = (4 - stripped.length() % 4) % 4;
-        return Base64.getDecoder().decode(stripped + "=".repeat(pad));
     }
 
     // RESULT BUILDING
@@ -172,7 +162,7 @@ public final class TikTokPlatform implements Platform {
         final Instant publishedAt = createTime > 0 ? Instant.ofEpochSecond(createTime) : null;
 
         // TIKTOK REPORTS video duration IN SECONDS; Metadata IS MILLISECONDS
-        final long durationMs = Math.max(0L, intOr(video, "duration", 0)) * 1000L;
+        final long durationMs = Math.max(0L, intOr(video, "duration", 0)) * 1_000L;
 
         final URI thumbnail = findThumbnail(awemeDetail, video);
         final String author = extractAuthor(awemeDetail);
@@ -196,20 +186,15 @@ public final class TikTokPlatform implements Platform {
         if (author == null) LOGGER.warn(IT, "TikTok video '{}' has no resolvable author", videoId);
         LOGGER.debug(IT, "TikTok resolved video '{}' with {} variant(s)", videoId, variants.size());
         final Instant signed = DataTool.expiry(variants.get(0).uri());
-        return new Resolution(signed != null ? signed : Instant.now().plus(TTL),
-                new Source(MediaType.VIDEO, thumbnail, metadata,
-                        cdnHeaders(cookies), variants, null, null));
-    }
 
-    // TIKTOK CDN URLS ARE SIGNED BUT REJECT REQUESTS WITHOUT A BROWSER UA, THE ORIGINAL PAGE REFERER,
-    // AND THE WAF COOKIES CAPTURED DURING THE HTML SCRAPE. FFMPEG REPLAYS THESE ON EVERY SEGMENT FETCH.
-    private static HttpHeaders cdnHeaders(final String cookies) {
-        final HttpHeaders h = new HttpHeaders()
+        // THE SIGNED CDN URLS STILL REJECT REQUESTS WITHOUT A BROWSER UA, THE PAGE REFERER AND THE WAF COOKIES OF THE
+        // SCRAPE; FFmpeg REPLAYS THESE HEADERS ON EVERY SEGMENT FETCH
+        final HttpHeaders headers = new HttpHeaders()
                 .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
                 .set("Accept", NetRequest.ACCEPT_ANY)
                 .set("Referer", TIKTOK_REFERER);
-        if (cookies != null && !cookies.isEmpty()) h.set("Cookie", cookies);
-        return h;
+        if (cookies != null && !cookies.isEmpty()) headers.set("Cookie", cookies);
+        return new Resolution(signed != null ? signed : Instant.now().plus(TTL), new Source(MediaType.VIDEO, thumbnail, metadata, headers, variants, null, null));
     }
 
     // FORMAT PARSING: PlayAddr.Width/Height FIRST, THEN THE HEIGHT ENCODED IN UrlKey ("..._720p_..."),
@@ -298,6 +283,14 @@ public final class TikTokPlatform implements Platform {
         return null;
     }
 
+    // THE NUMERIC ID OF A /video/<id> OR /embed[/v2]/<id> LINK, OR NULL FOR ANY OTHER SHAPE
+    static String videoId(final String uri) {
+        final Matcher video = VIDEO_ID_PATTERN.matcher(uri);
+        if (video.find()) return video.group(1);
+        final Matcher embed = EMBED_ID_PATTERN.matcher(uri);
+        return embed.find() ? embed.group(1) : null;
+    }
+
     // DATA EXTRACTION: null MEANS THE PAGE CARRIED NO VIDEO DATA, WHICH IS NORMAL FOR THE FIRST FETCH OF A
     // WAF-CHALLENGED REQUEST; THE CALLER DECIDES WHETHER TO SOLVE THE CHALLENGE OR FAIL
     private JsonObject extractVideoData(final String html, final String videoId) throws PlatformException {
@@ -333,23 +326,17 @@ public final class TikTokPlatform implements Platform {
         req.send();
         try (req) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "HTTP " + req.statusCode() + " for " + uri);
-            return new Webpage(req.text(), captureCookies(req));
-        }
-    }
+            final String html = req.text();
 
-    // JOINS THE name=value PAIRS FROM EVERY Set-Cookie HEADER; RETURNS null WHEN THE RESPONSE SET NONE
-    private static String captureCookies(final NetRequest req) {
-        final List<String> setCookies = req.responseHeaders().values("Set-Cookie");
-        if (setCookies.isEmpty()) return null;
-
-        final StringBuilder sb = new StringBuilder();
-        for (final String header: setCookies) {
-            final String nameValue = header.split(";", 2)[0].trim();
-            if (nameValue.isEmpty()) continue;
-            if (!sb.isEmpty()) sb.append("; ");
-            sb.append(nameValue);
+            // THE name=value PAIRS OF EVERY Set-Cookie HEADER; null WHEN THE RESPONSE SET NONE
+            final StringBuilder setCookies = new StringBuilder();
+            for (final String header: req.responseHeaders().values("Set-Cookie")) {
+                final String nameValue = header.split(";", 2)[0].trim();
+                if (nameValue.isEmpty()) continue;
+                if (!setCookies.isEmpty()) setCookies.append("; ");
+                setCookies.append(nameValue);
+            }
+            return new Webpage(html, setCookies.isEmpty() ? null : setCookies.toString());
         }
-        if (sb.isEmpty()) return null;
-        return sb.toString();
     }
 }

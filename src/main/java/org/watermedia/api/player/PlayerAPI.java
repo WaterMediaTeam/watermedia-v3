@@ -1,17 +1,18 @@
 package org.watermedia.api.player;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMedia;
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.bootstrap.WaterMediaModule;
+
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
-import org.apache.logging.log4j.Marker;
-import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.api.codecs.CodecsAPI;
-import org.watermedia.api.util.MediaType;
-import org.watermedia.WaterMedia;
-import org.watermedia.bootstrap.WaterMediaModule;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -67,13 +68,7 @@ public final class PlayerAPI {
         return MRL.get(uri);
     }
 
-    /**
-     * Preloads multiple URIs in parallel.
-     * Useful for prefetching playlists or a bunch of well-known URLs.
-     *
-     * @param uri the media URIs
-     * @return all MRL instances created/existing, in the same order as {@code uri}
-     */
+    /** Preloads several URIs in parallel (playlists, well-known URLs) and returns their MRLs in the same order. */
     public static MRL[] preload(final URI... uri) {
         return MRL.preload(uri);
     }
@@ -83,19 +78,7 @@ public final class PlayerAPI {
         return new ServerMediaPlayer();
     }
 
-    /**
-     * Creates a media player for the FIRST MRL source, or {@code null} when no player can be built.
-     * <p>
-     * {@code null} covers two distinct situations, logged distinctly: the source isn't ready yet
-     * (MRL still {@link MRL.Status#FETCHING} — retry next tick) or a permanent failure (failed MRL,
-     * invalid index, missing backend, or a construction crash). Check {@link MRL#status()} to tell
-     * them apart. {@link Error}s always propagate.
-     *
-     * @param mrl the resolved MRL
-     * @param gfx supplier of the video sink, invoked at most once
-     * @param sfx supplier of the audio sink, invoked at most once
-     * @return the player, or {@code null} when not ready or on failure
-     */
+    /** Creates a media player for the first source of {@code mrl}, or {@code null}; see {@link #player(MRL, int, Supplier, Supplier)}. */
     public static MediaPlayer player(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
         return player(mrl, 0, gfx, sfx);
     }
@@ -121,17 +104,12 @@ public final class PlayerAPI {
         if (source == null) {
             // STILL FETCHING IS A NORMAL TRANSIENT STATE — DON'T SPAM WARNINGS FOR IT
             final MRL.Status status = mrl.status();
-            if (status == MRL.Status.FETCHING) {
-                LOGGER.debug(IT, "Source {} not ready yet (still fetching): {}", sourceIndex, mrl.uri());
-            } else {
-                LOGGER.warn(IT, "Cannot create player: source {} unavailable (status {}) for {}", sourceIndex, status, mrl.uri());
-            }
+            if (status == MRL.Status.FETCHING) LOGGER.debug(IT, "Source {} not ready yet (still fetching): {}", sourceIndex, mrl.uri());
+            else LOGGER.warn(IT, "Cannot create player: source {} unavailable (status {}) for {}", sourceIndex, status, mrl.uri());
             return null;
         }
 
-        if (source.type() == MediaType.UNKNOWN) {
-            LOGGER.warn(IT, "Creating a media player for an unknown media type: {}", source);
-        }
+        if (source.type() == MediaType.UNKNOWN) LOGGER.warn(IT, "Creating a media player for an unknown media type: {}", source);
 
         // MATERIALIZE ENGINES OUTSIDE THE PLAYER CTOR SO A THROW CAN'T LEAK GL/AL STATE ON RETRIES
         GFXEngine gfxEngine = null;
@@ -153,8 +131,10 @@ public final class PlayerAPI {
             LOGGER.error(IT, "No media backend available for: {}", mrl.uri());
             return null;
         } catch (final Exception e) { // VM AND LINKAGE ERRORS MUST PROPAGATE.
-            try { if (gfxEngine != null) gfxEngine.release(); } catch (final Exception cleanup) { LOGGER.warn(IT, "Failed to release GFX engine after construction failure", cleanup); }
-            try { if (sfxEngine != null) sfxEngine.release(); } catch (final Exception cleanup) { LOGGER.warn(IT, "Failed to release SFX engine after construction failure", cleanup); }
+            try { if (gfxEngine != null) gfxEngine.release(); }
+            catch (final Exception cleanup) { LOGGER.warn(IT, "Failed to release GFX engine after construction failure", cleanup); }
+            try { if (sfxEngine != null) sfxEngine.release(); }
+            catch (final Exception cleanup) { LOGGER.warn(IT, "Failed to release SFX engine after construction failure", cleanup); }
             LOGGER.error(IT, "Player construction failed for: {}", mrl.uri(), e);
             return null;
         }
@@ -176,10 +156,7 @@ public final class PlayerAPI {
         return new GLEngine(renderThread, renderEx);
     }
 
-    /**
-     * Creates a Vulkan video engine over the consumer's borrowed {@link VKContext}.
-     * Every object the context exposes must outlive the engine.
-     */
+    /** Creates a Vulkan video engine over the consumer's borrowed {@link VKContext}; every object it exposes must outlive the engine. */
     public static VKEngine vkEngine(final VKContext context) {
         return new VKEngine(context);
     }
@@ -196,10 +173,7 @@ public final class PlayerAPI {
         return new JFXEngine(onFrame);
     }
 
-    /**
-     * Creates an AWT/Swing software video engine; paint its {@code image()} from a component.
-     * @param onFrame hook run on the upload thread after each frame is published, or null
-     */
+    /** Creates an AWT/Swing software video engine; paint its {@code image()} from a component, {@code onFrame} (or null) runs after each frame. */
     public static AWTEngine awtEngine(final Runnable onFrame) {
         return new AWTEngine(onFrame);
     }

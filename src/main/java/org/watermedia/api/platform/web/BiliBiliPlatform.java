@@ -25,9 +25,10 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.*;
 
+/** Resolves BiliBili videos (BV ids and their parts), bangumi episodes and live rooms through the web APIs. */
 public final class BiliBiliPlatform implements Platform {
-    public static final String NAME = "BiliBili";
     private static final Marker IT = MarkerManager.getMarker(BiliBiliPlatform.class.getSimpleName());
+    public static final String NAME = "BiliBili";
     private static final String REFERER = "https://www.bilibili.com/";
     private static final String VIDEO_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid=%s";
     private static final String VIDEO_PLAYURL_API = "https://api.bilibili.com/x/player/playurl?bvid=%s&cid=%d&fnval=4048";
@@ -52,18 +53,6 @@ public final class BiliBiliPlatform implements Platform {
     // LIVE STREAM URLS ROTATE QUICKLY; CDN LINKS OF A VIDEO LAST ROUGHLY TWO HOURS
     private static final Duration LIVE_TTL = Duration.ofMinutes(10);
     private static final Duration VIDEO_TTL = Duration.ofMinutes(90);
-
-    // BILIBILI REJECTS NON-BROWSER UAS AND REQUIRES A bilibili.com REFERER; CDN URLS
-    // ADDITIONALLY NEED THE USER'S SESSION COOKIE WHEN FETCHING PREMIUM QUALITIES
-    private static HttpHeaders headers() {
-        final HttpHeaders h = new HttpHeaders()
-                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
-                .set("Accept", NetRequest.ACCEPT_ANY)
-                .set("Referer", REFERER);
-        final String c = WaterMediaConfig.platforms.biliBiliCookie;
-        if (c != null && !c.isEmpty()) h.set("Cookie", c);
-        return h;
-    }
 
     @Override
     public String name() { return NAME; }
@@ -101,7 +90,7 @@ public final class BiliBiliPlatform implements Platform {
         final JsonObject viewData = fetchJson(String.format(VIDEO_VIEW_API, bvid), "data");
         final String title = str(viewData, "title");
         // BILIBILI REPORTS VIDEO duration IN SECONDS; Metadata IS MILLISECONDS
-        final long durationMs = Math.max(0L, intOr(viewData, "duration", 0)) * 1000L;
+        final long durationMs = Math.max(0L, intOr(viewData, "duration", 0)) * 1_000L;
         final long pubdate = longOr(viewData, "pubdate", 0L);
 
         long cid = longOr(viewData, "cid", 0L);
@@ -330,9 +319,9 @@ public final class BiliBiliPlatform implements Platform {
     // STREAM OMITS ITS OWN height. THESE ARE BILIBILI'S DOCUMENTED BUCKETS, NOT MRL'S ENUM.
     private static int biliHeight(final int biliQuality) {
         return switch (biliQuality) {
-            case 127 -> 4320;            // 8K
-            case 126, 125, 120 -> 2160;  // 4K HDR / Dolby / 4K
-            case 116, 112, 80 -> 1080;   // 1080P60 / 1080P+ / 1080P
+            case 127 -> 4_320;           // 8K
+            case 126, 125, 120 -> 2_160; // 4K HDR / DOLBY / 4K
+            case 116, 112, 80 -> 1_080;  // 1080P60 / 1080P+ / 1080P
             case 74, 64 -> 720;          // 720P60 / 720P
             case 32 -> 480;
             case 16 -> 360;
@@ -341,13 +330,25 @@ public final class BiliBiliPlatform implements Platform {
         };
     }
 
+    // BILIBILI REJECTS NON-BROWSER UAS AND REQUIRES A bilibili.com REFERER; CDN URLS ADDITIONALLY NEED THE USER'S
+    // SESSION COOKIE WHEN FETCHING PREMIUM QUALITIES
+    private static HttpHeaders headers() {
+        final HttpHeaders headers = new HttpHeaders()
+                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
+                .set("Accept", NetRequest.ACCEPT_ANY)
+                .set("Referer", REFERER);
+        final String cookie = WaterMediaConfig.platforms.biliBiliCookie;
+        if (cookie != null && !cookie.isEmpty()) headers.set("Cookie", cookie);
+        return headers;
+    }
+
     // FETCH: THE BROWSER UA, REFERER AND SESSION COOKIE THE API DEMANDS; A NON-ZERO code IS AN API ERROR
     private static JsonObject fetchJson(final String api, final String dataKey) throws PlatformException {
         final NetRequest request = new NetRequest(api).accept(NetRequest.ACCEPT_JSON)
                 .userAgent(NetRequest.UserAgent.GENERIC)
                 .referer(REFERER);
-        final String c = WaterMediaConfig.platforms.biliBiliCookie;
-        if (c != null && !c.isEmpty()) request.header("Cookie", c);
+        final String cookie = WaterMediaConfig.platforms.biliBiliCookie;
+        if (cookie != null && !cookie.isEmpty()) request.header("Cookie", cookie);
 
         final JsonObject json = WebRequests.fetchJson(NAME, request, JsonObject.class);
         final int code = intOr(json, "code", 0);

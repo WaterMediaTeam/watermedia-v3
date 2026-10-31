@@ -74,8 +74,7 @@ public abstract class Element<T extends Element<T>> {
     }
 
     /** Pulls live state such as labels, progress or visibility into this view before measure. */
-    protected void onUpdate() {
-    }
+    protected void onUpdate() {}
 
     /** Resolves {@link #measuredWidth}/{@link #measuredHeight} from the size params, padding and content. */
     public final void measure(final int availWidth, final int availHeight) {
@@ -108,33 +107,27 @@ public abstract class Element<T extends Element<T>> {
     }
 
     /** Positions children within the content box. No-op for leaves. */
-    protected void onLayout() {
-    }
+    protected void onLayout() {}
 
     /** Paints decor, then content, then the border on top. Skipped when the view is hidden. */
     public final void draw(final Canvas canvas) {
         if (!this.visible) return;
-        if (this.shadowAlpha > 0f) {
+        if (this.shadowAlpha > 0f)
             canvas.shadow(this.left, this.top, this.measuredWidth, this.measuredHeight, this.radius, this.shadowAlpha);
-        }
-        if (this.glowColor != null && this.glowAlpha > 0f) {
+        if (this.glowColor != null && this.glowAlpha > 0f)
             canvas.glow(this.left, this.top, this.measuredWidth, this.measuredHeight, this.radius, this.glowColor, this.glowAlpha);
-        }
-        if (this.background != null) {
+        if (this.background != null)
             canvas.fillRound(this.left, this.top, this.measuredWidth, this.measuredHeight, this.radius, this.background);
-        }
         this.onDraw(canvas);
-        if (this.borderColor != null && this.borderWidth > 0f) {
+        if (this.borderColor != null && this.borderWidth > 0f)
             canvas.strokeRound(this.left, this.top, this.measuredWidth, this.measuredHeight, this.radius, this.borderColor, this.borderWidth);
-        }
     }
 
     /** Paints the view's own content (text, image, children). No-op for a bare view. */
-    protected void onDraw(final Canvas canvas) {
-    }
+    protected void onDraw(final Canvas canvas) {}
 
     // ==========================================================================
-    // EVENT DISPATCH — RETURN true WHEN THE EVENT IS CONSUMED
+    // EVENT DISPATCH: RETURN true WHEN THE EVENT IS CONSUMED
     // ==========================================================================
 
     public boolean dispatchClick(final double mx, final double my) {
@@ -167,27 +160,12 @@ public abstract class Element<T extends Element<T>> {
         return this.visible && this.enabled && this.contains(mx, my) && this.onPress(mx, my) ? this : null;
     }
 
-    protected boolean onPress(final double mx, final double my) {
-        return false;
-    }
-
-    public void onDrag(final double mx, final double my) {
-    }
-
-    public void onRelease(final double mx, final double my) {
-    }
-
-    public boolean dispatchScroll(final double mx, final double my, final double amount) {
-        return false;
-    }
-
-    public boolean dispatchKey(final int key, final int action) {
-        return false;
-    }
-
-    public boolean dispatchChar(final int codepoint) {
-        return false;
-    }
+    protected boolean onPress(final double mx, final double my) { return false; }
+    public void onDrag(final double mx, final double my) {}
+    public void onRelease(final double mx, final double my) {}
+    public boolean dispatchScroll(final double mx, final double my, final double amount) { return false; }
+    public boolean dispatchKey(final int key, final int action) { return false; }
+    public boolean dispatchChar(final int codepoint) { return false; }
 
     /** Returns whether this view or a descendant is a focused text input, which mutes global shortcuts. */
     public boolean textInputActive() {
@@ -195,8 +173,7 @@ public abstract class Element<T extends Element<T>> {
     }
 
     /** Blurs any focused text input in this subtree; called on the layers a consumed click missed. */
-    public void clearFocus() {
-    }
+    public void clearFocus() {}
 
     /** Returns whether the point hits this view; the half-open test gives a shared border to one view only. */
     public boolean contains(final double mx, final double my) {
@@ -219,78 +196,29 @@ public abstract class Element<T extends Element<T>> {
         this.ctx = context;
     }
 
-    // CONTENT BOX HELPERS (INSIDE PADDING) — VALID AFTER layout
-    public int innerLeft() {
-        return this.left + this.padding.left();
-    }
-
-    public int innerTop() {
-        return this.top + this.padding.top();
-    }
-
-    public int innerWidth() {
-        return Math.max(0, this.measuredWidth - this.padding.horizontal());
-    }
-
-    public int innerHeight() {
-        return Math.max(0, this.measuredHeight - this.padding.vertical());
-    }
+    // CONTENT BOX (INSIDE THE PADDING), VALID AFTER layout
+    public int innerLeft() { return this.left + this.padding.left(); }
+    public int innerTop() { return this.top + this.padding.top(); }
+    public int innerWidth() { return Math.max(0, this.measuredWidth - this.padding.horizontal()); }
+    public int innerHeight() { return Math.max(0, this.measuredHeight - this.padding.vertical()); }
 
     // ==========================================================================
     // ACCESSORS
     // ==========================================================================
 
-    public int left() {
-        return this.left;
-    }
-
-    public int top() {
-        return this.top;
-    }
-
-    public int measuredWidth() {
-        return this.measuredWidth;
-    }
-
-    public int measuredHeight() {
-        return this.measuredHeight;
-    }
-
-    public Spacing margin() {
-        return this.margin;
-    }
-
-    public float weight() {
-        return this.weight;
-    }
-
-    public Gravity gravity() {
-        return this.gravity;
-    }
-
-    public boolean visible() {
-        return this.visible;
-    }
-
-    public boolean enabled() {
-        return this.enabled;
-    }
-
-    public boolean hovered() {
-        return this.hovered;
-    }
-
-    public boolean focused() {
-        return this.focused;
-    }
-
-    public boolean selected() {
-        return this.selected;
-    }
-
-    public Object tag() {
-        return this.tag;
-    }
+    public int left() { return this.left; }
+    public int top() { return this.top; }
+    public int measuredWidth() { return this.measuredWidth; }
+    public int measuredHeight() { return this.measuredHeight; }
+    public Spacing margin() { return this.margin; }
+    public float weight() { return this.weight; }
+    public Gravity gravity() { return this.gravity; }
+    public boolean visible() { return this.visible; }
+    public boolean enabled() { return this.enabled; }
+    public boolean hovered() { return this.hovered; }
+    public boolean focused() { return this.focused; }
+    public boolean selected() { return this.selected; }
+    public Object tag() { return this.tag; }
 
     // ==========================================================================
     // FLUENT SETTERS

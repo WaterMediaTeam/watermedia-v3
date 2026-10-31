@@ -23,12 +23,10 @@ public record ImageDescriptor(
     /** Rejects negative offsets, empty dimensions and palette-size codes outside the three-bit range. */
     public void validate() throws CodecException {
         // A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException, SO read() CALLS THIS AT THE PARSE BOUNDARY
-        if (this.left < 0 || this.top < 0 || this.width <= 0 || this.height <= 0) {
+        if (this.left < 0 || this.top < 0 || this.width <= 0 || this.height <= 0)
             throw new CodecException("Invalid dimensions for ImageDescriptor");
-        }
-        if (this.localColorTableSize < 0 || this.localColorTableSize >= LOCAL_COLOR_TABLE_SIZE_CODES) {
+        if (this.localColorTableSize < 0 || this.localColorTableSize >= LOCAL_COLOR_TABLE_SIZE_CODES)
             throw new CodecException("Local color table size must be between 0 and " + (LOCAL_COLOR_TABLE_SIZE_CODES - 1));
-        }
     }
 
     /** Reads and validates the {@value #LENGTH}-byte descriptor after the image separator at the buffer position, advancing past it. */

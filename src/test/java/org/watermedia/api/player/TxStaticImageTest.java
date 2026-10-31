@@ -11,10 +11,7 @@ import org.watermedia.test.support.PlayerWait;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the {@link TxMediaPlayer} static-image path end to end on an SVG: the source loads through its reader,
- * uploads one frame, and the player's release frees the graphics engine.
- */
+/** Verifies the {@link TxMediaPlayer} static-image path end to end on an SVG: load, a single upload and the engine release. */
 @DisplayName("TxMediaPlayer static image")
 public class TxStaticImageTest {
 

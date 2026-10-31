@@ -14,7 +14,6 @@ import java.net.URI;
  * @param uri  direct URL to the track stream/file, never null
  */
 public record Track(String name, String lang, URI uri) {
-
     public Track {
         if (uri == null) throw new IllegalArgumentException("Track requires a URI");
     }

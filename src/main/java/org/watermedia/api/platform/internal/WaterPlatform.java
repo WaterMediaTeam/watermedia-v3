@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 
+/** Platform of the {@code water://} scheme: local files resolved against the working directory, the configured remote file server and the global server. */
 public final class WaterPlatform implements Platform {
     public static final String NAME = "WaterMedia Internal";
     public static final String HOST_LOCAL = "local";
@@ -32,7 +33,8 @@ public final class WaterPlatform implements Platform {
         final URI resolved;
         try {
             resolved = new URI(location(uri));
-        } catch (final URISyntaxException | IllegalStateException | IllegalArgumentException e) { // A BAD remoteUrl OR A REJECTED PATH
+        } catch (final URISyntaxException | IllegalStateException | IllegalArgumentException e) {
+            // A BAD remoteUrl OR A REJECTED PATH
             throw new PlatformException(NAME, "Cannot resolve " + uri + " (" + e.getMessage() + ")", e);
         }
         // THE REFERER FOLLOWS THE RESOLVED ORIGIN; NO SERVER KNOWS THE water:// ADDRESS
@@ -46,6 +48,7 @@ public final class WaterPlatform implements Platform {
      * address to its file or HTTP URL. Local paths are resolved against {@link WaterMedia#cwd()} with the
      * same reach as a {@code file://} address, so a parent segment leaves that directory; remote and global
      * paths keep their raw encoding, so a space or a percent sign survives the hop.
+     *
      * @param u water address to resolve
      * @return the resolved URL text
      * @throws PlatformException if the address has no supported host

@@ -6,27 +6,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Curve-level vector path: an ordered list of {@code move / line / quad / cubic / close}
- * segments in user space. Curves are flattened to device-space polylines on demand by
- * {@link #flatten(Affine, double)}, so subdivision happens after the current transform is
- * applied and the flatness tolerance is honoured in output pixels regardless of scale.
- *
- * <p>Elliptical arcs are not stored directly — callers convert them to cubic segments before
- * appending (see {@link PathParser}). Basic shapes ({@code rect}, {@code circle}, {@code ellipse},
- * polylines) build themselves here through cubic approximations.
- *
- * <p>Both the stored segment list and the flattened output are hard-budgeted, and no non-finite
- * coordinate is ever accepted: an entity-expanded {@code d=""} can otherwise carry millions of
- * segments, and a single degenerate curve can subdivide to {@code 2^MAX_FLATTEN_DEPTH} points.
+ * User-space vector path of move/line/quad/cubic/close segments (arcs and basic shapes arrive as cubics), flattened
+ * on demand into device-space polylines so the flatness tolerance holds in output pixels at any scale. Segments and
+ * flattened points are hard-budgeted and no non-finite coordinate is accepted: hostile {@code d=""} data is bounded.
  */
 final class Path {
-    // SEGMENT OPCODES AND THEIR COORDINATE COUNTS
+    // SEGMENT OPCODES
     private static final byte MOVE = 0, LINE = 1, QUAD = 2, CUBIC = 3, CLOSE = 4;
 
     // CONTROL-POINT OFFSET FOR A CUBIC APPROXIMATION OF A QUARTER ELLIPSE ARC
     private static final double KAPPA = 0.5522847498307936;
 
-    private static final int MAX_FLATTEN_DEPTH = 18;
+    private static final int MAX_FLATTEN_DEPTH = 18; // A DEGENERATE CURVE SUBDIVIDES TO AT MOST 2^18 POINTS
 
     // SEGMENT BUDGET (COORDINATES FOLLOW: AT MOST 6 PER COMMAND) AND FLATTENED-POINT BUDGET. A STROKE
     // OUTLINE ADDS ~5 COMMANDS PER SOURCE VERTEX PLUS A DISC PER SHARP JOIN, SO IT IS BUDGETED TOO
@@ -52,8 +43,9 @@ final class Path {
 
     boolean isEmpty() { return this.cmdN == 0; }
 
-    // ----- BASIC SHAPE BUILDERS (CUBIC APPROXIMATION FOR ROUND PARTS) -----
-
+    // ==========================================================================
+    // BASIC SHAPE BUILDERS (CUBIC APPROXIMATION FOR ROUND PARTS)
+    // ==========================================================================
     void rect(final double x, final double y, final double w, final double h, final double rx, final double ry) throws CodecException {
         if (rx <= 0 || ry <= 0) {
             this.moveTo(x, y);
@@ -97,9 +89,7 @@ final class Path {
         if (closed) this.close();
     }
 
-    // ----- BOUNDS (CONTROL-POINT BOX IN USER SPACE; SUPERSET FOR CURVES) -----
-
-    // RETURNS {minX, minY, maxX, maxY} OR null WHEN EMPTY
+    // CONTROL-POINT BOX IN USER SPACE (A SUPERSET FOR CURVES) AS {minX, minY, maxX, maxY}, OR null WHEN EMPTY
     double[] userBounds() {
         if (this.coordN == 0) return null;
         double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY;
@@ -114,18 +104,14 @@ final class Path {
         return new double[] { minX, minY, maxX, maxY };
     }
 
-    // ----- FLATTENING TO DEVICE-SPACE POLYLINES -----
-
+    // ==========================================================================
+    // FLATTENING TO DEVICE-SPACE POLYLINES
+    // ==========================================================================
     // ONE FLATTENED DEVICE-SPACE SUBPATH: THE [x0,y0,x1,y1,...] POINTS AND WHETHER IT WAS CLOSED
     record Subpath(double[] pts, boolean closed) {}
 
-    // FLATTENED DEVICE-SPACE OUTPUT: THE SUBPATHS OF A SINGLE PATH
-    static final class Polys {
-        final List<Subpath> subpaths = new ArrayList<>();
-    }
-
-    Polys flatten(final Affine m, final double tol) throws CodecException {
-        final Polys out = new Polys();
+    List<Subpath> flatten(final Affine m, final double tol) throws CodecException {
+        final List<Subpath> out = new ArrayList<>();
         final Builder b = new Builder(out, m, tol * tol);
         int ci = 0;
         for (int k = 0; k < this.cmdN; k++) {
@@ -143,7 +129,7 @@ final class Path {
 
     // ACCUMULATES DEVICE-SPACE VERTICES, SUBDIVIDING CURVES UNTIL FLAT WITHIN tolSq
     private static final class Builder {
-        private final Polys out;
+        private final List<Subpath> out;
         private final Affine m;
         private final double tolSq;
         private double[] buf = new double[64];
@@ -151,7 +137,7 @@ final class Path {
         private double curX, curY, startX, startY;
         private boolean pendingClose;
 
-        Builder(final Polys out, final Affine m, final double tolSq) {
+        Builder(final List<Subpath> out, final Affine m, final double tolSq) {
             this.out = out; this.m = m; this.tolSq = tolSq;
         }
 
@@ -202,9 +188,12 @@ final class Path {
             if (this.n == 0) this.add(this.curX, this.curY);
         }
 
+        // FLATNESS IS THE SQUARED DISTANCE OF EACH CONTROL POINT FROM THE CHORD. THE TESTS ARE NEGATED SO A NaN
+        // DISTANCE COUNTS AS FLAT AND STOPS THE RECURSION; THE POSITIVE FORM WOULD SUBDIVIDE EVERY NaN CURVE TO
+        // FULL DEPTH, 2^18 POINTS PER SEGMENT (cairo CVE-2019-6461)
         private void quad(final double x0, final double y0, final double cx, final double cy,
                           final double x1, final double y1, final int depth) throws CodecException {
-            if (depth >= MAX_FLATTEN_DEPTH || quadFlat(x0, y0, cx, cy, x1, y1, this.tolSq)) {
+            if (depth >= MAX_FLATTEN_DEPTH || !(distSqToLine(cx, cy, x0, y0, x1, y1) > this.tolSq)) {
                 this.add(x1, y1);
                 return;
             }
@@ -217,7 +206,8 @@ final class Path {
 
         private void cubic(final double x0, final double y0, final double c1x, final double c1y,
                            final double c2x, final double c2y, final double x1, final double y1, final int depth) throws CodecException {
-            if (depth >= MAX_FLATTEN_DEPTH || cubicFlat(x0, y0, c1x, c1y, c2x, c2y, x1, y1, this.tolSq)) {
+            if (depth >= MAX_FLATTEN_DEPTH || (!(distSqToLine(c1x, c1y, x0, y0, x1, y1) > this.tolSq)
+                    && !(distSqToLine(c2x, c2y, x0, y0, x1, y1) > this.tolSq))) {
                 this.add(x1, y1);
                 return;
             }
@@ -234,9 +224,7 @@ final class Path {
         private void add(final double x, final double y) throws CodecException {
             // BUDGET THE WHOLE FLATTEN, NOT THE CURRENT SUBPATH: FLUSHED SUBPATHS STAY RETAINED IN out,
             // AND A STROKE OUTLINE IS ONE SUBPATH PER SEGMENT QUAD PLUS ONE PER JOIN DISC
-            if (this.total == MAX_POINTS) {
-                throw new CodecException("SVG path exceeds " + MAX_POINTS + " flattened points");
-            }
+            if (this.total == MAX_POINTS) throw new CodecException("SVG path exceeds " + MAX_POINTS + " flattened points");
             this.total++;
             if (this.n + 2 > this.buf.length) {
                 final double[] grown = new double[this.buf.length * 2];
@@ -251,25 +239,11 @@ final class Path {
             if (this.n >= 4) {
                 final double[] line = new double[this.n];
                 System.arraycopy(this.buf, 0, line, 0, this.n);
-                this.out.subpaths.add(new Subpath(line, this.pendingClose));
+                this.out.add(new Subpath(line, this.pendingClose));
             }
             this.n = 0;
             this.pendingClose = false;
         }
-    }
-
-    // FLATNESS: SQUARED DISTANCE OF THE CONTROL POINT FROM THE CHORD. THE TEST IS NEGATED SO THAT A NaN
-    // DISTANCE COUNTS AS FLAT AND STOPS THE RECURSION: WITH THE POSITIVE FORM (d <= tolSq) A NaN READS
-    // AS "NOT FLAT" AND EVERY CURVE SUBDIVIDES TO FULL DEPTH — 2^18 POINTS PER SEGMENT (cairo CVE-2019-6461)
-    private static boolean quadFlat(final double x0, final double y0, final double cx, final double cy,
-                                    final double x1, final double y1, final double tolSq) {
-        return !(distSqToLine(cx, cy, x0, y0, x1, y1) > tolSq);
-    }
-
-    private static boolean cubicFlat(final double x0, final double y0, final double c1x, final double c1y,
-                                     final double c2x, final double c2y, final double x1, final double y1, final double tolSq) {
-        return !(distSqToLine(c1x, c1y, x0, y0, x1, y1) > tolSq)
-                && !(distSqToLine(c2x, c2y, x0, y0, x1, y1) > tolSq);
     }
 
     private static double distSqToLine(final double px, final double py,
@@ -287,9 +261,7 @@ final class Path {
     private void pushCmd(final byte c) throws CodecException {
         // ONE BUDGET COVERS BOTH ARRAYS: EVERY COORDINATE PAIR BELONGS TO A COMMAND, AND NO COMMAND
         // CARRIES MORE THAN THREE OF THEM, SO coordN CAN NEVER EXCEED 6 * MAX_SEGMENTS
-        if (this.cmdN == MAX_SEGMENTS) {
-            throw new CodecException("SVG path exceeds " + MAX_SEGMENTS + " segments");
-        }
+        if (this.cmdN == MAX_SEGMENTS) throw new CodecException("SVG path exceeds " + MAX_SEGMENTS + " segments");
         if (this.cmdN == this.cmd.length) {
             final byte[] grown = new byte[this.cmd.length * 2];
             System.arraycopy(this.cmd, 0, grown, 0, this.cmdN);
@@ -301,9 +273,7 @@ final class Path {
     private void pushCoord(final double x, final double y) throws CodecException {
         // SINGLE CHOKE POINT FOR THE "NO NON-FINITE GEOMETRY" INVARIANT — THE PATH PARSER, THE SHAPE
         // BUILDERS AND THE GENERATED STROKE OUTLINE ALL FUNNEL THROUGH HERE
-        if (!Double.isFinite(x) || !Double.isFinite(y)) {
-            throw new CodecException("Non-finite path coordinate");
-        }
+        if (!Double.isFinite(x) || !Double.isFinite(y)) throw new CodecException("Non-finite path coordinate");
         if (this.coordN + 2 > this.coord.length) {
             final double[] grown = new double[this.coord.length * 2];
             System.arraycopy(this.coord, 0, grown, 0, this.coordN);

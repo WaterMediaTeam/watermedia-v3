@@ -30,7 +30,6 @@ import static org.lwjgl.glfw.GLFW.*;
  * which owns scrolling, hit-testing and selection.
  */
 public final class RegionSelectorScreen extends Screen {
-
     private static final int ROW_H = 54;
     private static final int ROW_GAP = 8;
     // CONSTANT SO THE PER-FRAME keybinds() POLL OF KeybindsBar ALLOCATES NOTHING
@@ -75,7 +74,9 @@ public final class RegionSelectorScreen extends Screen {
     public void onEnter() {
         super.onEnter();
         this.rebuildRegions();
-        this.populate();
+        final List<Integer> options = new ArrayList<>();
+        for (int i = 0; i < this.optionCount(); i++) options.add(i);
+        this.list.items(options);
         this.list.selection(0);
     }
 
@@ -107,12 +108,6 @@ public final class RegionSelectorScreen extends Screen {
         return true;
     }
 
-    private void populate() {
-        final List<Integer> options = new ArrayList<>();
-        for (int i = 0; i < this.optionCount(); i++) options.add(i);
-        this.list.items(options);
-    }
-
     private void rebuildRegions() {
         this.regions.clear();
         this.counts.clear();
@@ -137,9 +132,7 @@ public final class RegionSelectorScreen extends Screen {
         final List<MediaCatalog.IptvChannel> channels = new ArrayList<>();
         for (final MediaCatalog.IptvChannel channel: this.ctx.catalog.iptvChannels) {
             if (channel == null || blank(channel.url())) continue;
-            if (region == null || region.equalsIgnoreCase(cleanRegion(channel.region()))) {
-                channels.add(channel);
-            }
+            if (region == null || region.equalsIgnoreCase(cleanRegion(channel.region()))) channels.add(channel);
         }
         if (channels.isEmpty()) {
             this.ctx.showError("No Channels", "No IPTV channels were found for the selected region.", null);
@@ -190,14 +183,11 @@ public final class RegionSelectorScreen extends Screen {
     }
 
     private String channelName(final MediaCatalog.IptvChannel channel, final Set<String> used) {
-        String base = blank(channel.name()) ? blank(channel.tvgId()) ? channel.url() : channel.tvgId() : channel.name();
-        base = base.trim();
+        final String base = (blank(channel.name()) ? blank(channel.tvgId()) ? channel.url() : channel.tvgId() : channel.name()).trim();
         String name = base;
         if (used.contains(name) && !blank(channel.group())) name = base + " - " + channel.group().trim();
         int copy = 2;
-        while (!used.add(name)) {
-            name = base + " #" + copy++;
-        }
+        while (!used.add(name)) name = base + " #" + copy++;
         return name;
     }
 
@@ -211,7 +201,6 @@ public final class RegionSelectorScreen extends Screen {
 
     // CENTERED PANEL FRAMING THE REGION LIST UNDER ITS SECTION HEAD
     private final class PanelPane extends Group<PanelPane> {
-
         private int panelX;
         private int panelY;
         private int panelW;

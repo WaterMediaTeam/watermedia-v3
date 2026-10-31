@@ -17,12 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-/**
- * Verifies the {@link FFMediaPlayer} decode pipeline and upload scaling, driving a local H.264 MP4 through a
- * {@link HeadlessGFXEngine} (video only, no OpenAL). Without the FFmpeg natives the tests are skipped, unless the run
- * requires them ({@code -Prequire_natives=true}), where {@link MediaBootstrap} fails instead. Scaling is resolved per
- * frame, so {@code scale}/{@code lod} are asserted through the dimensions the engine ends up configured with.
- */
+/** Verifies the {@link FFMediaPlayer} decode pipeline and upload scaling on a local H.264 MP4, video only through a {@link HeadlessGFXEngine}. */
 @DisplayName("FFMediaPlayer mp4")
 public class FFMediaPlayerTest {
 
@@ -48,12 +43,8 @@ public class FFMediaPlayerTest {
                 assertTrue(player.canPlay());
                 assertTrue(player.sourceWidth() > 0);
                 assertTrue(player.sourceHeight() > 0);
-
-                // NO SCALING REQUESTED — THE UPLOAD MATCHES THE NATIVE SOURCE
                 assertEquals(player.sourceWidth(), player.width());
                 assertEquals(player.sourceHeight(), player.height());
-
-                // FRAMES MUST ACTUALLY FLOW TO THE ENGINE
                 assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, PLAY_OBSERVE_MS));
                 assertNotNull(gfx.format());
             } finally {
@@ -105,7 +96,7 @@ public class FFMediaPlayerTest {
                 final int fullWidth = player.width();
                 assertEquals(player.sourceWidth(), fullWidth);
 
-                // CHANGE LOD MID-PLAYBACK — THE NEXT DECODED FRAME RESOLVES THE NEW TARGET
+                // THE NEXT DECODED FRAME RESOLVES THE NEW TARGET
                 player.lod(LodLevel.FAR_AWAY);
                 assertTrue(PlayerWait.awaitCondition(() -> player.width() < fullWidth, PLAY_OBSERVE_MS),
                         "upload width should shrink after a hot LOD change");

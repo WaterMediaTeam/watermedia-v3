@@ -14,4 +14,4 @@ rootProject.name = 'watermedia'
 include 'modloaders'
 
 // WATERMEDIA COMPILES THE SHARED SOURCES ONCE; EACH BUILD PACKAGES ITS OWN CLASSES.
-includeBuild("binaries")
+includeBuild('binaries')

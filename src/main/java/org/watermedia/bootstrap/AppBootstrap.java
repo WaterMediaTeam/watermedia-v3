@@ -45,7 +45,7 @@ public final class AppBootstrap {
     public static final String ENGINE_PROP = "watermedia.engine";
     private static final String APP_FLAG = "watermedia.app";
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
-    private static final long MAX_DOWNLOAD_BYTES = 256L * 1024 * 1024; // NO PINNED LIBRARY COMES CLOSE
+    private static final long MAX_DOWNLOAD_BYTES = 256L * 1_024 * 1_024; // NO PINNED LIBRARY COMES CLOSE
     // SHARED BY EVERY USER ON LINUX (/tmp): PINS REJECT PLANTED JARS, BUT THE FOLDER OWNER COULD SWAP A VERIFIED JAR
     // BEFORE THE CHILD JVM OPENS IT; A PER-USER CACHE DIRECTORY WOULD CLOSE THAT WINDOW
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs");
@@ -86,7 +86,7 @@ public final class AppBootstrap {
                 if (GraphicsEnvironment.isHeadless()) System.exit(1);
                 try {
                     bootstrap.window().error(failure);
-                    // A FAILED APP MAY HAVE PARTIALLY INITIALIZED NATIVES; RETRY IN A FRESH JVM.
+                    // A FAILED APP MAY HAVE PARTIALLY INITIALIZED NATIVES; RETRY IN A FRESH JVM
                     if (application) System.exit(RELAUNCH_EXIT);
                 } catch (final Exception displayFailure) {
                     displayFailure.printStackTrace();
@@ -130,18 +130,18 @@ public final class AppBootstrap {
         final String lwjgl = version(versions, "lwjgl");
         final List<Dependency> dependencies = new ArrayList<>();
         for (final String artifact: List.of("log4j-api", "log4j-core"))
-            dependencies.add(new Dependency(MAVEN, "org/apache/logging/log4j", artifact, version(versions, "log4j"), null, false));
-        dependencies.add(new Dependency(MAVEN, "com/google/code/gson", "gson", version(versions, "gson"), null, false));
-        dependencies.add(new Dependency(MAVEN, "org/joml", "joml", version(versions, "joml"), null, false));
+            dependencies.add(new Dependency("org/apache/logging/log4j", artifact, version(versions, "log4j"), null, false));
+        dependencies.add(new Dependency("com/google/code/gson", "gson", version(versions, "gson"), null, false));
+        dependencies.add(new Dependency("org/joml", "joml", version(versions, "joml"), null, false));
         for (final String artifact: List.of("lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal")) {
-            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, null, false));
-            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, natives, false));
+            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, null, false));
+            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, natives, false));
         }
-        // KEEP VULKAN AVAILABLE FOR RUNTIME ENGINE SWITCHES, EVEN WHEN STARTING WITH OPENGL.
+        // KEEP VULKAN AVAILABLE FOR RUNTIME ENGINE SWITCHES, EVEN WHEN STARTING WITH OPENGL
         for (final String artifact: List.of("lwjgl-vulkan", "lwjgl-shaderc")) {
-            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, null, true));
+            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, null, true));
             if (artifact.equals("lwjgl-shaderc") || platform.startsWith("macos"))
-                dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, natives, true));
+                dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, natives, true));
         }
         return dependencies;
     }
@@ -153,19 +153,19 @@ public final class AppBootstrap {
         return value;
     }
 
-    private record Dependency(String repository, String group, String artifact, String version, String classifier, boolean optional) {
+    private record Dependency(String group, String artifact, String version, String classifier, boolean optional) {
         String name() {
             return this.artifact + "-" + this.version + (this.classifier == null ? "" : "-" + this.classifier) + ".jar";
         }
 
         URI source() {
-            return URI.create(this.repository + this.group + "/" + this.artifact + "/" + this.version + "/" + this.name());
+            return URI.create(MAVEN + this.group + "/" + this.artifact + "/" + this.version + "/" + this.name());
         }
     }
 
     private Set<Path> prepare() throws Exception {
         final Set<Path> jars = new LinkedHashSet<>();
-        // OUR RESOURCES MUST WIN OVER IDENTICALLY NAMED RESOURCES IN EXTENSION JARS.
+        // OUR RESOURCES MUST WIN OVER IDENTICALLY NAMED RESOURCES IN EXTENSION JARS
         jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
         Files.createDirectories(LIBS_DIR);
         final Properties versions = versions();
@@ -179,7 +179,7 @@ public final class AppBootstrap {
             final Path jar = LIBS_DIR.resolve(dependency.name());
             final String sha256 = versions.getProperty(dependency.name());
             if (sha256 == null) throw new IOException("Missing SHA-256 pin for " + dependency.name());
-            // THE SHARED CACHE IS UNTRUSTED: A JAR JOINS THE CLASSPATH ONLY WHILE IT MATCHES ITS BUILD PIN.
+            // THE SHARED CACHE IS UNTRUSTED: A JAR JOINS THE CLASSPATH ONLY WHILE IT MATCHES ITS BUILD PIN
             if (!Files.isRegularFile(jar, LinkOption.NOFOLLOW_LINKS) || !IOTool.sha256(jar).equals(sha256)) {
                 if (!GraphicsEnvironment.isHeadless()) this.window();
                 this.log((Files.exists(jar, LinkOption.NOFOLLOW_LINKS) ? "Replacing unverified " : "Downloading ") + dependency.name());
@@ -214,7 +214,7 @@ public final class AppBootstrap {
     private static Path extract(final String resource, final Path directory) throws IOException {
         try (final InputStream input = AppBootstrap.class.getResourceAsStream(resource)) {
             if (input == null) throw new IOException("Missing bundled library: " + resource);
-            // EACH LAUNCH OWNS ITS FILE UNTIL THE CHILD JVM EXITS, INCLUDING ON WINDOWS.
+            // EACH LAUNCH OWNS ITS FILE UNTIL THE CHILD JVM EXITS, INCLUDING ON WINDOWS
             final String name = resource.substring(resource.lastIndexOf('/') + 1);
             final Path jar = Files.createTempFile(directory, name + ".", ".jar");
             jar.toFile().deleteOnExit();
@@ -241,7 +241,7 @@ public final class AppBootstrap {
         // ANNOUNCED LENGTH OR THE CAP. THIS RUNS BEFORE LOG4J AND GSON EXIST, SO IT CANNOT USE NetRequest
         if (total > MAX_DOWNLOAD_BYTES) throw new IOException(name + " announces " + total + " bytes, above the " + MAX_DOWNLOAD_BYTES + "-byte cap");
         final long limit = total >= 0 ? total : MAX_DOWNLOAD_BYTES;
-        // UNIQUE PARTIAL FILES PREVENT CONCURRENT LAUNCHERS FROM OVERWRITING EACH OTHER'S TRANSFERS.
+        // UNIQUE PARTIAL FILES PREVENT CONCURRENT LAUNCHERS FROM OVERWRITING EACH OTHER'S TRANSFERS
         final Path partial = Files.createTempFile(destination.getParent(), name + ".", ".part");
         long received = 0;
         try {
@@ -278,11 +278,9 @@ public final class AppBootstrap {
         jars.forEach(jar -> classpath.add(jar.toAbsolutePath().toString()));
         classpath.addAll(Arrays.asList(System.getProperty("java.class.path", "").split(File.pathSeparator)));
         for (ClassLoader loader = Thread.currentThread().getContextClassLoader(); loader != null; loader = loader.getParent()) {
-            if (loader instanceof final URLClassLoader urls) {
-                for (final URL url: urls.getURLs()) {
-                    if (url.getProtocol().equals("file")) classpath.add(Path.of(url.toURI()).toString());
-                }
-            }
+            if (!(loader instanceof final URLClassLoader urls)) continue;
+            for (final URL url: urls.getURLs())
+                if (url.getProtocol().equals("file")) classpath.add(Path.of(url.toURI()).toString());
         }
         // THE APP LOADS THE LWJGL AND FFMPEG NATIVES FROM THE CLASSPATH AND LWJGL READS MEMORY THROUGH sun.misc.Unsafe;
         // JAVA 24+ WARNS ON BOTH WITHOUT THESE FLAGS, AND THE UNSAFE ONE DOES NOT EXIST BEFORE JAVA 23
@@ -308,7 +306,7 @@ public final class AppBootstrap {
         }
     }
 
-    // ALL COMPONENT ACCESS RUNS ON THE EDT; DOWNLOADS AND CHILD PROCESS WAITS STAY ON THE MAIN THREAD.
+    // ALL COMPONENT ACCESS RUNS ON THE EDT; DOWNLOADS AND CHILD PROCESS WAITS STAY ON THE MAIN THREAD
     private static final class BootstrapWindow extends JFrame {
         private final JTextArea details = new JTextArea();
         private final JProgressBar progress = new JProgressBar();

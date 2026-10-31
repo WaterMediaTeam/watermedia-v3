@@ -59,14 +59,15 @@ public record ImageData(ByteBuffer[] frames, PixelFormat format, int width, int 
         if (repeat < REPEAT_FOREVER) throw new IllegalArgumentException("Repeat must be REPEAT_FOREVER (0) or the number of plays");
     }
 
+    /** Creates image data whose single-cycle duration is the sum of {@code delays}. */
+    public ImageData(final ByteBuffer[] frames, final PixelFormat format, final int width, final int height, final long[] delays, final int repeat) {
+        this(frames, format, width, height, delays, sum(delays), repeat);
+    }
+
     /** Per-frame delays in milliseconds, as a copy the caller owns. */
     @Override
     public long[] delays() {
         return this.delays.clone();
-    }
-
-    public ImageData(final ByteBuffer[] frames, final PixelFormat format, final int width, final int height, final long[] delays, final int repeat) {
-        this(frames, format, width, height, delays, sum(delays), repeat);
     }
 
     @Override

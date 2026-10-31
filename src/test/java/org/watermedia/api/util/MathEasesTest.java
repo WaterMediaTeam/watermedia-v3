@@ -14,7 +14,7 @@ public class MathEasesTest {
     private static final double EPSILON = 1.0e-3;
 
     @Nested
-    @DisplayName("boundaries")
+    @DisplayName("Boundaries")
     class BoundaryTests {
 
         @Test
@@ -40,7 +40,7 @@ public class MathEasesTest {
     }
 
     @Nested
-    @DisplayName("shapes")
+    @DisplayName("Shapes")
     class ShapeTests {
 
         @Test

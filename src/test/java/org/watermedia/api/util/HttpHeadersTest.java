@@ -12,8 +12,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the multi-valued, case-insensitive contract of {@link HttpHeaders}
@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public class HttpHeadersTest {
 
     @Nested
-    @DisplayName("validation")
+    @DisplayName("Validation")
     class ValidationTests {
 
         @Test
@@ -43,7 +43,7 @@ public class HttpHeadersTest {
     }
 
     @Nested
-    @DisplayName("mutation operations")
+    @DisplayName("Mutation operations")
     class MutationTests {
 
         @Test
@@ -115,7 +115,7 @@ public class HttpHeadersTest {
     }
 
     @Nested
-    @DisplayName("iteration and rendering")
+    @DisplayName("Iteration and rendering")
     class RenderTests {
 
         @Test

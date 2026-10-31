@@ -22,7 +22,6 @@ import java.util.function.Supplier;
  * on the right. It pulls the keybinds from its supplier every update and appends the global CRT chip itself.
  */
 final class KeybindsBar extends Group<KeybindsBar> {
-
     /** Fixed footer height in pixels. */
     public static final int H = 44;
 
@@ -48,7 +47,7 @@ final class KeybindsBar extends Group<KeybindsBar> {
                     return this.ctx != null && this.ctx.backendsLoading ? StatusSquare.Status.PENDING : StatusSquare.Status.ERROR;
                 });
         // RENDER ENGINES REFLECT THE ACTIVE BACKEND: OK = ACTIVE, OFF = AVAILABLE BUT INACTIVE (DIM),
-        // ERROR+STRIKE = UNSUPPORTED. OPENGL IS ALWAYS AVAILABLE; VULKAN DEPENDS ON THE LOADER/DEVICE.
+        // ERROR+STRIKE = UNSUPPORTED; OPENGL IS ALWAYS AVAILABLE, VULKAN DEPENDS ON THE LOADER/DEVICE
         final StatusText opengl = new StatusText("OpenGL")
                 .status(() -> RenderSystem.vulkanActive() ? StatusSquare.Status.OFF : StatusSquare.Status.OK);
         final StatusText vulkan = new StatusText("Vulkan")
@@ -97,11 +96,10 @@ final class KeybindsBar extends Group<KeybindsBar> {
         this.applied = list;
         this.binds.clear();
         for (final Keybind bind: list) {
-            if (!bind.key().isEmpty()) {
+            if (!bind.key().isEmpty())
                 this.binds.add(new KeyChip(bind.key())
                         .icon(KeyChip.keyIcon(bind.key()))
                         .margin(new Spacing(0, 6, 0, 0)));
-            }
             this.binds.add(new Text(bind.label())
                     .scale(AppTheme.TEXT_BODY)
                     .color(AppTheme.TEXT_FAINT)

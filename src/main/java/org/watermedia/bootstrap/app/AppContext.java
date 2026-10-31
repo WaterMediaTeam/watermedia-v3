@@ -15,12 +15,11 @@ import static org.lwjgl.glfw.GLFW.glfwPostEmptyEvent;
  * the catalog, the media session and the click sound hang from it.
  */
 public final class AppContext implements Executor {
-
     public static final String APP_NAME = "WATERMeDIA: Multimedia API";
     public static final long CRT_STEP_MS = 24L; // THE CRT BAND MOVES 1 px PER STEP
 
     // WINDOW STATE
-    public int windowWidth = 1280;
+    public int windowWidth = 1_280;
     public int windowHeight = 720;
     public long windowHandle;
     public boolean windowMaximized;

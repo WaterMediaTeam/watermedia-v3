@@ -1,7 +1,5 @@
 package org.watermedia.bootstrap.app.screen;
 
-import org.lwjgl.PointerBuffer;
-import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.system.MemoryStack;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
@@ -15,11 +13,7 @@ import org.watermedia.bootstrap.app.ui.AppTheme;
 import java.awt.Color;
 import java.nio.IntBuffer;
 
-import static org.lwjgl.glfw.GLFW.glfwGetMonitorPos;
 import static org.lwjgl.glfw.GLFW.glfwGetMonitorWorkarea;
-import static org.lwjgl.glfw.GLFW.glfwGetMonitors;
-import static org.lwjgl.glfw.GLFW.glfwGetPrimaryMonitor;
-import static org.lwjgl.glfw.GLFW.glfwGetVideoMode;
 import static org.lwjgl.glfw.GLFW.glfwGetWindowPos;
 import static org.lwjgl.glfw.GLFW.glfwGetWindowSize;
 import static org.lwjgl.glfw.GLFW.glfwIconifyWindow;
@@ -33,7 +27,6 @@ import static org.lwjgl.system.MemoryStack.stackPush;
  * native caption space ({@link WinFrame}); elsewhere it moves the window through GLFW with top-edge snap-assist.
  */
 public final class TitleBar extends Element<TitleBar> {
-
     /** Fixed titlebar height in logical pixels. */
     public static final int H = 28;
     /** Width of one window button in logical pixels; the button zone spans three of these. */
@@ -92,9 +85,7 @@ public final class TitleBar extends Element<TitleBar> {
                 AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 1f);
         canvas.lineH(x, y + H - 1, w, AppTheme.STROKE_BRIGHT, 1f);
         // THE ICON TEXTURE ID IS READ EVERY DRAW BECAUSE IT CHANGES ACROSS RELOADS
-        if (this.ctx.assets.iconId > 0) {
-            canvas.image(this.ctx.assets.iconId, x + 8, y + 6, 16, 16, null);
-        }
+        if (this.ctx.assets.iconId > 0) canvas.image(this.ctx.assets.iconId, x + 8, y + 6, 16, 16, null);
         canvas.text(this.title, x + 32,
                 y + Math.max(0, (H - this.ctx.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2),
                 AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE, false);
@@ -117,8 +108,18 @@ public final class TitleBar extends Element<TitleBar> {
         final int base = this.left + this.measuredWidth - BUTTON_W * 3;
         if (mx >= base) {
             switch ((int) ((mx - base) / BUTTON_W)) {
-                case 0 -> this.runMinimize();
-                case 1 -> this.runMaximize();
+                case 0 -> {
+                    if (this.minimize != null) this.minimize.run();
+                    else if (this.ctx != null && this.ctx.windowHandle != 0L) glfwIconifyWindow(this.ctx.windowHandle);
+                }
+                case 1 -> {
+                    // DEFAULT TOGGLE — THE GLFW MAXIMIZE CALLBACK KEEPS ctx.windowMaximized (AND THE APP) IN SYNC
+                    if (this.maximize != null) this.maximize.run();
+                    else if (this.ctx != null && this.ctx.windowHandle != 0L) {
+                        if (this.ctx.windowMaximized) glfwRestoreWindow(this.ctx.windowHandle);
+                        else glfwMaximizeWindow(this.ctx.windowHandle);
+                    }
+                }
                 default -> {
                     if (this.close != null) this.close.run();
                 }
@@ -167,9 +168,8 @@ public final class TitleBar extends Element<TitleBar> {
             // SNAP-ASSIST ARMS ONLY AFTER THE GLOBAL CURSOR TRAVELS PAST THE SLOP, SO A RESTORE-FROM-MAXIMIZED
             // PRESS THAT NEVER MOVED STAYS UNARMED
             if (Math.abs(wx.get(0) + this.ctx.mouseRawX - this.pressGX)
-                    + Math.abs(wy.get(0) + this.ctx.mouseRawY - this.pressGY) > DRAG_SLOP) {
+                    + Math.abs(wy.get(0) + this.ctx.mouseRawY - this.pressGY) > DRAG_SLOP)
                 this.dragMoved = true;
-            }
             glfwSetWindowPos(this.ctx.windowHandle,
                     wx.get(0) + (int) this.ctx.mouseRawX - this.dragX,
                     wy.get(0) + (int) this.ctx.mouseRawY - this.dragY);
@@ -191,48 +191,11 @@ public final class TitleBar extends Element<TitleBar> {
             final double gy = py.get(0) + this.ctx.mouseRawY;
             // MONITOR UNDER THE GRAB POINT (FULL BOUNDS — THE WORK AREA CAN START BELOW A TOP TASKBAR),
             // FALLING BACK TO THE PRIMARY WHEN THE POINT LANDS ON NO MONITOR
-            long monitor = 0L;
-            final PointerBuffer monitors = glfwGetMonitors();
-            if (monitors != null) {
-                for (int i = 0; i < monitors.limit() && monitor == 0L; i++) {
-                    final long m = monitors.get(i);
-                    glfwGetMonitorPos(m, px, py);
-                    final GLFWVidMode mode = glfwGetVideoMode(m);
-                    if (mode != null && gx >= px.get(0) && gx < px.get(0) + mode.width()
-                            && gy >= py.get(0) && gy < py.get(0) + mode.height()) {
-                        monitor = m;
-                    }
-                }
-            }
-            if (monitor == 0L) monitor = glfwGetPrimaryMonitor();
+            final long monitor = WinFrame.monitorAt(gx, gy, px, py);
             if (monitor == 0L) return;
             glfwGetMonitorWorkarea(monitor, px, py, stack.mallocInt(1), stack.mallocInt(1));
-            if (gy <= py.get(0) + SNAP_PX) {
-                // THE GLFW MAXIMIZE CALLBACK SYNCS ctx.windowMaximized AND THE VIEWPORT/APP STATE
-                glfwMaximizeWindow(this.ctx.windowHandle);
-            }
-        }
-    }
-
-    private void runMinimize() {
-        if (this.minimize != null) {
-            this.minimize.run();
-        } else if (this.ctx != null && this.ctx.windowHandle != 0L) {
-            glfwIconifyWindow(this.ctx.windowHandle);
-        }
-    }
-
-    private void runMaximize() {
-        if (this.maximize != null) {
-            this.maximize.run();
-            return;
-        }
-        if (this.ctx == null || this.ctx.windowHandle == 0L) return;
-        // DEFAULT TOGGLE — THE GLFW MAXIMIZE CALLBACK KEEPS ctx.windowMaximized (AND THE APP) IN SYNC
-        if (this.ctx.windowMaximized) {
-            glfwRestoreWindow(this.ctx.windowHandle);
-        } else {
-            glfwMaximizeWindow(this.ctx.windowHandle);
+            // THE GLFW MAXIMIZE CALLBACK SYNCS ctx.windowMaximized AND THE VIEWPORT/APP STATE
+            if (gy <= py.get(0) + SNAP_PX) glfwMaximizeWindow(this.ctx.windowHandle);
         }
     }
 

@@ -11,7 +11,6 @@ import static org.lwjgl.glfw.GLFW.glfwGetWindowMonitor;
 
 /** Paces frames to the monitor refresh rate for drivers that ignore the swap interval. */
 final class FrameLimiter {
-
     private static final int DEFAULT_REFRESH_HZ = 60;
     private static final int MIN_REFRESH_HZ = 30;
     private static final int MAX_REFRESH_HZ = 360;
@@ -35,16 +34,10 @@ final class FrameLimiter {
 
     void syncBeforeFrame() {
         final long now = System.nanoTime();
-        if (this.nextFrameNanos == 0L) {
-            this.nextFrameNanos = now;
-        }
-
-        if (now < this.nextFrameNanos) {
-            LockSupport.parkNanos(this.nextFrameNanos - now);
-        } else if (now - this.nextFrameNanos > this.frameNanos) {
-            this.nextFrameNanos = now;
-        }
-
+        if (this.nextFrameNanos == 0L) this.nextFrameNanos = now;
+        // A FRAME LATE BY MORE THAN ONE PERIOD RESTARTS THE SCHEDULE INSTEAD OF BURSTING TO CATCH UP
+        if (now < this.nextFrameNanos) LockSupport.parkNanos(this.nextFrameNanos - now);
+        else if (now - this.nextFrameNanos > this.frameNanos) this.nextFrameNanos = now;
         this.nextFrameNanos += this.frameNanos;
     }
 

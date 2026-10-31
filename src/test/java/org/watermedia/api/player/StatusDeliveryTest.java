@@ -20,12 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-/**
- * Verifies that status listeners hear transitions in the order the statuses changed, even while several threads drive
- * one player, and never run under a lock of the player, so a listener can wait for another thread that calls into it.
- */
+/** Verifies that status listeners hear transitions in order under concurrent drivers and never run under a player lock. */
 @DisplayName("Status delivery")
 public class StatusDeliveryTest {
+
     private static final int ROUNDS = 50_000;
     private static final int TOGGLERS = 4;
     private static final long JOIN_MS = 2_000L;

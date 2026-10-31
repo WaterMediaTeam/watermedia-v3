@@ -27,19 +27,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies {@link NetworkCache} against a loopback HTTP origin ({@link LocalHttp}): each cached scenario opens its own
- * store, a repeated read is served from the index without another request, entries are keyed by URI, headers and accept
- * type, unbounded and truncated bodies are never cached, an abandoned uncached read stops its transfer, and the
- * production store comes back afterwards.
- */
+/** Verifies {@link NetworkCache} against a loopback origin: index hits, cache keys, refused transfers and abandoned reads. */
 @DisplayName("NetworkCache round-trip")
 public class NetworkCacheTest {
 
-    // ACCEPT HEADERS AND READ LIMIT SHARED ACROSS THE CACHE SCENARIOS
     private static final String ACCEPT_IMAGE = "image/*,*/*";
     private static final String ACCEPT_VIDEO = "video/*,*/*";
-    private static final int READ_LIMIT = 1024;
+    private static final int READ_LIMIT_BYTES = 1_024;
 
     // THE STORE IS PROCESS-WIDE: LATER CLASSES OF THIS JVM MUST NOT WRITE INTO A TEMP DIRECTORY JUNIT ALREADY DELETED.
     // BEFORE WaterMedia LOADS THERE IS NOTHING TO RESTORE; ITS PLAYER MODULE OPENS THE PRODUCTION STORE ITSELF
@@ -59,14 +53,14 @@ public class NetworkCacheTest {
             final AtomicInteger hits = new AtomicInteger();
             try (final LocalHttp server = LocalHttp.start("/image.png", exchange -> {
                 hits.incrementAndGet();
-                exchange.getResponseHeaders().set("Expires", LocalHttp.expiresIn(3600));
+                exchange.getResponseHeaders().set("Expires", LocalHttp.expiresIn(3_600));
                 LocalHttp.respond(exchange, "image/png", body, 0);
             })) {
                 NetworkCache.start(cache);
                 final URI uri = server.uri("/image.png");
 
-                final NetworkCache.CachedBytes first = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true);
-                final NetworkCache.CachedBytes second = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true);
+                final NetworkCache.CachedBytes first = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT_BYTES, true);
+                final NetworkCache.CachedBytes second = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT_BYTES, true);
 
                 assertFalse(first.cached());
                 assertTrue(second.cached());
@@ -85,13 +79,13 @@ public class NetworkCacheTest {
             final AtomicInteger hits = new AtomicInteger();
             try (final LocalHttp server = LocalHttp.start("/clip.mp4", exchange -> {
                 hits.incrementAndGet();
-                LocalHttp.respond(exchange, "video/mp4", body, 3600);
+                LocalHttp.respond(exchange, "video/mp4", body, 3_600);
             })) {
                 NetworkCache.start(cache);
                 final URI uri = server.uri("/clip.mp4");
 
-                final NetworkCache.CachedFile first = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true);
-                final NetworkCache.CachedFile second = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true);
+                final NetworkCache.CachedFile first = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT_BYTES, true);
+                final NetworkCache.CachedFile second = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT_BYTES, true);
 
                 assertNotNull(first);
                 assertNotNull(second);
@@ -114,11 +108,11 @@ public class NetworkCacheTest {
         void testDerivesStableOnDiskCacheKeys(@TempDir final Path cache) throws Exception {
             final byte[] body = new byte[] { 7, 7, 7 };
             try (final LocalHttp server = LocalHttp.start("/pinned.png", exchange ->
-                    LocalHttp.respond(exchange, "image/png", body, 3600))) {
+                    LocalHttp.respond(exchange, "image/png", body, 3_600))) {
                 NetworkCache.start(cache);
                 final URI uri = server.uri("/pinned.png");
                 final HttpHeaders headers = new HttpHeaders().set("X-Variant", "first");
-                NetworkCache.read(uri, headers, ACCEPT_IMAGE, READ_LIMIT, true);
+                NetworkCache.read(uri, headers, ACCEPT_IMAGE, READ_LIMIT_BYTES, true);
 
                 // RE-DERIVE THE KEY FROM ITS CONTRACT: sha256(uri + '\n' + LOWERCASED "name:value" LINES + "accept:" TAIL)
                 // HEX-ENCODED INTO THE PAYLOAD FILENAME; A DRIFT ORPHANS EVERY EXISTING ON-DISK CACHE
@@ -141,16 +135,16 @@ public class NetworkCacheTest {
             try (final LocalHttp server = LocalHttp.start("/variant.png", exchange -> {
                 hits.incrementAndGet();
                 final boolean second = "second".equals(exchange.getRequestHeaders().getFirst("X-Variant"));
-                LocalHttp.respond(exchange, "image/png", second ? secondBody : firstBody, 3600);
+                LocalHttp.respond(exchange, "image/png", second ? secondBody : firstBody, 3_600);
             })) {
                 NetworkCache.start(cache);
                 final URI uri = server.uri("/variant.png");
                 final HttpHeaders firstHeaders = new HttpHeaders().set("X-Variant", "first");
                 final HttpHeaders secondHeaders = new HttpHeaders().set("X-Variant", "second");
 
-                final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
-                final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
-                final NetworkCache.CachedBytes firstAgain = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
+                final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT_BYTES, true);
+                final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, ACCEPT_IMAGE, READ_LIMIT_BYTES, true);
+                final NetworkCache.CachedBytes firstAgain = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT_BYTES, true);
 
                 assertArrayEquals(firstBody, first.bytes());
                 assertArrayEquals(secondBody, second.bytes());
@@ -180,10 +174,10 @@ public class NetworkCacheTest {
             })) {
                 NetworkCache.start(cache);
                 final URI uri = server.uri("/radio");
-                assertThrows(IOException.class, () -> NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true),
+                assertThrows(IOException.class, () -> NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT_BYTES, true),
                         "the file cache refuses to download an endless source");
                 // THE BYTE READER (IMAGES) STILL ACCEPTS CHUNKED RESPONSES
-                assertArrayEquals(body, NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true).bytes());
+                assertArrayEquals(body, NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT_BYTES, true).bytes());
             }
         }
 
@@ -192,7 +186,7 @@ public class NetworkCacheTest {
         void testTruncatedBodyIsRefused(@TempDir final Path cache) throws Exception {
             try (final LocalHttp server = LocalHttp.start("/cut.png", exchange -> {
                 exchange.getResponseHeaders().set("Content-Type", "image/png");
-                exchange.getResponseHeaders().set("Expires", LocalHttp.expiresIn(3600));
+                exchange.getResponseHeaders().set("Expires", LocalHttp.expiresIn(3_600));
                 exchange.sendResponseHeaders(200, 100L);
                 // TEN OF THE HUNDRED ANNOUNCED BYTES: THE FIXED-LENGTH STREAM REFUSES THE SHORT BODY AND DROPS THE CONNECTION
                 exchange.getResponseBody().write(new byte[10]);
@@ -201,7 +195,7 @@ public class NetworkCacheTest {
             })) {
                 NetworkCache.start(cache);
                 final URI uri = server.uri("/cut.png");
-                assertThrows(IOException.class, () -> NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true), "a short body is a failure");
+                assertThrows(IOException.class, () -> NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT_BYTES, true), "a short body is a failure");
                 try (final var stream = Files.list(cache)) {
                     assertFalse(stream.anyMatch(path -> path.getFileName().toString().endsWith(".tmp")), "nothing was cached");
                 }

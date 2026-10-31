@@ -84,7 +84,7 @@ public class PixelFormatTest {
             assertEquals((4 + 1 + 1 + 4) * 2, PixelFormat.YUVA420P.frameBytes(2, 2, 10));
             assertEquals(2 * 4, PixelFormat.YUYV.frameBytes(3, 1, 8), "an odd width still pays its last group");
             assertEquals(16 * 8 * 8, PixelFormat.BC1.frameBytes(61, 30, 8));
-            assertEquals(4L * 1920 * 1080, PixelFormat.BGRA.frameBytes(1920, 1080, 8));
+            assertEquals(4L * 1_920 * 1_080, PixelFormat.BGRA.frameBytes(1_920, 1_080, 8));
             assertEquals(1L << 31, PixelFormat.BC1.frameBytes(65_536, 65_536, 8), "block math never wraps");
         }
 

@@ -9,8 +9,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.MatureContentException;
+import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.PlatformApiTest;
 import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.internal.WaterPlatform;
@@ -19,6 +19,7 @@ import org.watermedia.api.platform.internal.WaterPlatformTest;
 import java.net.URI;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -219,6 +220,15 @@ public class PlatformClaimTest {
                     () -> type.getSimpleName() + ".resolve(" + uriString + ") must refuse an unsupported shape of its own host");
             assertFalse(thrown instanceof MatureContentException, "An unsupported shape is not a mature block");
             assertTrue(thrown.getMessage().startsWith(platform.name() + ": "), "The message names the handler");
+        }
+
+        @Test
+        @DisplayName("TikTok reads the video id of canonical and embed links")
+        void testTikTokVideoIds() {
+            assertEquals("7300000000000000001", TikTokPlatform.videoId("https://www.tiktok.com/@user/video/7300000000000000001"));
+            assertEquals("7300000000000000002", TikTokPlatform.videoId("https://www.tiktok.com/embed/v2/7300000000000000002"));
+            assertEquals("7300000000000000003", TikTokPlatform.videoId("https://www.tiktok.com/embed/7300000000000000003"));
+            assertNull(TikTokPlatform.videoId("https://www.tiktok.com/@user"));
         }
     }
 

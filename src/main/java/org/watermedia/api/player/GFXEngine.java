@@ -90,39 +90,19 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     /** Whether {@link #release()} already ran; a released engine refuses formats and drops uploads. */
     public final boolean released() { return this.released; }
 
-    /**
-     * Returns the GPU-side handle for the final RGBA texture.
-     * <p>
-     * For OpenGL this is a {@code GLuint} texture name (fits in the lower 32 bits), for Vulkan a
-     * {@code VkImageView} handle ({@code uint64_t}); software and headless backends return a fixed
-     * non-zero sentinel once a frame is present, so hosts only test the handle against 0.
-     * @return texture handle, or 0 if no frame has been uploaded yet or the engine was released
-     */
+    /** Returns the RGBA texture handle (a GL name, a {@code VkImageView} or a non-zero sentinel without a GPU), 0 before the first frame or after release. */
     public long texture() { return this.released || !this.framed ? 0L : SENTINEL_TEXTURE; }
 
     /** Whether the engine consumes 8-bit frames in {@code format} directly; see {@link #supports(PixelFormat, int)}. */
     public final boolean supports(final PixelFormat format) { return this.supports(format, 8); }
 
-    /**
-     * Whether the engine can consume frames in the given pixel layout and sample precision directly.
-     * <p>
-     * The frame producer calls this before choosing an upload path: layouts the engine declines are
-     * pre-converted (via the decoder's scaler) to one it does accept — typically 8-bit {@code BGRA} —
-     * before {@code upload}; declined {@link PixelFormat#compressed() compressed} formats fall back
-     * to the decode path. The default accepts every raw layout at 8, 10, 12, 16 or 32 (float) bits
-     * and declines compressed ones, so a backend opts into BCn sampling explicitly.
-     * @param format the candidate pixel layout
-     * @param bits   bits per component the frames carry
-     * @return true when the engine handles this layout without external conversion
-     */
+    /** Whether the engine consumes this layout at this sample precision directly; the producer pre-converts declined layouts, usually to 8-bit BGRA. */
     public boolean supports(final PixelFormat format, final int bits) {
+        // RAW LAYOUTS AT 8, 10, 12, 16 OR 32 (FLOAT) BITS; COMPRESSED ONES FALL BACK TO THE DECODE PATH UNLESS A BACKEND OPTS IN
         return format != null && !format.compressed() && (bits == 8 || bits == 10 || bits == 12 || bits == 16 || bits == 32);
     }
 
-    /**
-     * Whether this engine can keep a small animated image as one texture per frame.
-     * Engines that report false keep receiving one upload per frame.
-     */
+    /** Whether this engine can keep a small animated image as one texture per frame instead of one upload per frame. */
     public boolean preload() { return false; }
 
     // OPTIONAL FAST PATH: ONE TEXTURE PER TIGHTLY PACKED FRAME OF THE SET, IN format() (RAW PIXELS OR BCn BLOCKS); THE BUFFERS
@@ -154,10 +134,7 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     // BACKEND UPLOAD (SEE upload); IMPLEMENTATIONS LOG AND DROP ON FAILURE INSTEAD OF THROWING
     abstract void push(final ByteBuffer[] planes, final int[] strides);
 
-    /**
-     * Releases all GPU resources. The engine is unusable after this call; later calls are no-ops.
-     * Never call it concurrently with an upload or a format change.
-     */
+    /** Releases all GPU resources; later calls are no-ops. Never call it concurrently with an upload or a format change. */
     public final void release() {
         // THE TEST-AND-SET IS ATOMIC SO TWO CONCURRENT RELEASES NEVER TEAR DOWN TWICE
         synchronized (this) {

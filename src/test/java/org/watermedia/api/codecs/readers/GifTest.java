@@ -69,7 +69,7 @@ public class GifTest {
             assertEquals(1, image.frames().length);
             final int[] expected = new int[16];
             for (int y = 0; y < 4; y++)
-                for (int x = 0; x < 4; x++) expected[y * 4 + x] = x >= 2 && y >= 2 ? 0xFFFF0000: 0xFF000000;
+                for (int x = 0; x < 4; x++) expected[y * 4 + x] = x >= 2 && y >= 2 ? 0xFFFF0000 : 0xFF000000;
             assertArrayEquals(expected, pixels(image, 0));
         }
 
@@ -197,6 +197,8 @@ public class GifTest {
         }
     }
 
+    // UTILITY
+    // DECODED BGRA READ AS LITTLE-ENDIAN INTS, WHICH IS ARGB
     private static int[] pixels(final ImageData image, final int frame) {
         final int[] pixels = new int[image.width() * image.height()];
         image.frames()[frame].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);

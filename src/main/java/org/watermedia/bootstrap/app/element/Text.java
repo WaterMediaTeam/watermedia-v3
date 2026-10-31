@@ -21,8 +21,7 @@ public final class Text extends Element<Text> {
     private boolean bold;
     private int letterSpacing;
 
-    public Text() {
-    }
+    public Text() {}
 
     public Text(final String text) {
         this.text = text == null ? "" : text;
@@ -60,16 +59,13 @@ public final class Text extends Element<Text> {
         return this;
     }
 
-    public String text() {
-        return this.text;
-    }
+    public String text() { return this.text; }
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         if (this.ctx == null || this.ctx.text == null || this.text.isEmpty()) {
             this.contentWidth = 0;
-            this.contentHeight = this.ctx != null && this.ctx.text != null
-                    ? this.textHeight() : 0;
+            this.contentHeight = this.ctx != null && this.ctx.text != null ? this.textHeight() : 0;
         } else {
             this.contentWidth = this.letterSpacing > 0
                     ? this.ctx.text.spacedWidth(this.text, this.scale, this.bold, this.letterSpacing)
@@ -82,10 +78,6 @@ public final class Text extends Element<Text> {
         }
     }
 
-    private int textHeight() {
-        return this.bold ? this.ctx.text.glyphHeightBold(this.scale) : this.ctx.text.glyphHeight(this.scale);
-    }
-
     @Override
     protected void onDraw(final Canvas canvas) {
         final boolean chip = !this.subText.isBlank();
@@ -93,10 +85,8 @@ public final class Text extends Element<Text> {
         final int avail = this.innerWidth();
         final int chipW = chip ? canvas.textWidth(this.subText, AppTheme.TEXT_SUBTITLE, false) + Theme.CHIP_PAD * 2 : 0;
         final int textAvail = chip ? Math.max(0, avail - CHIP_GAP - chipW) : avail;
-        String draw = this.text;
-        if (this.letterSpacing <= 0 && canvas.textWidth(this.text, this.scale, this.bold) > textAvail) {
-            draw = canvas.text().truncateToWidth(this.text, textAvail, this.scale, this.bold ? Font.BOLD : Font.PLAIN);
-        }
+        final String draw = this.letterSpacing <= 0 && canvas.textWidth(this.text, this.scale, this.bold) > textAvail
+                ? canvas.text().truncateToWidth(this.text, textAvail, this.scale, this.bold ? Font.BOLD : Font.PLAIN) : this.text;
         final int tw = this.letterSpacing > 0 ? canvas.textSpacedWidth(draw, this.scale, this.bold, this.letterSpacing)
                 : canvas.textWidth(draw, this.scale, this.bold);
         final int th = canvas.textHeight(this.scale, this.bold);
@@ -107,11 +97,8 @@ public final class Text extends Element<Text> {
             default -> this.innerLeft();
         };
         final int ty = this.innerTop() + Math.max(0, (this.innerHeight() - th) / 2);
-        if (this.letterSpacing > 0) {
-            canvas.textSpaced(draw, tx, ty, this.color, this.scale, this.bold, this.letterSpacing);
-        } else {
-            canvas.text(draw, tx, ty, this.color, this.scale, this.bold);
-        }
+        if (this.letterSpacing > 0) canvas.textSpaced(draw, tx, ty, this.color, this.scale, this.bold, this.letterSpacing);
+        else canvas.text(draw, tx, ty, this.color, this.scale, this.bold);
         if (chip) {
             // CHIP TEXT SHARES THE LABEL BASELINE LIKE Button.render, SINCE CELL-CENTERING DRIFTS WITH DESCENDER SPACE
             final int chipX = tx + tw + CHIP_GAP;
@@ -124,5 +111,9 @@ public final class Text extends Element<Text> {
                     baseline - canvas.text().baselineOffset(AppTheme.TEXT_SUBTITLE),
                     AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
         }
+    }
+
+    private int textHeight() {
+        return this.bold ? this.ctx.text.glyphHeightBold(this.scale) : this.ctx.text.glyphHeight(this.scale);
     }
 }

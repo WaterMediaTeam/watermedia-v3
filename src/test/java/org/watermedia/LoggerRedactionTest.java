@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("Logger redaction")
 public class LoggerRedactionTest {
-    private static final Marker IT = MarkerManager.getMarker("LoggerRedactionTest");
+    private static final Marker IT = MarkerManager.getMarker(LoggerRedactionTest.class.getSimpleName());
 
     @Nested
     @DisplayName("Events")

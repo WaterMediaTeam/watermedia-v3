@@ -6,8 +6,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * fdAT - Frame Data Chunk
- * Contains compressed image data for animation frames (same as IDAT but with sequence number)
+ * fdAT (frame data) chunk: the compressed data of one APNG frame, an IDAT preceded by a sequence number.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#fdAT-chunk">PNG Specification - fdAT</a>
  */
@@ -16,23 +15,15 @@ public record FDAT(int sequence, byte[] data) implements IChunk {
 
     /** Converts a generic chunk to fdAT. */
     public static FDAT convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for fdAT: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for fdAT: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] rawData = chunk.data();
-        if (rawData.length < 4) {
-            throw new CodecException("fdAT data must be at least 4 bytes");
-        }
+        if (rawData.length < 4) throw new CodecException("fdAT data must be at least 4 bytes");
 
-        // FIRST 4 BYTES ARE SEQUENCE NUMBER
-        final ByteBuffer buffer = ByteBuffer.wrap(rawData, 0, 4).order(ByteOrder.BIG_ENDIAN);
-        final int sequence = buffer.getInt();
-
-        // REMAINING BYTES ARE COMPRESSED FRAME DATA
+        // THE SEQUENCE NUMBER COMES FIRST, THE COMPRESSED FRAME DATA FILLS THE REST
+        final int sequence = ByteBuffer.wrap(rawData, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
         final byte[] frameData = new byte[rawData.length - 4];
         System.arraycopy(rawData, 4, frameData, 0, frameData.length);
-
         return new FDAT(sequence, frameData);
     }
 

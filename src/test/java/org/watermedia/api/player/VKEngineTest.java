@@ -93,19 +93,10 @@ import static org.lwjgl.vulkan.VK12.VK_API_VERSION_1_2;
 import static org.lwjgl.vulkan.VK13.VK_API_VERSION_1_3;
 import static org.watermedia.test.support.YuvFrames.assertUniform;
 
-/**
- * Verifies {@link VKEngine} conversions on a headless Vulkan device, once with every feature the device offers
- * (YCbCr sampler, host import) and once forced onto the compute shader and staging copies: odd-sized planar and
- * packed frames, BT.601 and BT.709 matrices, full and limited range, chroma siting, PQ mapping and ragged strides,
- * each read back through the RGBA view {@link VKEngine#texture()} publishes, the device objects engines share
- * until the last one is released, and the frames FFmpeg decodes when the GPU can decode video (a 1.3 device
- * with the video extensions): on the device itself, or on a twin of a second device that lends FFmpeg no
- * queues, sampled as they are or after libplacebo turned them into RGBA, which needs its device features and a
- * graphics queue of FFmpeg's own. Validation-layer errors fail the test when the Khronos layer is installed.
- * Skipped without a Vulkan loader or a 1.1 device.
- */
+/** Verifies {@link VKEngine} conversions and FFmpeg-decoded frames on a headless Vulkan 1.1 device, with and without its optional features. */
 @DisplayName("VKEngine")
 public class VKEngineTest {
+
     private static final long FRAME_TIMEOUT_NS = 5_000_000_000L;
     private static final int READBACK_PUSH_BYTES = 8;
     private static final String VALIDATION_LAYER = "VK_LAYER_KHRONOS_validation";
@@ -364,6 +355,7 @@ public class VKEngineTest {
 
     @AfterEach
     void validation() {
+        // KHRONOS VALIDATION ERRORS FAIL THE TEST WHEN THE LAYER IS INSTALLED
         final List<String> errors = List.copyOf(ERRORS);
         ERRORS.clear();
         assertTrue(errors.isEmpty(), "Vulkan validation errors: " + errors);
@@ -1206,10 +1198,10 @@ public class VKEngineTest {
 
         final String route = ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute") + ", "
                 + (((Map<?, ?>) field(engine, "importCache")).isEmpty() ? "staging" : "host import");
-        final Object features = field(engine, "ctx");
-        System.out.println("[VKEngineTest] " + features + " " + engine.format() + " " + engine.width() + "x" + engine.height()
+        final Object ctx = field(engine, "ctx");
+        System.out.println("[VKEngineTest] " + ctx + " " + engine.format() + " " + engine.width() + "x" + engine.height()
                 + " " + engine.bits() + "-bit " + engine.color + " -> " + route);
-        if (features == Features.FALLBACK) assertEquals("compute, staging", route, "the fallback context forces the compute shader and staging copies");
+        if (ctx == Features.FALLBACK) assertEquals("compute, staging", route, "the fallback context forces the compute shader and staging copies");
         return renderer.readback(view, engine.width(), engine.height());
     }
 

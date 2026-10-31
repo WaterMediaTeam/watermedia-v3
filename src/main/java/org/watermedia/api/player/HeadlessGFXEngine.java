@@ -33,6 +33,19 @@ public final class HeadlessGFXEngine extends GFXEngine {
     @Override
     public boolean preload() { return this.preload; }
 
+    /** Number of {@code upload} calls received so far. */
+    public long uploadCount() { return this.uploadCount; }
+    /** Index of the preloaded frame the player last selected. */
+    public int activeFrame() { return this.activeFrame; }
+    /** Y (or sole) plane of the most recent {@code upload}, or null. */
+    public ByteBuffer lastUpload() { return this.lastUpload; }
+
+    /** Copy of the frame set the player last preloaded, or null. */
+    public ByteBuffer[] preloadedFrames() {
+        final ByteBuffer[] frames = this.preloaded;
+        return frames == null ? null : frames.clone();
+    }
+
     @Override
     boolean preload(final ByteBuffer[] frames) {
         // HONOR THE ADVERTISED CAPABILITY LIKE A REAL BACKEND; CLONE ON STORE SO THE PRODUCER'S ARRAY IS NEVER ALIASED
@@ -58,19 +71,4 @@ public final class HeadlessGFXEngine extends GFXEngine {
     void destroy() {
         // NOTHING NATIVE TO FREE: THE CAPTURED BUFFERS BELONG TO THE PRODUCER
     }
-
-    /** Number of {@code upload} calls received so far. */
-    public long uploadCount() { return this.uploadCount; }
-
-    /** Index of the preloaded frame the player last selected. */
-    public int activeFrame() { return this.activeFrame; }
-
-    /** Copy of the frame set the player last preloaded, or null. */
-    public ByteBuffer[] preloadedFrames() {
-        final ByteBuffer[] frames = this.preloaded;
-        return frames == null ? null : frames.clone();
-    }
-
-    /** Y (or sole) plane of the most recent {@code upload}, or null. */
-    public ByteBuffer lastUpload() { return this.lastUpload; }
 }

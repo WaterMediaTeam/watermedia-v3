@@ -15,7 +15,11 @@ import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.HashMap;
 
-import static org.bytedeco.ffmpeg.global.avutil.*;
+import static org.bytedeco.ffmpeg.global.avutil.av_dict_count;
+import static org.bytedeco.ffmpeg.global.avutil.av_dict_free;
+import static org.bytedeco.ffmpeg.global.avutil.av_dict_get;
+import static org.bytedeco.ffmpeg.global.avutil.av_dict_parse_string;
+import static org.bytedeco.ffmpeg.global.avutil.av_dict_set;
 
 /** Verifies the native TLS bundle built from the JVM truststore, trusted and empty, in a fresh JVM each. */
 public final class TLSLifecycleProbe {

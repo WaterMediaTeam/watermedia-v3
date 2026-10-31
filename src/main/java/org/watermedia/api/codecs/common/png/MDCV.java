@@ -7,8 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * mDCv - Mastering Display Color Volume Chunk
- * HDR metadata describing the color volume of the mastering display
+ * mDCv (mastering display color volume) chunk: HDR metadata describing the color volume of the mastering display.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#mDCv-chunk">PNG Specification - mDCv</a>
  */
@@ -30,14 +29,10 @@ public record MDCV(
 
     /** Converts a generic chunk to mDCv. */
     public static MDCV convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for mDCv: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for mDCv: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("mDCv data must be 24 bytes, got " + data.length);
-        }
+        if (data.length != LENGTH) throw new CodecException("mDCv data must be 24 bytes, got " + data.length);
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         return new MDCV(

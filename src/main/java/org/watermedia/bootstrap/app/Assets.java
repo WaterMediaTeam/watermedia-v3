@@ -242,6 +242,5 @@ public final class Assets {
         return buffer;
     }
 
-    private record TextureData(int textureId, int width, int height) {
-    }
+    private record TextureData(int textureId, int width, int height) {}
 }

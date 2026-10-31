@@ -68,6 +68,7 @@ public final class GLEngine extends GFXEngine {
     private static final int NUM_PBOS = 2;   // LEGACY DOUBLE BUFFER PER PLANE
     private static final int MAX_PLANES = 4;
     private static final int RING_SLOTS = 4; // PERSISTENT RING DEPTH (1 WRITING + 1 PENDING + GPU IN-FLIGHT)
+    private static final Submission DROPPED = new Submission(null, null, null, new int[0], -2L, 0); // RING FULL: FRAME DROPPED
     private static final int[] EMPTY_TEXTURES = new int[0];
 
     // THE CONVERSION PASS, BUNDLED UNDER assets/watermedia/shaders: ONE FULLSCREEN VERTEX SHADER AND ONE FRAGMENT PER
@@ -121,10 +122,9 @@ public final class GLEngine extends GFXEngine {
     // MOST ONE DRAIN PER ENGINE PER WAVE; A NEWER SUBMISSION REPLACES AN UNDRAINED OLDER ONE.
     private volatile Submission pending;
 
-    // PERSISTENT-MAPPED PBO RING (ARB_buffer_storage): THE PRODUCER MEMCPYS PIXELS SO THE RENDER
-    // THREAD NEVER TOUCHES CLIENT MEMORY. THE PRODUCER CLAIMS A SLOT WHILE produced - retired <
-    // RING_SLOTS; THE RENDER THREAD CONSUMES THE LATEST (SKIPPING OLDER), FENCES IT, AND RETIRES
-    // IN ORDER AS FENCES SIGNAL. ringLock GUARDS ARM/DESTROY VS MEMCPY.
+    // PERSISTENT-MAPPED PBO RING (ARB_buffer_storage): THE PRODUCER MEMCPYS PIXELS INTO A SLOT WHILE produced - retired <
+    // RING_SLOTS, SO THE RENDER THREAD NEVER TOUCHES CLIENT MEMORY; IT CONSUMES THE LATEST (SKIPPING OLDER), FENCES IT AND
+    // RETIRES IN ORDER AS FENCES SIGNAL. ringLock GUARDS ARM/DESTROY VS MEMCPY
     private final Object ringLock = new Object();
     private volatile long ringAddr;       // 0 = NOT ARMED. PUBLISHED LAST ON ARM
     private volatile long ringRetired;    // RENDER THREAD WRITER, PRODUCER READER
@@ -179,9 +179,7 @@ public final class GLEngine extends GFXEngine {
     // renderThreadEx MUST RUN ITS TASKS ON renderThread (THE GL CONTEXT OWNER) AND BE PUMPED EVERY RENDER FRAME; BOTH NULL
     // BUILDS A NO-THREAD-CONTRACT ENGINE WHOSE GL CALLS RUN ON THE CALLING THREAD, WHICH THEN MUST OWN THE CONTEXT
     GLEngine(final Thread renderThread, final Executor renderThreadEx) {
-        if (renderThread != null && renderThreadEx == null) {
-            throw new IllegalArgumentException("renderThreadEx is required when renderThread is set");
-        }
+        if (renderThread != null && renderThreadEx == null) throw new IllegalArgumentException("renderThreadEx is required when renderThread is set");
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
 
@@ -195,9 +193,8 @@ public final class GLEngine extends GFXEngine {
             // VALIDATE THE THREAD PAIR ASYNCHRONOUSLY. A MISMATCH IS LOGGED, NOT THROWN — THROWING RUNS ON
             // THE EXECUTOR AND WOULD CRASH THE HOST RENDER LOOP INSTEAD OF THE MISCONFIGURED CALLER.
             renderThreadEx.execute(() -> {
-                if (Thread.currentThread() != renderThread) {
+                if (Thread.currentThread() != renderThread)
                     LOGGER.error(IT, "renderThreadEx does not dispatch to renderThread — uploads will corrupt the GL context");
-                }
             });
         } else {
             this.hub = null;
@@ -207,25 +204,11 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // PUBLIC API
     // ==========================================================================
-    /**
-     * Returns the OpenGL name of the final RGBA texture for the active frame.
-     * <p>
-     * Direct formats (BGRA, RGBA, RGB) alias plane 0, so their upload lands straight in this
-     * texture. Planar and packed formats (YUV 420P/422P/444P, YUVA, NV12/NV21, YUYV/UYVY, GRAY)
-     * are <em>not</em> RGBA on their own: their planes are uploaded to intermediate textures and
-     * resolved to RGBA by an internal framebuffer shader pass during the engine's render cycle.
-     * The handle returned here is always that resolved RGBA texture, never a raw luma or chroma
-     * plane.
-     * <p>
-     * <b>Pipeline caution.</b> The handle only holds the current frame once the engine's
-     * upload/convert cycle has run on the render thread. Read it fresh on every draw and sample it
-     * within (or right after) that cycle: it may be reallocated on a resolution or LOD change, and
-     * grabbing it earlier, from an unrelated render stage, or caching it across frames can sample a
-     * stale, half-converted, or freshly allocated (undefined contents) texture.
-     * @return the RGBA texture name, or 0 if no frame has been produced yet
-     */
+    /** Returns the GL name of the resolved RGBA texture of the active frame, or 0 before the first one; read it fresh on every draw. */
     @Override
     public long texture() {
+        // DIRECT FORMATS (BGRA, RGBA, RGB) ALIAS PLANE 0; PLANAR AND PACKED ONES RESOLVE TO IT THROUGH THE FBO SHADER PASS, SO
+        // THE HANDLE IS NEVER A RAW PLANE. IT HOLDS THE CURRENT FRAME ONLY AFTER THE RENDER CYCLE AND MAY BE REALLOCATED
         if (this.released) return 0L;
         final int[] textures = this.frameTextures;
         final int frame = this.activeFrameTexture;
@@ -445,9 +428,7 @@ public final class GLEngine extends GFXEngine {
             // RING CONGESTION (DROPPED) SKIPS THE FRAME BUT STILL SCHEDULES A DRAIN SO FENCES
             // RETIRE AND THE RING RECOVERS.
             final Submission ring = this.ringWrite(bufs, strides);
-            if (ring != DROPPED) {
-                this.pending = ring != null ? ring : client(bufs, strides);
-            }
+            if (ring != DROPPED) this.pending = ring != null ? ring : client(bufs, strides);
             this.hub.schedule(this);
         } catch (final RuntimeException e) {
             // A GL FAILURE OR A REJECTING EXECUTOR DROPS THE FRAME; UPLOADS NEVER THROW AT THE DECODER
@@ -992,7 +973,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glShaderSource(vert, vertSrc);
         GL20.glCompileShader(vert);
         if (GL20.glGetShaderi(vert, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-            LOGGER.error(IT, "Failed to compile vertex shader: {}", GL20.glGetShaderInfoLog(vert, 1024));
+            LOGGER.error(IT, "Failed to compile vertex shader: {}", GL20.glGetShaderInfoLog(vert, 1_024));
             GL20.glDeleteShader(vert);
             return 0;
         }
@@ -1001,7 +982,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glShaderSource(frag, fragSrc);
         GL20.glCompileShader(frag);
         if (GL20.glGetShaderi(frag, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-            LOGGER.error(IT, "Failed to compile fragment shader: {}", GL20.glGetShaderInfoLog(frag, 1024));
+            LOGGER.error(IT, "Failed to compile fragment shader: {}", GL20.glGetShaderInfoLog(frag, 1_024));
             GL20.glDeleteShader(vert);
             GL20.glDeleteShader(frag);
             return 0;
@@ -1014,7 +995,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glBindAttribLocation(prog, 1, "uv");
         GL20.glLinkProgram(prog);
         if (GL20.glGetProgrami(prog, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-            LOGGER.error(IT, "Failed to link shader program: {}", GL20.glGetProgramInfoLog(prog, 1024));
+            LOGGER.error(IT, "Failed to link shader program: {}", GL20.glGetProgramInfoLog(prog, 1_024));
             GL20.glDeleteProgram(prog);
             GL20.glDeleteShader(vert);
             GL20.glDeleteShader(frag);
@@ -1077,9 +1058,6 @@ public final class GLEngine extends GFXEngine {
     // ONE SUBMITTED FRAME. slot >= 0 MEANS PIXELS LIVE IN THE PERSISTENT RING (bufs IS NULL); OTHERWISE bufs KEEPS THE
     // CALLER'S DIRECT BUFFERS REACHABLE AND addrs THEIR BASE ADDRESSES UNTIL THE DRAIN CONSUMES OR REPLACES IT.
     private record Submission(ByteBuffer[] bufs, long[] addrs, int[] strides, int[] sizes, long slot, int era) {}
-
-    // SENTINEL FOR "RING FULL — FRAME DROPPED"
-    private static final Submission DROPPED = new Submission(null, null, null, new int[0], -2L, 0);
 
     // PRODUCER-VISIBLE SNAPSHOT OF THE LAST format() REQUEST (SEE req FIELD)
     private record Req(PixelFormat format, int width, int height) {}
@@ -1347,5 +1325,4 @@ public final class GLEngine extends GFXEngine {
             sweepOrphans(this.active);
         }
     }
-
 }

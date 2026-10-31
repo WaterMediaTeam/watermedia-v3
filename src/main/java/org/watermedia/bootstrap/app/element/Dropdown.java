@@ -42,7 +42,7 @@ public final class Dropdown extends Element<Dropdown> {
     private float scale = AppTheme.TEXT_BODY;
     private Group<?> overlayHost;
 
-    // OPEN-STATE — EXACTLY ONE IS NON-NULL WHILE OPEN, DEPENDING ON THE MODE
+    // OPEN STATE: EXACTLY ONE IS NON-NULL WHILE OPEN, DEPENDING ON THE MODE
     private Popup popup;
     private Dialog pickerDialog;
 
@@ -57,7 +57,7 @@ public final class Dropdown extends Element<Dropdown> {
     }
 
     public Dropdown selected(final int index) {
-        // CLAMP INTO RANGE LIKE items() DOES — AN OUT-OF-RANGE INDEX WOULD DRAW/PICK A BLANK VALUE
+        // CLAMPED INTO RANGE LIKE items() DOES: AN OUT-OF-RANGE INDEX WOULD DRAW AND PICK A BLANK VALUE
         this.selectedIndex = this.items.isEmpty() ? Math.max(0, index)
                 : MathUtil.clamp(index, 0, this.items.size() - 1);
         return this;
@@ -97,14 +97,12 @@ public final class Dropdown extends Element<Dropdown> {
 
     @Override
     public Dropdown enabled(final boolean e) {
-        // DISABLING WHILE OPEN TEARS DOWN THE FLOATING MENU/DIALOG SO A DEAD CONTROL LEAVES NO LIVE POPUP
+        // DISABLING WHILE OPEN TEARS DOWN THE FLOATING MENU OR DIALOG, SO A DEAD CONTROL LEAVES NO LIVE POPUP
         if (!e && this.isOpen()) this.close();
         return super.enabled(e);
     }
 
-    public int selectedIndex() {
-        return this.selectedIndex;
-    }
+    public int selectedIndex() { return this.selectedIndex; }
 
     public String selectedValue() {
         return this.selectedIndex >= 0 && this.selectedIndex < this.items.size() ? this.items.get(this.selectedIndex) : "";
@@ -133,10 +131,9 @@ public final class Dropdown extends Element<Dropdown> {
         final int th = canvas.textHeight(this.scale, true);
         final int ty = y + (h - th) / 2;
         final int avail = w - 10 - ARROW_ZONE - 6;
-        String draw = this.selectedValue();
-        if (canvas.textWidth(draw, this.scale, true) > avail) {
-            draw = canvas.text().truncateToWidth(draw, Math.max(0, avail), this.scale, Font.BOLD);
-        }
+        final String value = this.selectedValue();
+        final String draw = canvas.textWidth(value, this.scale, true) > avail
+                ? canvas.text().truncateToWidth(value, Math.max(0, avail), this.scale, Font.BOLD) : value;
         canvas.text(draw, x + 10, ty, tc, this.scale, true);
 
         // DOWN CHEVRON, CENTERED IN THE ARROW ZONE
@@ -153,11 +150,8 @@ public final class Dropdown extends Element<Dropdown> {
     public boolean dispatchClick(final double mx, final double my) {
         if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
         // WHILE ATTACH IS OPEN THE POPUP INTERCEPTS THIS CLICK ITSELF; THE TOGGLE HERE ONLY OPENS
-        if (this.isOpen()) {
-            this.close();
-        } else {
-            this.open();
-        }
+        if (this.isOpen()) this.close();
+        else this.open();
         return true;
     }
 
@@ -223,9 +217,9 @@ public final class Dropdown extends Element<Dropdown> {
         this.invalidate();
     }
 
-    // THE LAYER THE OPEN MENU/DIALOG MOUNTS INTO: THE EXPLICIT HOST, ELSE THE HIGHEST ParentFrame ANCESTOR
-    // (THE WINDOW ROOT LAYER) SO IT ALWAYS PAINTS ON TOP EVEN WITHOUT WIRING
     private Group<?> overlayTarget() {
+        // THE EXPLICIT HOST, ELSE THE HIGHEST ParentFrame ANCESTOR (THE WINDOW ROOT LAYER), SO THE OPEN MENU OR DIALOG
+        // ALWAYS PAINTS ON TOP EVEN WITHOUT WIRING
         if (this.overlayHost != null) return this.overlayHost;
         ParentFrame top = null;
         Group<?> node = this.parent;
@@ -244,7 +238,7 @@ public final class Dropdown extends Element<Dropdown> {
     }
 
     // ==========================================================================
-    // ATTACH MENU — A FULL-LAYER MODAL THAT DRAWS AN ANCHORED PANEL AND WINS INPUT WHILE OPEN
+    // ATTACH MENU: A FULL-LAYER MODAL THAT DRAWS AN ANCHORED PANEL AND WINS INPUT WHILE OPEN
     // ==========================================================================
 
     private final class Popup extends Element<Popup> {
@@ -257,53 +251,10 @@ public final class Dropdown extends Element<Dropdown> {
             this.height = MAX_PARENT;
         }
 
-        // ANCHORED PANEL GEOMETRY; flip TRUE MEANS THE PANEL SITS ABOVE THE CONTROL, SO THE UNFOLD ANIMATION
-        // KNOWS WHICH EDGE IS ANCHORED
-        private record PanelBox(int x, int y, int w, int h, boolean flip) {
-        }
-
-        // PANEL BOX RESOLVED FROM THE ANCHOR EACH TIME: RIGHT-ALIGNED UNDER THE CONTROL, FLIPPED ABOVE WHEN
-        // THERE IS MORE ROOM THERE, HEIGHT CLAMPED TO THE LAYER SO A LONG LIST SCROLLS
-        private PanelBox box() {
-            final int anchorT = Dropdown.this.top;
-            final int anchorB = anchorT + Dropdown.this.measuredHeight;
-            final int anchorR = Dropdown.this.left + Dropdown.this.measuredWidth;
-            final int panelW = Math.max(Dropdown.this.measuredWidth, Dropdown.this.widestItemWidth() + 44);
-            final int fullH = Dropdown.this.items.size() * ROW_H + PAD * 2;
-            final int frameT = this.top;
-            final int frameB = this.top + this.measuredHeight;
-            final int availBelow = frameB - (anchorB + 4) - 4;
-            final int availAbove = (anchorT - 4) - (frameT + 4);
-            final int minH = ROW_H + PAD * 2;
-            final int panelY;
-            final int panelH;
-            boolean flip = false;
-            if (fullH <= availBelow || availBelow >= availAbove) {
-                panelY = anchorB + 4;
-                panelH = MathUtil.clamp(availBelow, minH, fullH);
-            } else {
-                panelH = MathUtil.clamp(availAbove, minH, fullH);
-                panelY = anchorT - 4 - panelH;
-                flip = true;
-            }
-            int panelX = anchorR - panelW;
-            final int frameR = this.left + this.measuredWidth;
-            panelX = Math.max(this.left + 4, Math.min(panelX, frameR - panelW - 4));
-            return new PanelBox(panelX, panelY, panelW, panelH, flip);
-        }
-
         @Override
         protected void onUpdate() {
-            // SELF-SUSTAINED UNFOLD — REQUEST FRAMES UNTIL THE PANEL REACHES ITS FULL HEIGHT
+            // SELF-SUSTAINED UNFOLD: REQUEST FRAMES UNTIL THE PANEL REACHES ITS FULL HEIGHT
             if (System.currentTimeMillis() - this.openedAt < OPEN_MS) this.invalidate();
-        }
-
-        private int visibleRows(final int panelH) {
-            return Math.max(1, (panelH - PAD * 2) / ROW_H);
-        }
-
-        private int maxScroll(final int panelH) {
-            return Math.max(0, Dropdown.this.items.size() - this.visibleRows(panelH));
         }
 
         @Override
@@ -314,7 +265,7 @@ public final class Dropdown extends Element<Dropdown> {
             final int y = b.y();
             final int w = b.w();
             final int h = b.h();
-            final int rows = this.visibleRows(h);
+            final int rows = Math.max(1, (h - PAD * 2) / ROW_H);
             this.scroll = MathUtil.clamp(this.scroll, 0, this.maxScroll(h));
 
             // THE PANEL UNFOLDS FROM ITS ANCHORED EDGE WITH A CUBIC EASE-OUT AND THE CLIP REVEALS THE ROWS; ONLY
@@ -361,9 +312,9 @@ public final class Dropdown extends Element<Dropdown> {
             }
         }
 
-        // MODAL: CAPTURE EVERY PRESS SO NOTHING UNDER THE LAYER STARTS A DRAG
         @Override
         public Element<?> dispatchPress(final double mx, final double my) {
+            // MODAL: CAPTURE EVERY PRESS SO NOTHING UNDER THE LAYER STARTS A DRAG
             return this;
         }
 
@@ -380,7 +331,7 @@ public final class Dropdown extends Element<Dropdown> {
                     Dropdown.this.select(row);
                     Dropdown.this.close();
                 }
-                return true; // INSIDE THE PANEL — ALWAYS SWALLOWED; DEAD SPACE DOES NOT CLOSE
+                return true; // INSIDE THE PANEL: ALWAYS SWALLOWED, DEAD SPACE DOES NOT CLOSE
             }
             // A CLICK OFF THE PANEL CLOSES THE MENU AND IS SWALLOWED (MODAL)
             Dropdown.this.close();
@@ -411,5 +362,41 @@ public final class Dropdown extends Element<Dropdown> {
             }
             return false;
         }
+
+        private PanelBox box() {
+            // RESOLVED FROM THE ANCHOR EACH TIME: RIGHT-ALIGNED UNDER THE CONTROL, FLIPPED ABOVE WHEN THERE IS MORE ROOM
+            // THERE, HEIGHT CLAMPED TO THE LAYER SO A LONG LIST SCROLLS
+            final int anchorT = Dropdown.this.top;
+            final int anchorB = anchorT + Dropdown.this.measuredHeight;
+            final int anchorR = Dropdown.this.left + Dropdown.this.measuredWidth;
+            final int panelW = Math.max(Dropdown.this.measuredWidth, Dropdown.this.widestItemWidth() + 44);
+            final int fullH = Dropdown.this.items.size() * ROW_H + PAD * 2;
+            final int frameT = this.top;
+            final int frameB = this.top + this.measuredHeight;
+            final int availBelow = frameB - (anchorB + 4) - 4;
+            final int availAbove = (anchorT - 4) - (frameT + 4);
+            final int minH = ROW_H + PAD * 2;
+            final int panelY;
+            final int panelH;
+            boolean flip = false;
+            if (fullH <= availBelow || availBelow >= availAbove) {
+                panelY = anchorB + 4;
+                panelH = MathUtil.clamp(availBelow, minH, fullH);
+            } else {
+                panelH = MathUtil.clamp(availAbove, minH, fullH);
+                panelY = anchorT - 4 - panelH;
+                flip = true;
+            }
+            final int frameR = this.left + this.measuredWidth;
+            final int panelX = Math.max(this.left + 4, Math.min(anchorR - panelW, frameR - panelW - 4));
+            return new PanelBox(panelX, panelY, panelW, panelH, flip);
+        }
+
+        private int maxScroll(final int panelH) {
+            return Math.max(0, Dropdown.this.items.size() - Math.max(1, (panelH - PAD * 2) / ROW_H));
+        }
+
+        // ANCHORED PANEL GEOMETRY; flip MEANS THE PANEL SITS ABOVE THE CONTROL, SO THE UNFOLD KNOWS ITS ANCHORED EDGE
+        private record PanelBox(int x, int y, int w, int h, boolean flip) {}
     }
 }

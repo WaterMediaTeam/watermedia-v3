@@ -18,8 +18,7 @@ public final class IconButton extends Element<IconButton> {
     private boolean filled;
     private boolean bordered = true;
 
-    public IconButton() {
-    }
+    public IconButton() {}
 
     public IconButton(final String icon) {
         this.icon = icon == null ? "" : icon;

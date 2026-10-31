@@ -14,8 +14,8 @@ import java.util.function.Supplier;
 public final class RenderEngine {
 
     private static final int FLOATS_PER_VERTEX = 8;
-    // SHARED UI VERTEX CAPACITY — THE GL BACKEND SIZES ITS STREAM VBO TO THE SAME VALUE; KEEP THEM IN SYNC.
-    private static final int MAX_VERTICES = 8192;
+    // SHARED UI VERTEX CAPACITY: THE GL BACKEND SIZES ITS STREAM VBO TO THE SAME VALUE; KEEP THEM IN SYNC
+    private static final int MAX_VERTICES = 8_192;
     private static final int ARC_SEGMENTS = 10; // PER ROUNDED CORNER
     // SDF SOFT-RECT FALLOFF IN PIXELS; THE GLOW MATCHES THE 10 * 2.2 SPREAD OF THE STACKED-FILL FALLBACK IN
     // glowRect() AND THE SHADOW IS A SMALLER OFFSET HALO
@@ -42,8 +42,8 @@ public final class RenderEngine {
     private DrawMode batchMode;
     private boolean batchTextured;
     private int batchVertexCount;
-    // ACTIVE PROJECTION TRACKING — (-1,-1)=IDENTITY, POSITIVE=ORTHO DIMS, MIN_VALUE=UNSET. LETS REPEATED
-    // setupOrtho()/restoreProjection() CALLS WITH THE SAME VALUE SKIP THE FLUSH + RE-UPLOAD (BATCH COALESCING).
+    // ACTIVE PROJECTION: (-1,-1) IDENTITY, POSITIVE ORTHO SIZE, MIN_VALUE UNSET; A REPEATED setupOrtho() WITH THE
+    // SAME SIZE SKIPS THE FLUSH AND THE RE-UPLOAD, SO THE BATCH KEEPS GROWING
     private int orthoW = Integer.MIN_VALUE;
     private int orthoH = Integer.MIN_VALUE;
     // PHYSICAL PX PER LOGICAL PX, APPLIED ONLY TO SCISSOR RECTS AND RASTERIZED LINE WIDTHS; GEOMETRY SCALES
@@ -66,7 +66,13 @@ public final class RenderEngine {
 
     public void init() {
         this.backend.init();
-        this.restoreProjection();
+        // START ON THE IDENTITY PROJECTION
+        if (this.orthoW == -1 && this.orthoH == -1) return;
+        this.flush();
+        this.orthoW = -1;
+        this.orthoH = -1;
+        this.projection.set(IDENTITY);
+        this.backend.useProjection(this.projection);
     }
 
     public void cleanup() {
@@ -98,26 +104,17 @@ public final class RenderEngine {
 
     public void deleteTexture(final int textureId) {
         this.flush();
-        // ONLY THE ID IS KNOWN AT THE APP SEAM; BOTH BACKENDS DELETE BY ID (w/h UNUSED), SO ZERO EXTENTS ARE FINE.
+        // ONLY THE ID IS KNOWN AT THE APP SEAM; BOTH BACKENDS DELETE BY ID, SO ZERO EXTENTS ARE FINE
         this.backend.deleteTexture(new TextureHandle(textureId, 0, 0));
         this.boundTextureId = -1;
     }
 
     public void setupOrtho(final int width, final int height) {
-        if (this.orthoW == width && this.orthoH == height) return; // ALREADY ACTIVE — KEEP BATCHING, NO FLUSH/RE-UPLOAD
+        if (this.orthoW == width && this.orthoH == height) return;
         this.flush();
         this.orthoW = width;
         this.orthoH = height;
         this.projection.identity().ortho2D(0f, width, height, 0f);
-        this.backend.useProjection(this.projection);
-    }
-
-    private void restoreProjection() {
-        if (this.orthoW == -1 && this.orthoH == -1) return; // IDENTITY ALREADY ACTIVE
-        this.flush();
-        this.orthoW = -1;
-        this.orthoH = -1;
-        this.projection.set(IDENTITY);
         this.backend.useProjection(this.projection);
     }
 
@@ -143,7 +140,7 @@ public final class RenderEngine {
     public void bindMediaTexture(final long handle) {
         this.flush();
         // SENTINEL: A MEDIA TEXTURE IS BOUND SO blit() EMITS TEXTURED VERTICES. A 64-BIT VULKAN
-        // VkImageView DOES NOT FIT boundTextureId, AND MAX_VALUE NEVER COLLIDES WITH A REAL GL ID.
+        // VkImageView DOES NOT FIT boundTextureId, AND MAX_VALUE NEVER COLLIDES WITH A REAL GL ID
         this.boundTextureId = handle != 0L ? Integer.MAX_VALUE : -1;
         this.backend.bindMediaTexture(handle);
     }
@@ -156,71 +153,6 @@ public final class RenderEngine {
     public void present() {
         this.flush();
         this.backend.present();
-    }
-
-    // ==========================================================================
-    // TREE CACHE: THE TREE PAINTS INTO OFFSCREEN LAYERS ONLY WHEN IT CHANGES, AND EVERY OTHER FRAME DRAWS THE LAYERS
-    // BACK WITH THE LIVE PAINTERS (THE CRT BAND) BETWEEN THEM
-    // ==========================================================================
-
-    /** Returns whether the layers still hold the last cached tree pass. */
-    public boolean cacheValid() {
-        return this.cacheReady && this.cacheEpoch == this.backend.layerEpoch();
-    }
-
-    /** Starts a cached tree pass in the base layer; false when this frame cannot cache, so the tree draws to the window. */
-    public boolean beginCache(final float r, final float g, final float b, final float a) {
-        this.flush();
-        this.cacheReady = false;
-        this.topUsed = false;
-        this.caching = this.backend.beginLayer(LAYER_BASE, r, g, b, a);
-        // BUILDING A LAYER MAY BIND ITS OWN TEXTURE, SO THE NEXT bindTexture() MUST REACH THE BACKEND
-        this.boundTextureId = -1;
-        return this.caching;
-    }
-
-    /** Sends the rest of the cached pass to the top layer, which composites over the live painters. */
-    public void raiseCache() {
-        if (!this.caching || this.topUsed) return;
-        this.flush();
-        // A TOP LAYER THAT CANNOT OPEN LEAVES THE REST IN THE BASE ONE, UNDER THE PAINTERS BUT STILL VISIBLE
-        this.topUsed = this.backend.beginLayer(LAYER_TOP, 0f, 0f, 0f, 0f);
-        this.boundTextureId = -1;
-    }
-
-    /** Ends the cached pass; the layers stand in for the tree until it changes or the backend drops them. */
-    public void endCache() {
-        if (!this.caching) return;
-        this.flush();
-        this.backend.endLayer();
-        this.caching = false;
-        this.cacheReady = true;
-        this.cacheEpoch = this.backend.layerEpoch();
-    }
-
-    /** Forgets the layers after a pass that drew the tree straight into the window. */
-    public void dropCache() {
-        this.cacheReady = false;
-    }
-
-    /** Frees the layers between frames while nothing composites, such as with the CRT off or the window minimized. */
-    public void releaseCache() {
-        this.cacheReady = false;
-        this.backend.releaseLayers();
-    }
-
-    /** Draws the base or the top layer over the whole window; the top one only when the last pass raised it. */
-    public void drawCache(final boolean top) {
-        if (top && !this.topUsed) return;
-        this.clearClip();
-        if (!this.backend.bindLayer(top ? LAYER_TOP : LAYER_BASE)) return;
-        // THE SAME SENTINEL AS A MEDIA FRAME: blit() EMITS TEXTURED VERTICES AND THE NEXT bindTexture() REBINDS
-        this.boundTextureId = Integer.MAX_VALUE;
-        final boolean flipped = this.backend.layerFlipped();
-        this.color.set(1f, 1f, 1f, 1f);
-        this.blit(0f, 0f, this.orthoW, this.orthoH, 0f, flipped ? 1f : 0f, 1f, flipped ? 0f : 1f);
-        this.flush();
-        this.boundTextureId = -1;
     }
 
     public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
@@ -247,8 +179,8 @@ public final class RenderEngine {
 
     public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
         this.flush();
-        // LOGICAL -> PHYSICAL: ROUND THE EDGES (NOT THE SIZES) SO ADJACENT CLIPS STAY GAP-FREE AT ANY
-        // SCALE; AT uiScale=1 EVERY ROUND IS AN EXACT IDENTITY. THE BACKENDS ONLY FLIP/CLAMP PHYSICAL INTS.
+        // LOGICAL TO PHYSICAL: ROUND THE EDGES (NOT THE SIZES) SO ADJACENT CLIPS STAY GAP-FREE AT ANY SCALE;
+        // AT uiScale=1 EVERY ROUND IS AN EXACT IDENTITY. THE BACKENDS ONLY FLIP AND CLAMP PHYSICAL INTS
         final float s = this.uiScale;
         final int px = Math.round(x * s);
         final int py = Math.round(y * s);
@@ -263,8 +195,8 @@ public final class RenderEngine {
     }
 
     public void lineWidth(final float width) {
-        // RASTERIZER LINE WIDTH (glLineWidth / vkCmdSetLineWidth) IS PHYSICAL PIXELS — SCALE IT HERE.
-        // QUAD-BASED STROKES (strokeQuads) ARE LOGICAL GEOMETRY AND ALREADY SCALE WITH THE ORTHO.
+        // RASTERIZER LINE WIDTH (glLineWidth, vkCmdSetLineWidth) IS PHYSICAL PIXELS; QUAD STROKES (strokeQuads) ARE
+        // LOGICAL GEOMETRY AND ALREADY SCALE WITH THE ORTHO
         final float physical = width * this.uiScale;
         // THE BACKENDS KEEP THE LAST WIDTH (VULKAN RE-RECORDS IT PER FRAME), SO AN EQUAL WIDTH KEEPS THE BATCH
         if (physical == this.physicalLineWidth) return;
@@ -326,19 +258,19 @@ public final class RenderEngine {
         this.draw(DrawMode.TRIANGLES, 6, false);
     }
 
-    public void fillRounded(final float x, final float y, final float w, final float h, float radius) {
+    public void fillRounded(final float x, final float y, final float w, final float h, final float radius) {
         if (radius <= 0f) {
             this.fill(x, y, w, h);
             return;
         }
-        radius = Math.min(radius, Math.min(w, h) / 2f);
-        this.fill(x + radius, y, w - 2 * radius, h);
-        this.fill(x, y + radius, radius, h - 2 * radius);
-        this.fill(x + w - radius, y + radius, radius, h - 2 * radius);
-        this.fillArc(x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5));
-        this.fillArc(x + w - radius, y + radius, radius, (float) (Math.PI * 1.5), (float) (Math.PI * 2));
-        this.fillArc(x + w - radius, y + h - radius, radius, 0, (float) (Math.PI * 0.5));
-        this.fillArc(x + radius, y + h - radius, radius, (float) (Math.PI * 0.5), (float) Math.PI);
+        final float rad = Math.min(radius, Math.min(w, h) / 2f);
+        this.fill(x + rad, y, w - 2 * rad, h);
+        this.fill(x, y + rad, rad, h - 2 * rad);
+        this.fill(x + w - rad, y + rad, rad, h - 2 * rad);
+        this.fillArc(x + rad, y + rad, rad, (float) Math.PI, (float) (Math.PI * 1.5));
+        this.fillArc(x + w - rad, y + rad, rad, (float) (Math.PI * 1.5), (float) (Math.PI * 2));
+        this.fillArc(x + w - rad, y + h - rad, rad, 0, (float) (Math.PI * 0.5));
+        this.fillArc(x + rad, y + h - rad, rad, (float) (Math.PI * 0.5), (float) Math.PI);
     }
 
     public void fillRounded(final float x, final float y, final float w, final float h, final float radius,
@@ -365,32 +297,19 @@ public final class RenderEngine {
         this.strokeQuads(x, y, w, h, lineWidth);
     }
 
-    // BOX OUTLINE AS FOUR EDGE QUADS CENTERED ON THE PATH, CORNERS COVERED ONCE SO A TRANSLUCENT BORDER IS NOT
-    // DOUBLED; UNLIKE A LINE_LOOP THEY JOIN THE TRIANGLE BATCH WITHOUT A FLUSH OR LINE-WIDTH CHANGE
-    private void strokeQuads(final float x, final float y, final float w, final float h, final float lineWidth) {
-        final float lw = Math.max(1f, lineWidth);
-        final float half = lw / 2f;
-        this.fill(x - half, y - half, lw, h + lw);
-        this.fill(x + w - half, y - half, lw, h + lw);
-        if (w > lw) {
-            this.fill(x + half, y - half, w - lw, lw);
-            this.fill(x + half, y + h - half, w - lw, lw);
-        }
-    }
-
     public void rectRounded(final float x, final float y, final float w, final float h,
-                            float radius, final float lineWidth) {
+                            final float radius, final float lineWidth) {
         if (radius <= 0f) {
             this.strokeQuads(x, y, w, h, lineWidth);
             return;
         }
-        radius = Math.min(radius, Math.min(w, h) / 2f);
+        final float rad = Math.min(radius, Math.min(w, h) / 2f);
         this.lineWidth(lineWidth);
         int idx = 0;
-        idx = this.putArc(idx, x + w - radius, y + radius, radius, (float) (-Math.PI / 2), 0f);
-        idx = this.putArc(idx, x + w - radius, y + h - radius, radius, 0f, (float) (Math.PI / 2));
-        idx = this.putArc(idx, x + radius, y + h - radius, radius, (float) (Math.PI / 2), (float) Math.PI);
-        idx = this.putArc(idx, x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5));
+        idx = this.putArc(idx, x + w - rad, y + rad, rad, (float) (-Math.PI / 2), 0f);
+        idx = this.putArc(idx, x + w - rad, y + h - rad, rad, 0f, (float) (Math.PI / 2));
+        idx = this.putArc(idx, x + rad, y + h - rad, rad, (float) (Math.PI / 2), (float) Math.PI);
+        idx = this.putArc(idx, x + rad, y + rad, rad, (float) Math.PI, (float) (Math.PI * 1.5));
         this.draw(DrawMode.LINE_LOOP, idx, false);
     }
 
@@ -457,7 +376,7 @@ public final class RenderEngine {
         final float b = glow.getBlue() / 255f;
         final float a = alpha * this.pulse;
         if (this.backend.supportsSoftRect()) {
-            // ONE SDF QUAD INSTEAD OF 10 STACKED FILLS — SAME HALO, A FRACTION OF THE OVERDRAW
+            // ONE SDF QUAD INSTEAD OF 10 STACKED FILLS: SAME HALO, A FRACTION OF THE OVERDRAW
             this.flush();
             this.backend.softRect(x, y, w, h, radius, r, g, b, a, GLOW_SOFTNESS);
             return;
@@ -465,22 +384,9 @@ public final class RenderEngine {
         for (int i = 10; i >= 1; i--) {
             final float spread = i * 2.2f;
             final float falloff = (float) Math.pow(i + 1f, 1.8f);
-            if (radius <= 0f) {
-                this.fill(x - spread, y - spread, w + spread * 2f, h + spread * 2f, r, g, b, a / falloff);
-            } else {
-                this.fillRounded(x - spread, y - spread, w + spread * 2f, h + spread * 2f,
-                        radius + spread, r, g, b, a / falloff);
-            }
+            if (radius <= 0f) this.fill(x - spread, y - spread, w + spread * 2f, h + spread * 2f, r, g, b, a / falloff);
+            else this.fillRounded(x - spread, y - spread, w + spread * 2f, h + spread * 2f, radius + spread, r, g, b, a / falloff);
         }
-    }
-
-    // SLOW, NON-REPEATING "HEARTBEAT" MODULATION OF THE GLOW FORCE. THREE INCOMMENSURATE SINES NEVER LOOP
-    // EXACTLY, SO THE PULSE FEELS ORGANIC/RANDOM AND BREATHES OVER ~10-30 SECONDS. RESULT IN [0.74, 0.9].
-    private static float glowPulse() {
-        final double t = System.currentTimeMillis() * 0.001;
-        final double wave = Math.sin(t * 0.45) + 0.6 * Math.sin(t * 0.19 + 1.3) + 0.35 * Math.sin(t * 0.83 + 2.7);
-        final double n = MathUtil.clamp(wave * 0.256 + 0.5, 0.0, 1.0);
-        return (float) (GLOW_STRENGTH * (0.82 + 0.18 * n));
     }
 
     public void shadowRect(final float x, final float y, final float w, final float h,
@@ -493,12 +399,91 @@ public final class RenderEngine {
         }
         for (int i = 4; i >= 1; i--) {
             final float spread = i * 3f;
-            if (radius <= 0f) {
-                this.fill(x + spread, y + spread, w, h, 0f, 0f, 0f, alpha / (i + 2f));
-            } else {
-                this.fillRounded(x + spread, y + spread, w, h,
-                        radius, 0f, 0f, 0f, alpha / (i + 2f));
-            }
+            if (radius <= 0f) this.fill(x + spread, y + spread, w, h, 0f, 0f, 0f, alpha / (i + 2f));
+            else this.fillRounded(x + spread, y + spread, w, h, radius, 0f, 0f, 0f, alpha / (i + 2f));
+        }
+    }
+
+    // ==========================================================================
+    // TREE CACHE
+    // ==========================================================================
+    // THE TREE PAINTS INTO OFFSCREEN LAYERS ONLY WHEN IT CHANGES, AND EVERY OTHER FRAME DRAWS THE LAYERS
+    // BACK WITH THE LIVE PAINTERS (THE CRT BAND) BETWEEN THEM
+
+    /** Returns whether the layers still hold the last cached tree pass. */
+    public boolean cacheValid() {
+        return this.cacheReady && this.cacheEpoch == this.backend.layerEpoch();
+    }
+
+    /** Starts a cached tree pass in the base layer; false when this frame cannot cache, so the tree draws to the window. */
+    public boolean beginCache(final float r, final float g, final float b, final float a) {
+        this.flush();
+        this.cacheReady = false;
+        this.topUsed = false;
+        this.caching = this.backend.beginLayer(LAYER_BASE, r, g, b, a);
+        // BUILDING A LAYER MAY BIND ITS OWN TEXTURE, SO THE NEXT bindTexture() MUST REACH THE BACKEND
+        this.boundTextureId = -1;
+        return this.caching;
+    }
+
+    /** Sends the rest of the cached pass to the top layer, which composites over the live painters. */
+    public void raiseCache() {
+        if (!this.caching || this.topUsed) return;
+        this.flush();
+        // A TOP LAYER THAT CANNOT OPEN LEAVES THE REST IN THE BASE ONE, UNDER THE PAINTERS BUT STILL VISIBLE
+        this.topUsed = this.backend.beginLayer(LAYER_TOP, 0f, 0f, 0f, 0f);
+        this.boundTextureId = -1;
+    }
+
+    /** Ends the cached pass; the layers stand in for the tree until it changes or the backend drops them. */
+    public void endCache() {
+        if (!this.caching) return;
+        this.flush();
+        this.backend.endLayer();
+        this.caching = false;
+        this.cacheReady = true;
+        this.cacheEpoch = this.backend.layerEpoch();
+    }
+
+    /** Forgets the layers after a pass that drew the tree straight into the window. */
+    public void dropCache() {
+        this.cacheReady = false;
+    }
+
+    /** Frees the layers between frames while nothing composites, such as with the CRT off or the window minimized. */
+    public void releaseCache() {
+        this.cacheReady = false;
+        this.backend.releaseLayers();
+    }
+
+    /** Draws the base or the top layer over the whole window; the top one only when the last pass raised it. */
+    public void drawCache(final boolean top) {
+        if (top && !this.topUsed) return;
+        this.clearClip();
+        if (!this.backend.bindLayer(top ? LAYER_TOP : LAYER_BASE)) return;
+        // THE SAME SENTINEL AS A MEDIA FRAME: blit() EMITS TEXTURED VERTICES AND THE NEXT bindTexture() REBINDS
+        this.boundTextureId = Integer.MAX_VALUE;
+        final boolean flipped = this.backend.layerFlipped();
+        this.color.set(1f, 1f, 1f, 1f);
+        this.blit(0f, 0f, this.orthoW, this.orthoH, 0f, flipped ? 1f : 0f, 1f, flipped ? 0f : 1f);
+        this.flush();
+        this.boundTextureId = -1;
+    }
+
+    // ==========================================================================
+    // VERTEX EMISSION
+    // ==========================================================================
+
+    private void strokeQuads(final float x, final float y, final float w, final float h, final float lineWidth) {
+        // FOUR EDGE QUADS CENTERED ON THE PATH, CORNERS COVERED ONCE SO A TRANSLUCENT BORDER IS NOT DOUBLED;
+        // UNLIKE A LINE_LOOP THEY JOIN THE TRIANGLE BATCH WITHOUT A FLUSH OR A LINE-WIDTH CHANGE
+        final float lw = Math.max(1f, lineWidth);
+        final float half = lw / 2f;
+        this.fill(x - half, y - half, lw, h + lw);
+        this.fill(x + w - half, y - half, lw, h + lw);
+        if (w > lw) {
+            this.fill(x + half, y - half, w - lw, lw);
+            this.fill(x + half, y + h - half, w - lw, lw);
         }
     }
 
@@ -506,9 +491,7 @@ public final class RenderEngine {
         this.put(0, cx, cy, 0f, 0f, this.color);
         for (int i = 0; i <= ARC_SEGMENTS; i++) {
             final float angle = startAngle + (endAngle - startAngle) * i / ARC_SEGMENTS;
-            this.put(1 + i, cx + (float) Math.cos(angle) * radius,
-                    cy + (float) Math.sin(angle) * radius,
-                    0f, 0f, this.color);
+            this.put(1 + i, cx + (float) Math.cos(angle) * radius, cy + (float) Math.sin(angle) * radius, 0f, 0f, this.color);
         }
         this.draw(DrawMode.TRIANGLE_FAN, 2 + ARC_SEGMENTS, false);
     }
@@ -517,22 +500,18 @@ public final class RenderEngine {
         int idx = startIdx;
         for (int i = 0; i <= ARC_SEGMENTS; i++) {
             final float angle = startAngle + (endAngle - startAngle) * i / ARC_SEGMENTS;
-            this.put(idx++, cx + (float) Math.cos(angle) * radius,
-                    cy + (float) Math.sin(angle) * radius,
-                    0f, 0f, this.color);
+            this.put(idx++, cx + (float) Math.cos(angle) * radius, cy + (float) Math.sin(angle) * radius, 0f, 0f, this.color);
         }
         return idx;
     }
 
-    private void put(final int index, final float x, final float y,
-                     final float u, final float v, final Vector4f c) {
+    private void put(final int index, final float x, final float y, final float u, final float v, final Vector4f c) {
         this.put(index, x, y, u, v, c.x, c.y, c.z, c.w);
     }
 
-    // SCALAR COLOR OVERLOAD — LETS GRADIENT/FADE VERTICES BE EMITTED WITHOUT ALLOCATING A Vector4f PER CALL
-    private void put(final int index, final float x, final float y,
-                     final float u, final float v,
+    private void put(final int index, final float x, final float y, final float u, final float v,
                      final float r, final float g, final float b, final float a) {
+        // SCALAR COLOR OVERLOAD: GRADIENT AND FADE VERTICES EMIT WITHOUT A Vector4f PER CALL
         final int off = index * FLOATS_PER_VERTEX;
         this.vertices[off] = x;
         this.vertices[off + 1] = y;
@@ -546,7 +525,7 @@ public final class RenderEngine {
 
     private void draw(final DrawMode mode, final int count, final boolean textured) {
         if (count <= 0) return;
-        // GUARD THE SCRATCH/BATCH ARRAYS (AND THE GL VBO) AT THE SINGLE EMIT SEAM SO NO PRIMITIVE OVERFLOWS.
+        // GUARD THE SCRATCH AND BATCH ARRAYS (AND THE GL VBO) AT THE SINGLE EMIT SEAM SO NO PRIMITIVE OVERFLOWS
         if (count > MAX_VERTICES) throw new IllegalArgumentException("UI draw exceeds vertex capacity: " + count + " > " + MAX_VERTICES);
         if (mode != DrawMode.TRIANGLES && mode != DrawMode.LINES) {
             this.flush();
@@ -559,10 +538,18 @@ public final class RenderEngine {
             this.batchMode = mode;
             this.batchTextured = textured;
         }
-
-        System.arraycopy(this.vertices, 0,
-                this.batchVertices, this.batchVertexCount * FLOATS_PER_VERTEX,
-                count * FLOATS_PER_VERTEX);
+        System.arraycopy(this.vertices, 0, this.batchVertices, this.batchVertexCount * FLOATS_PER_VERTEX, count * FLOATS_PER_VERTEX);
         this.batchVertexCount += count;
+    }
+
+    // UTILITY
+
+    private static float glowPulse() {
+        // SLOW, NON-REPEATING HEARTBEAT OF THE GLOW FORCE: THREE INCOMMENSURATE SINES NEVER LOOP EXACTLY, SO THE
+        // PULSE BREATHES OVER ~10-30 SECONDS. RESULT IN [0.74, 0.9]
+        final double t = System.currentTimeMillis() * 0.001;
+        final double wave = Math.sin(t * 0.45) + 0.6 * Math.sin(t * 0.19 + 1.3) + 0.35 * Math.sin(t * 0.83 + 2.7);
+        final double n = MathUtil.clamp(wave * 0.256 + 0.5, 0.0, 1.0);
+        return (float) (GLOW_STRENGTH * (0.82 + 0.18 * n));
     }
 }

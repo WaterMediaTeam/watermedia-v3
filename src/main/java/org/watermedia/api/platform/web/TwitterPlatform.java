@@ -21,9 +21,10 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves tweets through the public syndication endpoint into one source per photo or progressive MP4 video. */
 public final class TwitterPlatform implements Platform {
-    public static final String NAME = "Twitter";
     private static final Marker IT = MarkerManager.getMarker(TwitterPlatform.class.getSimpleName());
+    public static final String NAME = "Twitter";
     private static final String API_URL = "https://cdn.syndication.twimg.com/tweet-result?id=%s&token=%s&lang=en";
     private static final String API_TOKEN = "watermedia-java-x-access-token";
     private static final Pattern ID_PATTERN = Pattern.compile("/status/(\\d+)(?:/|$)");
@@ -60,18 +61,23 @@ public final class TwitterPlatform implements Platform {
         if (tweet.mediaDetails == null || tweet.mediaDetails.length == 0)
             throw new PlatformException(NAME, "Tweet '" + tweetId + "' carries no media (text-only or protected)");
 
-        // THE TWEET TEXT IS THE CONTENT; THE ACCOUNT THAT POSTED IT IS THE AUTHOR
-        final String text = tweet.text;
-        final String title = text != null && !text.isBlank() ? truncateTitle(text) : "Tweet #" + tweetId;
+        // THE TWEET TEXT, CUT TO ONE LINE, IS THE TITLE; THE ACCOUNT THAT POSTED IT IS THE AUTHOR
+        final String text = tweet.text == null ? "" : tweet.text.replace('\n', ' ');
+        final String title = text.isBlank() ? "Tweet #" + tweetId : text.length() > TITLE_LENGTH ? text.substring(0, TITLE_LENGTH) + "..." : text;
         final String author = tweet.user == null ? null : tweet.user.name != null ? tweet.user.name : tweet.user.screenName;
-        // PARSE THE TIMESTAMP ONCE AND REUSE ACROSS EVERY MEDIA ENTRY (A BAD DATE MUST NOT DROP MEDIA)
-        final Instant postedAt = parseInstant(tweet.createdAt);
+
+        // ONE TIMESTAMP FOR EVERY MEDIA ENTRY; A BAD DATE MUST NOT DROP MEDIA
+        Instant postedAt = null;
+        if (tweet.createdAt != null) {
+            try { postedAt = Instant.parse(tweet.createdAt); }
+            catch (final DateTimeParseException e) { LOGGER.warn(IT, "Twitter unparseable created_at '{}'", tweet.createdAt, e); }
+        }
 
         final HttpHeaders headers = HttpHeaders.defaults(uri);
         final List<Source> entries = new ArrayList<>(tweet.mediaDetails.length);
         for (int i = 0; i < tweet.mediaDetails.length; i++) {
             try {
-                final Source entry = this.buildEntry(tweet, tweet.mediaDetails[i], title, author, postedAt, headers);
+                final Source entry = this.entry(tweet, tweet.mediaDetails[i], title, author, postedAt, headers);
                 if (entry != null) entries.add(entry);
             } catch (final RuntimeException e) {
                 LOGGER.warn(IT, "Twitter failed to build entry for media {} of tweet '{}'", i, tweetId, e);
@@ -85,7 +91,8 @@ public final class TwitterPlatform implements Platform {
         return new Resolution(null, entries);
     }
 
-    private Source buildEntry(final Tweet tweet, final MediaDetail media, final String title, final String author, final Instant postedAt, final HttpHeaders headers) {
+    // ONE MEDIA ITEM OF THE TWEET AS A SOURCE, OR NULL WHEN IT HAS NOTHING PLAYABLE
+    private Source entry(final Tweet tweet, final MediaDetail media, final String title, final String author, final Instant postedAt, final HttpHeaders headers) {
         if ("photo".equals(media.type)) {
             final URI photo = DataTool.uri(media.mediaUrlHttps);
             if (photo == null) {
@@ -112,7 +119,7 @@ public final class TwitterPlatform implements Platform {
             for (final var variant: media.videoInfo.variants) {
                 final URI rendition = DataTool.uri(variant.url);
                 if (rendition == null) continue;
-                final var resMatcher = RESOLUTION_PATTERN.matcher(variant.url);
+                final Matcher resMatcher = RESOLUTION_PATTERN.matcher(variant.url);
                 if (!resMatcher.find()) continue; // SKIP NON-PROGRESSIVE RENDITIONS (E.G. THE m3u8 PLAYLIST ENTRY)
                 variants.add(new Quality(rendition, DataTool.parseInt(resMatcher.group(1), 0), DataTool.parseInt(resMatcher.group(2), 0)));
             }
@@ -131,17 +138,6 @@ public final class TwitterPlatform implements Platform {
         return null;
     }
 
-    private static String truncateTitle(final String text) {
-        final String oneLine = text.replace('\n', ' ');
-        return oneLine.length() > TITLE_LENGTH ? oneLine.substring(0, TITLE_LENGTH) + "..." : oneLine;
-    }
-
-    private static Instant parseInstant(final String iso) {
-        if (iso == null) return null;
-        try { return Instant.parse(iso); }
-        catch (final DateTimeParseException e) { LOGGER.warn(IT, "Twitter unparseable created_at '{}'", iso, e); return null; }
-    }
-
     private record Tweet(
             @SerializedName("__typename") String typename,
             String text,
@@ -153,10 +149,8 @@ public final class TwitterPlatform implements Platform {
     ) {}
 
     private record User(String name, @SerializedName("screen_name") String screenName) {}
-
     // A TOMBSTONE CARRIES ITS REASON AS text.text ("Age-restricted adult content...", "This Post was deleted...")
     private record Tombstone(TombstoneText text) {}
-
     private record TombstoneText(String text) {}
 
     private record MediaDetail(
@@ -166,10 +160,7 @@ public final class TwitterPlatform implements Platform {
             @SerializedName("original_info") MediaOriginalInfo originalInfo
     ) {}
 
-    private record MediaOriginalInfo(
-       int width,
-       int height
-    ) {}
+    private record MediaOriginalInfo(int width, int height) {}
 
     private record VideoInfo(
             @SerializedName("duration_millis") int durationMillis,

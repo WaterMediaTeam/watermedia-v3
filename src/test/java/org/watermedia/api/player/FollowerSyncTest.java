@@ -23,11 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies that headless mirrors follow a {@link ServerMediaPlayer} clock end to end over a byte transport: an in-test
- * network polls the clock's revision, sends its encoded snapshot whenever it moved and on a periodic resend, and every
- * mirror feeds those bytes to {@link MediaPlayer#sync(ByteBuffer)}, as a host's packet channel would.
- */
+/** Verifies that headless mirrors follow a {@link ServerMediaPlayer} clock end to end over an in-test byte transport. */
 @DisplayName("Follower sync")
 public class FollowerSyncTest {
 

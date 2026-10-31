@@ -13,7 +13,7 @@ import java.net.URI;
 import java.util.List;
 
 /**
- * MANUAL verification harness (not a JUnit test): resolves URLs through the actual yt-dlp platforms,
+ * Manual verification harness (not a JUnit test): resolves URLs through the actual yt-dlp platforms,
  * exactly as {@code PlatformAPI} would — so host routing, yt-dlp extraction and the resulting
  * {@link Source} are all exercised end-to-end on this machine's own network (useful when a site
  * blocks datacenter IPs). Run its {@code main} from the IDE with the URLs as arguments; with none it
@@ -36,12 +36,8 @@ public final class PlatformSmokeTest {
                 new YouTubePlatform());
 
         final String[] urls = args.length > 0 ? args : DEFAULTS;
-        for (final String url: urls) {
-            resolve(platforms, url);
-        }
-        if (args.length == 0) {
-            System.out.println("\nTip: test Facebook/Instagram by passing a fresh public link as an argument");
-        }
+        for (final String url: urls) resolve(platforms, url);
+        if (args.length == 0) System.out.println("\nTip: test Facebook/Instagram by passing a fresh public link as an argument");
         System.exit(0);
     }
 
@@ -52,12 +48,11 @@ public final class PlatformSmokeTest {
         try {
             for (final Platform platform: platforms) {
                 final Resolution data = platform.resolve(uri);
-                if (data == null) continue; // NOT THIS PLATFORM'S HOST — KEEP PROBING
+                // NOT THIS PLATFORM'S HOST: KEEP PROBING
+                if (data == null) continue;
                 System.out.println("platform=" + platform.name() + " sources=" + data.sourceCount()
                         + " expires=" + data.expires() + " (" + (System.currentTimeMillis() - started) + "ms)");
-                for (final Source src: data.sources()) {
-                    print(src);
-                }
+                for (final Source src: data.sources()) print(src);
                 return;
             }
             System.out.println("(no platform handled this URL)");
@@ -67,7 +62,8 @@ public final class PlatformSmokeTest {
     }
 
     private static void print(final Source src) {
-        final Metadata meta = src.metadata(); // OPTIONAL ON A SOURCE
+        // OPTIONAL ON A SOURCE
+        final Metadata meta = src.metadata();
         System.out.println("  type=" + src.type() + " qualities=" + src.qualities().size()
                 + " | title=" + (meta == null ? "(none)" : meta.title()) + " | author=" + (meta == null ? "(none)" : meta.author()));
         System.out.println("  UA=" + src.headers().value("User-Agent"));

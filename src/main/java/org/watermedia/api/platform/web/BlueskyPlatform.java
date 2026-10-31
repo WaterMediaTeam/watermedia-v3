@@ -32,9 +32,10 @@ import static org.watermedia.tools.JSONTool.intOr;
 import static org.watermedia.tools.JSONTool.obj;
 import static org.watermedia.tools.JSONTool.str;
 
+/** Resolves Bluesky posts (web or {@code at://} links) through the public XRPC API into their videos and images, quoted posts included. */
 public final class BlueskyPlatform implements Platform {
-    public static final String NAME = "Bluesky";
     private static final Marker IT = MarkerManager.getMarker(BlueskyPlatform.class.getSimpleName());
+    public static final String NAME = "Bluesky";
     private static final String API_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread";
     private static final String BLOB_URL_TMPL = "%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s";
     private static final String PLC_DIRECTORY_URL = "https://plc.directory/%s";
@@ -231,6 +232,7 @@ public final class BlueskyPlatform implements Platform {
         return DEFAULT_PDS;
     }
 
+    // UTILITY
     private static String enc(final String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }

@@ -99,7 +99,8 @@ public class PlatformSearchTest {
         @Test
         @DisplayName("The list fills off-thread, is read-only and a platform over the limit is capped")
         void testLiveListAndCap() {
-            PlatformAPI.register(new StubPlatform(5, null)); // RETURNS 5 HITS WHATEVER IT IS ASKED; THE API KEEPS THE LIMIT
+            // RETURNS 5 HITS WHATEVER IT IS ASKED; THE API KEEPS THE LIMIT
+            PlatformAPI.register(new StubPlatform(5, null));
             final List<PlatformResult> results = PlatformAPI.search("lions");
             assertTrue(awaitDone("lions"), "Search must complete");
             assertEquals(WaterMediaConfig.platforms.searchLimit, results.size(), "Hits beyond the per-platform limit must be dropped");
@@ -181,7 +182,8 @@ public class PlatformSearchTest {
         @Test
         @DisplayName("A registration during a search keeps that search out of the cache")
         void testRegistrationDuringSearchIsNotCached() {
-            final StubPlatform stub = new StubPlatform(1, 300); // BLOCKS SO THE REGISTRY CHANGES WHILE THE SEARCH RUNS
+            // BLOCKS SO THE REGISTRY CHANGES WHILE THE SEARCH RUNS
+            final StubPlatform stub = new StubPlatform(1, 300);
             PlatformAPI.register(stub);
             final List<PlatformResult> first = PlatformAPI.search("race");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
@@ -217,13 +219,15 @@ public class PlatformSearchTest {
         @Test
         @DisplayName("A new query discards the search in flight, whose list stays empty and leaves the cache")
         void testNewQueryDiscardsTheOldSearch() {
-            final StubPlatform stub = new StubPlatform(1, 2_000); // BLOCKS SO THE FIRST SEARCH STAYS IN-FLIGHT
+            // BLOCKS SO THE FIRST SEARCH STAYS IN-FLIGHT
+            final StubPlatform stub = new StubPlatform(1, 2_000);
             PlatformAPI.register(stub);
 
             final List<PlatformResult> first = PlatformAPI.search("cats");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
             assertTrue(PlatformAPI.searching("cats"));
-            final List<PlatformResult> second = PlatformAPI.search("dogs"); // NOTHING ALIKE: NO TYPING DELAY
+            // NOTHING ALIKE: NO TYPING DELAY
+            final List<PlatformResult> second = PlatformAPI.search("dogs");
             assertFalse(PlatformAPI.searching("cats"), "The discarded search is no longer in flight");
             // THE CANCELLED PROBE UNWINDS ON ITS OWN THREAD; ONLY ONCE IT HAS RETURNED CAN ITS HITS BE RULED OUT
             assertTrue(PlayerWait.awaitCondition(() -> stub.finished.get() == 1, 3_000), "The cancelled probe must unwind");
@@ -252,7 +256,8 @@ public class PlatformSearchTest {
                     assertEquals(1, stub.probes.get());
 
                     final long started = System.nanoTime();
-                    final List<PlatformResult> typed = PlatformAPI.search("cars"); // ONE LETTER FIXED: THE SAME INTENTION
+                    // ONE LETTER FIXED: THE SAME INTENTION
+                    final List<PlatformResult> typed = PlatformAPI.search("cars");
                     assertTrue(PlatformAPI.searching("cars"), "The delayed search counts as in flight");
                     assertFalse(PlayerWait.awaitCondition(() -> stub.probes.get() == 2, 120), "A typing continuation must wait before probing");
                     assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 2, 3_000), "The delayed probe must run");
@@ -277,7 +282,8 @@ public class PlatformSearchTest {
         @Test
         @DisplayName("A blank query leaves the running search alone")
         void testBlankQueryDoesNotDiscard() {
-            final StubPlatform stub = new StubPlatform(1, 300); // BLOCKS BRIEFLY SO THE FIRST SEARCH IS STILL IN-FLIGHT
+            // BLOCKS BRIEFLY SO THE FIRST SEARCH IS STILL IN-FLIGHT
+            final StubPlatform stub = new StubPlatform(1, 300);
             PlatformAPI.register(stub);
 
             final List<PlatformResult> first = PlatformAPI.search("wolves");

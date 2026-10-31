@@ -37,8 +37,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
     private static final Marker IT = MarkerManager.getMarker(OpenGLRenderBackend.class.getSimpleName());
 
     private static final int FLOATS_PER_VERTEX = 8;
-    // MATCHES RenderEngine.MAX_VERTICES — THE ENGINE VALIDATES DRAWS AGAINST THE SAME CAP; KEEP THEM IN SYNC.
-    private static final int MAX_VERTICES = 8192;
+    // MATCHES RenderEngine.MAX_VERTICES, WHICH VALIDATES DRAWS AGAINST THE SAME CAP; KEEP THEM IN SYNC
+    private static final int MAX_VERTICES = 8_192;
 
     private final long window;
     private int program;
@@ -57,14 +57,14 @@ public final class OpenGLRenderBackend implements RenderBackend {
     private FloatBuffer uploadBuffer;
     private FloatBuffer projectionBuffer;
     private boolean initialized;
-    private boolean frameActive;            // BETWEEN beginFrame/present THE PROGRAM+VAO+VBO STAY BOUND FOR THE WHOLE FRAME
-    private boolean projectionDirty = true; // RE-UPLOAD THE PROJECTION UNIFORM ONLY AFTER IT ACTUALLY CHANGED
-    private float boundUseTexture = -1f;    // LAST useTexture UNIFORM VALUE — SKIPS RE-SETTING IT EVERY DRAW
+    private boolean frameActive;            // BETWEEN beginFrame AND present THE PROGRAM, VAO AND VBO STAY BOUND
+    private boolean projectionDirty = true; // RE-UPLOAD THE PROJECTION UNIFORM ONLY AFTER IT CHANGED
+    private float boundUseTexture = -1f;    // LAST useTexture UNIFORM VALUE, SO EQUAL DRAWS SKIP RE-SETTING IT
     private String deviceName = "Unknown";
     private String deviceVersion = "";
     private int glVerMajor;
     private int glVerMinor;
-    private GLDebugMessageARBCallback debugCallback; // RETAINED SO THE NATIVE CLOSURE OUTLIVES THE CALL AND IS FREED IN cleanup()
+    private GLDebugMessageARBCallback debugCallback; // RETAINED SO THE NATIVE CLOSURE OUTLIVES THE CALL; FREED IN cleanup()
     // TREE CACHE LAYERS: A FRAMEBUFFER AND COLOR TEXTURE EACH, SIZED TO THE VIEWPORT AND BUILT ON FIRST USE
     private final int[] layerFbo = new int[2];
     private final int[] layerTex = new int[2];
@@ -86,10 +86,24 @@ public final class OpenGLRenderBackend implements RenderBackend {
     // ==========================================================================
     // CONTEXT / CAPABILITIES
     // ==========================================================================
-    // MAKES THE GL CONTEXT CURRENT AND LOADS ITS CAPABILITIES BEFORE init() COMPILES THE SHADERS
+    @Override
+    public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
+        return () -> PlayerAPI.glEngine(renderThread, renderExecutor);
+    }
+
+    @Override
+    public String deviceName() {
+        return this.deviceName;
+    }
+
+    @Override
+    public String deviceVersion() {
+        return this.deviceVersion;
+    }
+
     private void attachContext() {
-        // THE REAL CONTEXT IS PINNED TO 3.2 CORE, WHICH SOME DRIVERS (e.g. NVIDIA) REPORT VERBATIM RATHER
-        // THAN THE GPU MAX. PROBE THE DRIVER'S HIGHEST VERSION VIA A THROWAWAY DEFAULT-HINTS CONTEXT FIRST.
+        // THE REAL CONTEXT IS PINNED TO 3.2 CORE, WHICH SOME DRIVERS (NVIDIA) REPORT VERBATIM RATHER THAN THE GPU MAX,
+        // SO A THROWAWAY DEFAULT-HINTS CONTEXT PROBES THE DRIVER'S HIGHEST VERSION FIRST
         long probe = 0L;
         try {
             glfwDefaultWindowHints();
@@ -101,8 +115,9 @@ public final class OpenGLRenderBackend implements RenderBackend {
                 this.captureInfo();
             }
         } catch (final Throwable ignored) {
+            // A FAILED PROBE ONLY LEAVES THE VERSION OF THE REAL CONTEXT
         } finally {
-            // TEAR DOWN THE THROWAWAY CONTEXT ON EVERY PATH, THEN RESTORE DEFAULT HINTS SO LATER WINDOWS RE-HINT CLEANLY.
+            // DEFAULT HINTS AGAIN SO LATER WINDOWS RE-HINT CLEANLY
             glfwMakeContextCurrent(0L);
             if (probe != 0L) glfwDestroyWindow(probe);
             glfwDefaultWindowHints();
@@ -111,24 +126,22 @@ public final class OpenGLRenderBackend implements RenderBackend {
         glfwMakeContextCurrent(this.window);
         glfwSwapInterval(1);
         GL.createCapabilities();
-        // FALLBACK / GPU NAME FROM THE REAL CONTEXT (captureInfo ONLY RAISES THE VERSION, NEVER LOWERS IT)
+        // GPU NAME AND FALLBACK VERSION FROM THE REAL CONTEXT (captureInfo ONLY RAISES THE VERSION, NEVER LOWERS IT)
         this.captureInfo();
-        // ONLY WHEN A DEBUG CONTEXT WAS REQUESTED: SILENCE ITS OUTPUT WITH A RETAINED EMPTY CALLBACK (FREED IN cleanup()).
-        // WITHOUT THE DEBUG CONTEXT (THE DEFAULT) THERE IS NOTHING TO SILENCE AND ARB_debug_output MAY BE ABSENT.
+        // A REQUESTED DEBUG CONTEXT IS SILENCED WITH A RETAINED EMPTY CALLBACK; WITHOUT ONE THERE IS NOTHING TO
+        // SILENCE AND ARB_debug_output MAY BE ABSENT
         if (RenderSystem.GL_DEBUG) {
-            this.debugCallback = GLDebugMessageARBCallback.create((source, type, id, severity, length, message, userParam) -> {
-            });
+            this.debugCallback = GLDebugMessageARBCallback.create((source, type, id, severity, length, message, userParam) -> {});
             ARBDebugOutput.glDebugMessageCallbackARB(this.debugCallback, 0);
         }
     }
 
-    // READS GL_RENDERER + THE CURRENT CONTEXT VERSION; KEEPS THE HIGHEST VERSION SEEN ACROSS CONTEXTS.
     private void captureInfo() {
+        // KEEPS THE HIGHEST CONTEXT VERSION SEEN ACROSS THE PROBE AND THE REAL CONTEXT
         try {
             final String renderer = GL11.glGetString(GL11.GL_RENDERER);
             if (renderer != null && !renderer.isBlank()) this.deviceName = renderer;
-        } catch (final Throwable ignored) {
-        }
+        } catch (final Throwable ignored) {}
         try {
             final int major = GL11.glGetInteger(GL30.GL_MAJOR_VERSION);
             final int minor = GL11.glGetInteger(GL30.GL_MINOR_VERSION);
@@ -137,13 +150,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
                 this.glVerMinor = minor;
                 this.deviceVersion = major + "." + minor;
             }
-        } catch (final Throwable ignored) {
-        }
-    }
-
-    @Override
-    public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
-        return () -> PlayerAPI.glEngine(renderThread, renderExecutor);
+        } catch (final Throwable ignored) {}
     }
 
     // ==========================================================================
@@ -173,16 +180,6 @@ public final class OpenGLRenderBackend implements RenderBackend {
         glfwSwapBuffers(this.window);
     }
 
-    @Override
-    public String deviceName() {
-        return this.deviceName;
-    }
-
-    @Override
-    public String deviceVersion() {
-        return this.deviceVersion;
-    }
-
     // ==========================================================================
     // LIFECYCLE (SHADERS / BUFFERS)
     // ==========================================================================
@@ -201,9 +198,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL20.glBindAttribLocation(this.program, 1, "texCoord");
         GL20.glBindAttribLocation(this.program, 2, "vertColor");
         GL20.glLinkProgram(this.program);
-        if (GL20.glGetProgrami(this.program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-            throw new IllegalStateException("OpenGL renderer link failed: " + GL20.glGetProgramInfoLog(this.program, 2048));
-        }
+        if (GL20.glGetProgrami(this.program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE)
+            throw new IllegalStateException("OpenGL renderer link failed: " + GL20.glGetProgramInfoLog(this.program, 2_048));
 
         GL20.glDetachShader(this.program, vertexShader);
         GL20.glDetachShader(this.program, fragmentShader);
@@ -217,7 +213,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL20.glUniform1i(GL20.glGetUniformLocation(this.program, "tex"), 0);
         GL20.glUseProgram(0);
 
-        // SDF SOFT-RECT PROGRAM — GLOW / SHADOW IN ONE PASS (SHARES THE VAO; READS ONLY THE position ATTRIB)
+        // SDF SOFT-RECT PROGRAM: GLOW AND SHADOW IN ONE PASS (SHARES THE VAO; READS ONLY THE position ATTRIB)
         final int sdfVertex = compileShader(GL20.GL_VERTEX_SHADER, "opengl/sdf.vert");
         final int sdfFragment = compileShader(GL20.GL_FRAGMENT_SHADER, "opengl/sdf.frag");
         this.sdfProgram = GL20.glCreateProgram();
@@ -225,9 +221,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL20.glAttachShader(this.sdfProgram, sdfFragment);
         GL20.glBindAttribLocation(this.sdfProgram, 0, "position");
         GL20.glLinkProgram(this.sdfProgram);
-        if (GL20.glGetProgrami(this.sdfProgram, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-            throw new IllegalStateException("OpenGL SDF program link failed: " + GL20.glGetProgramInfoLog(this.sdfProgram, 2048));
-        }
+        if (GL20.glGetProgrami(this.sdfProgram, GL20.GL_LINK_STATUS) == GL11.GL_FALSE)
+            throw new IllegalStateException("OpenGL SDF program link failed: " + GL20.glGetProgramInfoLog(this.sdfProgram, 2_048));
         GL20.glDetachShader(this.sdfProgram, sdfVertex);
         GL20.glDetachShader(this.sdfProgram, sdfFragment);
         GL20.glDeleteShader(sdfVertex);
@@ -244,9 +239,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
 
         GL30.glBindVertexArray(this.vao);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vbo);
-        GL15.glBufferData(GL15.GL_ARRAY_BUFFER,
-                (long) MAX_VERTICES * FLOATS_PER_VERTEX * Float.BYTES,
-                GL15.GL_STREAM_DRAW);
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, (long) MAX_VERTICES * FLOATS_PER_VERTEX * Float.BYTES, GL15.GL_STREAM_DRAW);
 
         final int stride = FLOATS_PER_VERTEX * Float.BYTES;
         GL20.glEnableVertexAttribArray(0);
@@ -272,8 +265,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
 
     @Override
     public void cleanup() {
-        // FREE THE RETAINED DEBUG CLOSURE FIRST (EVEN IF init() FAILED AFTER ATTACHING IT) — LEAKING IT WOULD
-        // OUTLIVE THE CONTEXT, AND THE DRIVER CALLING A COLLECTED CLOSURE CAN CRASH THE JVM.
+        // THE DEBUG CLOSURE GOES FIRST, EVEN WHEN init() FAILED AFTER ATTACHING IT: A DRIVER CALLING A COLLECTED
+        // CLOSURE AFTER THE CONTEXT CAN CRASH THE JVM
         if (this.debugCallback != null) {
             this.debugCallback.free();
             this.debugCallback = null;
@@ -414,8 +407,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, width);
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, 0);
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
-        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, width, height,
-                0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, rgba);
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, width, height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, rgba);
         // RESTORE THE DEFAULT ROW LENGTH SO THE SHARED GL STATE DOES NOT MIS-FEED A LATER UPLOAD
         GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, 0);
         return new TextureHandle(id, width, height);
@@ -423,9 +415,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
 
     @Override
     public void deleteTexture(final TextureHandle texture) {
-        if (texture != null && texture.id() > 0) {
-            GL11.glDeleteTextures(texture.id());
-        }
+        if (texture != null && texture.id() > 0) GL11.glDeleteTextures(texture.id());
     }
 
     @Override
@@ -451,12 +441,11 @@ public final class OpenGLRenderBackend implements RenderBackend {
         if (vertexCount <= 0) return;
 
         final int floats = vertexCount * FLOATS_PER_VERTEX;
-        if (floats > this.uploadBuffer.capacity()) {
+        if (floats > this.uploadBuffer.capacity())
             throw new IllegalArgumentException("Too many UI vertices in one draw call: " + vertexCount);
-        }
 
-        // OUTSIDE A FRAME (E.G. A FLUSH TRIGGERED BY createTexture DURING LOADING) BIND/UNBIND LOCALLY;
-        // INSIDE A FRAME beginFrame ALREADY BOUND THE PROGRAM/VAO/VBO AND present() WILL UNBIND THEM.
+        // OUTSIDE A FRAME (A FLUSH FROM createTexture DURING LOADING) BIND AND UNBIND LOCALLY;
+        // INSIDE ONE beginFrame ALREADY BOUND THE PROGRAM, VAO AND VBO AND present() UNBINDS THEM
         final boolean standalone = !this.frameActive;
         if (standalone) {
             GL20.glUseProgram(this.program);
@@ -479,8 +468,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.uploadBuffer.clear();
         this.uploadBuffer.put(vertices, 0, floats);
         this.uploadBuffer.flip();
-        // ORPHAN + UPLOAD IN ONE CALL: RESPECIFYING THE STORE HANDS BACK FRESH DRIVER MEMORY INSTEAD OF STALLING
-        // ON THE PRIOR DRAW STILL READING THE SAME REGION (THE UNSYNCHRONIZED-STREAMING HAZARD OF SUBDATA-AT-0).
+        // ORPHAN AND UPLOAD IN ONE CALL: RESPECIFYING THE STORE HANDS BACK FRESH DRIVER MEMORY INSTEAD OF STALLING
+        // ON THE PRIOR DRAW STILL READING THE SAME REGION
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, this.uploadBuffer, GL15.GL_STREAM_DRAW);
 
         GL11.glDrawArrays(toGLMode(mode), 0, vertexCount);
@@ -505,7 +494,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
         final float y0 = y - soft;
         final float x1 = x + w + soft;
         final float y1 = y + h + soft;
-        // A QUAD (2 TRIS) COVERING THE RECT PLUS THE SOFTNESS MARGIN — THE SDF SHADER READS ONLY position
+        // TWO TRIANGLES COVERING THE RECT PLUS THE SOFTNESS MARGIN; THE SDF SHADER READS ONLY position
         this.softVertex(0, x0, y0);
         this.softVertex(1, x1, y0);
         this.softVertex(2, x1, y1);
@@ -528,12 +517,12 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.uploadBuffer.clear();
         this.uploadBuffer.put(this.softQuad, 0, this.softQuad.length);
         this.uploadBuffer.flip();
-        // ORPHAN + UPLOAD (SEE draw()): AVOID STALLING ON THE PRIOR DRAW STILL READING THE SAME VBO REGION.
+        // ORPHAN AND UPLOAD, AS IN draw()
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, this.uploadBuffer, GL15.GL_STREAM_DRAW);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
 
         if (this.frameActive) {
-            // BACK TO THE UI PROGRAM FOR THE FOLLOWING BATCHED DRAWS; FORCE ITS UNIFORMS TO BE RE-SET NEXT DRAW
+            // BACK TO THE UI PROGRAM FOR THE FOLLOWING BATCHED DRAWS, WITH ITS UNIFORMS RE-SET ON THE NEXT DRAW
             GL20.glUseProgram(this.program);
             this.projectionDirty = true;
             this.boundUseTexture = -1f;
@@ -541,18 +530,6 @@ public final class OpenGLRenderBackend implements RenderBackend {
             GL30.glBindVertexArray(0);
             GL20.glUseProgram(0);
         }
-    }
-
-    private void softVertex(final int index, final float x, final float y) {
-        final int off = index * FLOATS_PER_VERTEX;
-        this.softQuad[off] = x;
-        this.softQuad[off + 1] = y;
-        this.softQuad[off + 2] = 0f;
-        this.softQuad[off + 3] = 0f;
-        this.softQuad[off + 4] = 0f;
-        this.softQuad[off + 5] = 0f;
-        this.softQuad[off + 6] = 0f;
-        this.softQuad[off + 7] = 0f;
     }
 
     @Override
@@ -573,8 +550,22 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.scissorOn = false;
     }
 
-    // COMPILES ONE STAGE FROM THE BUNDLED SHADERS; THE UI CANNOT DRAW WITHOUT THEM, SO ANY FAILURE ABORTS THE BACKEND
+    private void softVertex(final int index, final float x, final float y) {
+        final int off = index * FLOATS_PER_VERTEX;
+        this.softQuad[off] = x;
+        this.softQuad[off + 1] = y;
+        this.softQuad[off + 2] = 0f;
+        this.softQuad[off + 3] = 0f;
+        this.softQuad[off + 4] = 0f;
+        this.softQuad[off + 5] = 0f;
+        this.softQuad[off + 6] = 0f;
+        this.softQuad[off + 7] = 0f;
+    }
+
+    // UTILITY
+
     private static int compileShader(final int type, final String name) {
+        // THE UI CANNOT DRAW WITHOUT ITS BUNDLED SHADERS, SO ANY FAILURE ABORTS THE BACKEND
         final String source;
         try { source = IOTool.shader(name); }
         catch (final IOException e) { throw new IllegalStateException("OpenGL renderer shader unavailable: " + name, e); }
@@ -582,7 +573,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL20.glShaderSource(shader, source);
         GL20.glCompileShader(shader);
         if (GL20.glGetShaderi(shader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-            final String log = GL20.glGetShaderInfoLog(shader, 2048);
+            final String log = GL20.glGetShaderInfoLog(shader, 2_048);
             GL20.glDeleteShader(shader);
             throw new IllegalStateException("OpenGL renderer shader " + name + " failed: " + log);
         }

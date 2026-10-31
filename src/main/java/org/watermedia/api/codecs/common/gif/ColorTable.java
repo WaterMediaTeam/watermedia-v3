@@ -16,11 +16,10 @@ public record ColorTable(int size, int[] colors) implements IChunk {
         if (buffer.remaining() < size * 3)
             throw new CodecException("Truncated GIF color table: " + size * 3 + " bytes declared, " + buffer.remaining() + " available");
 
+        // ARGB INTS, WHICH READ AS BGRA BYTES THROUGH AN IntBuffer OVER A LITTLE-ENDIAN DIRECT BUFFER
         final int[] colors = new int[size];
-        for (int i = 0, p = at; i < size; i++, p += 3) {
-            // BGRA LAYOUT WHEN CONSUMED VIA IntBuffer OVER A LITTLE-ENDIAN DIRECT BUFFER
+        for (int i = 0, p = at; i < size; i++, p += 3)
             colors[i] = 0xFF000000 | ((buffer.get(p) & 0xFF) << 16) | ((buffer.get(p + 1) & 0xFF) << 8) | (buffer.get(p + 2) & 0xFF);
-        }
         buffer.position(at + size * 3);
         return new ColorTable(size, colors);
     }

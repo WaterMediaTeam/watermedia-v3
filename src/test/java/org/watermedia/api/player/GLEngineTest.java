@@ -19,6 +19,7 @@ import org.watermedia.test.support.YuvFrames;
 import java.awt.GraphicsEnvironment;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
@@ -35,15 +36,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
-/**
- * Verifies {@link GLEngine} on a real OpenGL context: odd sizes keep their last chroma column, padded planes may end
- * on their last tight row, packed YUYV keeps each pixel's luma, ragged RGB strides land every row, the colorimetry
- * (matrix, range, chroma siting, PQ/HLG and BT.2020) matches the standard formulas, every upload shows its own frame
- * with or without a render thread, and engines on one context share their conversion programs. Skipped without a
- * display, GLFW or a 3.2 core context.
- */
+/** Verifies {@link GLEngine} plane layouts, colorimetry, uploads and shared programs on a real OpenGL 3.2 core context, if any. */
 @DisplayName("GLEngine")
 public class GLEngineTest {
+
     private static final double[] BT601 = { 0.299, 0.114 };
     private static final double[] BT709 = { 0.2126, 0.0722 };
     private static final double[] BT2020 = { 0.2627, 0.0593 };
@@ -337,7 +333,8 @@ public class GLEngineTest {
                 kit = field(first, "kit");
                 assertNotNull(kit, "a conversion layout takes the context's kit");
                 assertSame(kit, field(second, "kit"), "a second engine on the same context reuses the kit");
-                program = program(kit);
+                // THE KIT'S YUV 3-PLANE PROGRAM, THE ONLY KIND THIS TEST CONVERTS
+                program = Arrays.stream((int[]) field(kit, "programs")).filter(id -> id != 0).findFirst().orElse(0);
                 assertTrue(GL20.glIsProgram(program), "the shared program is live");
 
                 first.release();
@@ -373,14 +370,6 @@ public class GLEngineTest {
         } catch (final ReflectiveOperationException e) {
             throw new AssertionError(owner.getClass().getSimpleName() + " has no field " + member, e);
         }
-    }
-
-    // THE KIT'S YUV 3-PLANE PROGRAM (THE ONLY KIND THE SHARING TEST CONVERTS)
-    private static int program(final Object kit) {
-        for (final int program: (int[]) field(kit, "programs")) {
-            if (program != 0) return program;
-        }
-        return 0;
     }
 
     // WHETHER THE CONTEXT CAN BACK THE ENGINE'S PERSISTENT-MAPPED PRODUCER RING

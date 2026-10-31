@@ -25,8 +25,7 @@ public final class StatusSquare extends Element<StatusSquare> {
 
     private Supplier<Status> status = () -> Status.OFF;
 
-    public StatusSquare() {
-    }
+    public StatusSquare() {}
 
     public StatusSquare(final Status value) {
         this.status(value);

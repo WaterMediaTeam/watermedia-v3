@@ -20,7 +20,7 @@ public final class Canvas {
     private static final int CLIP_LEVELS = 16;
 
     private final TextRenderer text;
-    // GLOBAL ALPHA MULTIPLIER STACK — MULTIPLICATIVE AND NESTABLE; 16 LEVELS IS FAR BEYOND ANY REAL TREE
+    // GLOBAL ALPHA MULTIPLIER STACK, MULTIPLICATIVE AND NESTABLE; 16 LEVELS IS FAR BEYOND ANY REAL TREE
     private final float[] alphaStack = new float[16];
     private int alphaDepth;
     // LEFT, TOP, RIGHT AND BOTTOM OF EACH PUSHED CLIP, ALREADY INTERSECTED WITH ITS PARENT
@@ -36,8 +36,7 @@ public final class Canvas {
     private int raisedAt = -1;
 
     // A PAINTER WITH THE CLIP AND FADE ACTIVE WHERE THE TREE REACHED IT
-    private record Live(Consumer<Canvas> painter, boolean clipped, int left, int top, int right, int bottom, float alpha) {
-    }
+    private record Live(Consumer<Canvas> painter, boolean clipped, int left, int top, int right, int bottom, float alpha) {}
 
     public Canvas(final TextRenderer text) {
         this.text = text;
@@ -106,12 +105,6 @@ public final class Canvas {
         }
     }
 
-    // APPLIES THE GLOBAL ALPHA MULTIPLIER TO A COLOR — IDENTITY (NO ALLOCATION) WHEN NO FADE IS ACTIVE
-    private Color mul(final Color c) {
-        if (c == null || this.alpha >= 1f) return c;
-        return new Color(c.getRed(), c.getGreen(), c.getBlue(), Math.round(c.getAlpha() * this.alpha));
-    }
-
     public Canvas viewport(final int width, final int height) {
         this.windowWidth = width;
         this.windowHeight = height;
@@ -122,17 +115,9 @@ public final class Canvas {
         return this;
     }
 
-    public TextRenderer text() {
-        return this.text;
-    }
-
-    public int windowWidth() {
-        return this.windowWidth;
-    }
-
-    public int windowHeight() {
-        return this.windowHeight;
-    }
+    public TextRenderer text() { return this.text; }
+    public int windowWidth() { return this.windowWidth; }
+    public int windowHeight() { return this.windowHeight; }
 
     /** Fills a square-cornered rectangle. */
     public void fill(final float x, final float y, final float w, final float h, final Color color) {
@@ -216,11 +201,8 @@ public final class Canvas {
     public void image(final int textureId, final float x, final float y, final float w, final float h, final Color tint) {
         if (textureId <= 0) return;
         RenderSystem.bindTexture(textureId);
-        if (tint == null) {
-            RenderSystem.color(1f, 1f, 1f, this.alpha);
-        } else {
-            RenderSystem.color(this.mul(tint));
-        }
+        if (tint == null) RenderSystem.color(1f, 1f, 1f, this.alpha);
+        else RenderSystem.color(this.mul(tint));
         RenderSystem.blit(x, y, w, h);
     }
 
@@ -229,11 +211,8 @@ public final class Canvas {
                       final float u0, final float v0, final float u1, final float v1, final Color tint) {
         if (textureId <= 0) return;
         RenderSystem.bindTexture(textureId);
-        if (tint == null) {
-            RenderSystem.color(1f, 1f, 1f, this.alpha);
-        } else {
-            RenderSystem.color(this.mul(tint));
-        }
+        if (tint == null) RenderSystem.color(1f, 1f, 1f, this.alpha);
+        else RenderSystem.color(this.mul(tint));
         RenderSystem.blit(x, y, w, h, u0, v0, u1, v1);
     }
 
@@ -267,13 +246,10 @@ public final class Canvas {
 
     public void text(final String value, final float x, final float y, final Color color, final float scale, final boolean bold) {
         if (value == null || value.isEmpty()) return;
-        // THE TEXT RENDERER RECEIVES THE ALREADY-MULTIPLIED COLOR — IT SETS IT ONCE FOR THE WHOLE RUN
+        // THE TEXT RENDERER RECEIVES THE ALREADY-MULTIPLIED COLOR AND SETS IT ONCE FOR THE WHOLE RUN
         final Color c = this.mul(color);
-        if (bold) {
-            this.text.renderBold(value, x, y, c, scale);
-        } else {
-            this.text.render(value, x, y, c, scale);
-        }
+        if (bold) this.text.renderBold(value, x, y, c, scale);
+        else this.text.render(value, x, y, c, scale);
     }
 
     public int textWidth(final String value, final float scale, final boolean bold) {
@@ -327,5 +303,11 @@ public final class Canvas {
         final int at = Math.min(this.clipDepth, CLIP_LEVELS) * 4 - 4;
         RenderSystem.clip(this.clipStack[at], this.clipStack[at + 1], this.clipStack[at + 2] - this.clipStack[at],
                 this.clipStack[at + 3] - this.clipStack[at + 1], this.windowHeight);
+    }
+
+    private Color mul(final Color c) {
+        // THE GLOBAL ALPHA MULTIPLIER; IDENTITY (NO ALLOCATION) WHEN NO FADE IS ACTIVE
+        if (c == null || this.alpha >= 1f) return c;
+        return new Color(c.getRed(), c.getGreen(), c.getBlue(), Math.round(c.getAlpha() * this.alpha));
     }
 }

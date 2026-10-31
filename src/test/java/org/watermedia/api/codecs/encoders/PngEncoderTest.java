@@ -161,7 +161,8 @@ public class PngEncoderTest {
         void croppedFrames() throws IOException {
             final byte[] first = picture(64, 64, 4, 3);
             final byte[] pixel = first.clone();
-            pixel[(20 * 64 + 10) * 4 + 3] ^= 1; // ONLY THE ALPHA OF PIXEL (10, 20)
+            // ONLY THE ALPHA OF PIXEL (10, 20)
+            pixel[(20 * 64 + 10) * 4 + 3] ^= 1;
             final byte[] block = flip(pixel, 64, 4, 40, 50, 5, 3);
             final byte[] png = encode(64, 64, PixelFormat.RGBA, 0, new long[] { 0L, 40_000L, 80_000L, 120_000L }, first, first, pixel, block);
 
@@ -210,7 +211,7 @@ public class PngEncoderTest {
             final BufferedImage image = ImageIO.read(new ByteArrayInputStream(png));
             // THE RASTER HANDS BACK RGBA ORDER, SO A BGRA SOURCE TRADES ITS RED AND BLUE
             final int[] expected = new int[first.length];
-            for (int i = 0; i < first.length; i++) expected[i] = first[format == PixelFormat.BGRA && (i & 1) == 0 ? i ^ 2: i] & 0xFF;
+            for (int i = 0; i < first.length; i++) expected[i] = first[format == PixelFormat.BGRA && (i & 1) == 0 ? i ^ 2 : i] & 0xFF;
             assertArrayEquals(expected, image.getRaster().getPixels(0, 0, 300, 200, (int[]) null));
         }
     }
@@ -365,7 +366,7 @@ public class PngEncoderTest {
         final byte[] out = new byte[width * height * channels];
         for (int y = 0, o = 0; y < height; y++)
             for (int x = 0; x < width; x++)
-                for (int c = 0; c < channels; c++, o++) out[o] = (byte) (y < height / 2 ? x * 3 + y * 5 + c * 40 + seed: random.nextInt(256));
+                for (int c = 0; c < channels; c++, o++) out[o] = (byte) (y < height / 2 ? x * 3 + y * 5 + c * 40 + seed : random.nextInt(256));
         return out;
     }
 

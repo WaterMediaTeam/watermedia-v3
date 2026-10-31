@@ -7,8 +7,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
- * eXIf - Exchangeable Image File Format Chunk
- * Contains EXIF metadata from cameras and image editing software
+ * eXIf (exchangeable image file format) chunk: EXIF metadata from cameras and image editing software.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11eXIf">PNG Specification - eXIf</a>
  */
@@ -26,42 +25,28 @@ public record EXIF(byte[] data) implements IChunk {
 
     /** Converts a generic chunk to eXIf. */
     public static EXIF convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for eXIf: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for eXIf: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-
-        // VALIDATE MINIMUM SIZE (AT LEAST TIFF HEADER)
-        if (data.length < 8) {
-            throw new CodecException("eXIf data too short: " + data.length + " bytes");
-        }
-
-        // VALIDATE THE BYTE ORDER MARKER: "MM" AND "II" READ THE SAME IN EITHER BYTE ORDER
+        // AT LEAST THE 8-BYTE TIFF HEADER
+        if (data.length < 8) throw new CodecException("eXIf data too short: " + data.length + " bytes");
+        // "MM" AND "II" READ THE SAME IN EITHER BYTE ORDER
         final short byteOrder = (short) ((data[0] << 8) | (data[1] & 0xFF));
-        if (byteOrder != BIG_ENDIAN_MARKER && byteOrder != LITTLE_ENDIAN_MARKER)
-            throw new CodecException("Invalid EXIF byte order marker");
-
+        if (byteOrder != BIG_ENDIAN_MARKER && byteOrder != LITTLE_ENDIAN_MARKER) throw new CodecException("Invalid EXIF byte order marker");
         return new EXIF(data.clone());
     }
 
-    /**
-     * Returns whether the EXIF data uses big-endian byte order
-     */
+    /** Returns whether the EXIF data uses big-endian byte order. */
     public boolean isBigEndian() {
         return (this.data[0] == 'M' && this.data[1] == 'M');
     }
 
-    /**
-     * Returns the EXIF orientation (1-8) declared in IFD0, or 1 when absent
-     */
+    /** Returns the EXIF orientation (1-8) declared in IFD0, or 1 when absent. */
     public int orientation() {
         return Tiff.orientation(this.data);
     }
 
-    /**
-     * Returns the size of the EXIF data
-     */
+    /** Returns the size of the EXIF data. */
     public int size() {
         return this.data.length;
     }

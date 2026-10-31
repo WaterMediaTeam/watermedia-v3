@@ -34,10 +34,8 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class JSEngine extends SFXEngine {
     private static final Marker IT = MarkerManager.getMarker(JSEngine.class.getSimpleName());
 
-    // INTERNAL LINE BUFFER DEPTH IN MS — RIDES OVER GAME HITCHES WITHOUT UNDERRUNS; THE CLOCK
-    // FOLLOWS THE AUDIBLE POSITION VIA pendingMs() (SAME RATIONALE AS ALEngine's BUFFER POOL).
     /** Default internal line buffer depth used by {@code PlayerAPI.jsEngine()}. */
-    public static final int DEFAULT_BUFFER_MS = 300;
+    public static final int DEFAULT_BUFFER_MS = 300; // RIDES OVER GAME HITCHES; THE CLOCK FOLLOWS THE AUDIBLE POSITION VIA pendingMs()
 
     // CAPABILITY TABLES: JAVA SOUND SUPPORTS U8/S16 PCM MONO/STEREO ON EVERY PLATFORM; IT
     // DOESN'T SUPPORT FLOAT, S32 NOR MULTICHANNEL THROUGH THE DEFAULT MIXER, SO NEGOTIATION
@@ -91,7 +89,16 @@ public final class JSEngine extends SFXEngine {
 
     @Override
     synchronized void gain() {
-        this.applyGain();
+        // MASTER_GAIN IS LOGARITHMIC (dB = 20·log10(linearGain)), CLAMPED TO THE CONTROL RANGE; SOME MIXERS EXPOSE NO CONTROL
+        final FloatControl c = this.gainControl;
+        if (c == null) return;
+        final float gain = this.volume;
+        if (gain <= 0.0f) {
+            c.setValue(c.getMinimum()); // SILENCE
+            return;
+        }
+        final float db = (float) (20.0 * Math.log10(gain));
+        c.setValue(Math.min(c.getMaximum(), Math.max(c.getMinimum(), db)));
     }
 
     @Override
@@ -121,7 +128,7 @@ public final class JSEngine extends SFXEngine {
         // REUSE THE OPEN LINE ON AN IDENTICAL RECONFIGURE (MIRRORS ALEngine's STATE-ONLY UPDATE); A NEW LAYOUT
         // OPENS A FRESH LINE WITH DEPTH ≈ bufferMs, DROPPING QUEUED AUDIO LIKE ALEngine's FLUSH
         final boolean reusable = this.line != null && this.line.isOpen() && fmt.matches(this.line.getFormat());
-        if (!reusable && !this.openLine(fmt, (int) ((long) sampleRate * frameSize * this.bufferMs / 1000L))) {
+        if (!reusable && !this.openLine(fmt, (int) ((long) sampleRate * frameSize * this.bufferMs / 1_000L))) {
             // NO OPENABLE LINE FOR THIS FORMAT (NO DEVICE, UNSUPPORTED COMBINATION, ...) — REPORT
             // NO AUDIO INSTEAD OF CRASHING PLAYER CREATION
             LOGGER.error(IT, "Java Sound line unavailable for type={} ch={} rate={}", type, channels, sampleRate);
@@ -178,7 +185,7 @@ public final class JSEngine extends SFXEngine {
         final SourceDataLine l = this.line;
         if (l == null || this.sampleRate <= 0) return 0;
         final long pendingFrames = this.framesWritten - l.getLongFramePosition();
-        return pendingFrames <= 0 ? 0 : pendingFrames * 1000L / this.sampleRate;
+        return pendingFrames <= 0 ? 0 : pendingFrames * 1_000L / this.sampleRate;
     }
 
     // OPENS A LINE FOR fmt WITH AT LEAST bytes OF BUFFER (FRAME-ALIGNED) AND INSTALLS IT IN PLACE OF THE CURRENT ONE;
@@ -198,7 +205,7 @@ public final class JSEngine extends SFXEngine {
         this.gainControl = fresh.isControlSupported(FloatControl.Type.MASTER_GAIN)
                 ? (FloatControl) fresh.getControl(FloatControl.Type.MASTER_GAIN) : null;
         this.framesWritten = 0L;
-        this.applyGain(); // RE-APPLY THE LAST REQUESTED VOLUME TO THE NEW LINE
+        this.gain(); // RE-APPLY THE LAST REQUESTED VOLUME TO THE NEW LINE
         return true;
     }
 
@@ -210,20 +217,5 @@ public final class JSEngine extends SFXEngine {
         l.close();
         this.line = null;
         this.started = false;
-    }
-
-    // APPLIES THE LAST REQUESTED LINEAR GAIN TO THE CURRENT LINE VIA MASTER_GAIN (IN DECIBELS).
-    // NO-OP WHEN THE MIXER EXPOSES NO GAIN CONTROL.
-    private void applyGain() {
-        final FloatControl c = this.gainControl;
-        if (c == null) return;
-        final float gain = this.volume;
-        if (gain <= 0.0f) {
-            c.setValue(c.getMinimum()); // SILENCE
-            return;
-        }
-        // MASTER_GAIN IS LOGARITHMIC: dB = 20·log10(linearGain), CLAMPED TO THE CONTROL RANGE
-        final float db = (float) (20.0 * Math.log10(gain));
-        c.setValue(Math.min(c.getMaximum(), Math.max(c.getMinimum(), db)));
     }
 }

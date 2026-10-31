@@ -27,12 +27,7 @@ public final class AlphaDecoder {
 
     private AlphaDecoder() {}
 
-    /**
-     * Decodes a WebP ALPH payload into one unsigned alpha byte per pixel, including its inverse filter.
-     *
-     * @throws UnsupportedFormatException when the payload declares a compression method this decoder does not know
-     * @throws CodecException             when the payload is truncated or its VP8L stream is malformed
-     */
+    /** Decodes a WebP ALPH payload, inverse filter included, into one alpha byte per pixel; an unknown compression throws {@link UnsupportedFormatException}. */
     public static byte[] decode(final ByteBuffer data, final int w, final int h) throws CodecException {
         final ByteBuffer buffer = data.slice().order(ByteOrder.LITTLE_ENDIAN);
         if (buffer.remaining() < 1) throw new CodecException("Alpha chunk too small");

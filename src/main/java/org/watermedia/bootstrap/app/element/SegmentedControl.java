@@ -21,8 +21,8 @@ public final class SegmentedControl extends Element<SegmentedControl> {
     private Color accent = AppTheme.NEON;
     private Consumer<Integer> onSelect;
     private float scale = AppTheme.TEXT_BUTTON;
-    // THUMB SLIDE — animStart 0 MEANS IDLE; WHILE RUNNING THE THUMB EASES FROM animFrom (CELL INDEX
-    // DOMAIN) TO THE SELECTED CELL. ONLY ANIMATES AFTER THE FIRST DRAW, SO A FRESH REBIND SNAPS.
+    // THUMB SLIDE: animStart 0 MEANS IDLE; WHILE RUNNING THE THUMB EASES FROM animFrom (CELL INDEX DOMAIN) TO THE
+    // SELECTED CELL. IT ANIMATES ONLY AFTER THE FIRST DRAW, SO A FRESH REBIND SNAPS
     private long animStart;
     private float animFrom;
     private boolean drawn;
@@ -59,53 +59,27 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         return this;
     }
 
-    public int selectedIndex() {
-        return this.selectedIndex;
-    }
+    public int selectedIndex() { return this.selectedIndex; }
 
     /** Returns one segment's width for a label, clear of the thumb inset; callers that pre-compute row widths share it. */
     public static int segmentWidth(final TextRenderer text, final String label, final float scale) {
         return Math.max(72, text.width(label, scale) + 40);
     }
 
-    // CAPTURES THE CURRENT VISUAL THUMB POSITION AND RESTARTS THE EASE TOWARD THE NEW SELECTION; A
-    // CONTROL THAT NEVER DREW (FRESHLY REBUILT ROW BINDING ITS INITIAL VALUE) SNAPS INSTEAD
-    private void slide() {
-        if (!this.drawn) return;
-        final long now = System.currentTimeMillis();
-        this.animFrom = this.thumbPos(now);
-        this.animStart = now;
-    }
-
-    // VISUAL THUMB POSITION IN CELL-INDEX DOMAIN — CUBIC EASE-OUT WHILE ANIMATING
-    private float thumbPos(final long now) {
-        final float target = this.selectedIndex;
-        if (this.animStart == 0L) return target;
-        final float t = Math.min(1f, (now - this.animStart) / (float) ANIM_MS);
-        final float inv = 1f - t;
-        return this.animFrom + (target - this.animFrom) * (1f - inv * inv * inv);
-    }
-
     @Override
     protected void onUpdate() {
-        // SELF-SUSTAINED ANIMATION — KEEP REQUESTING FRAMES UNTIL THE SLIDE ENDS, THEN LET THE LOOP IDLE
+        // SELF-SUSTAINED ANIMATION: KEEP REQUESTING FRAMES UNTIL THE SLIDE ENDS, THEN LET THE LOOP IDLE
         if (this.animStart == 0L) return;
-        if (System.currentTimeMillis() - this.animStart >= ANIM_MS) {
-            this.animStart = 0L;
-        } else {
-            this.invalidate();
-        }
+        if (System.currentTimeMillis() - this.animStart >= ANIM_MS) this.animStart = 0L;
+        else this.invalidate();
     }
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         this.contentHeight = Theme.BUTTON;
         int total = 0;
-        if (this.ctx != null && this.ctx.text != null) {
-            for (final String seg: this.segments) {
-                total += segmentWidth(this.ctx.text, seg, this.scale);
-            }
-        }
+        if (this.ctx != null && this.ctx.text != null)
+            for (final String seg: this.segments) total += segmentWidth(this.ctx.text, seg, this.scale);
         this.contentWidth = total;
     }
 
@@ -136,7 +110,7 @@ public final class SegmentedControl extends Element<SegmentedControl> {
             center = (tx0 + tx1) / 2f;
         }
 
-        // LABELS — A LABEL DARKENS WHILE THE THUMB CENTER SITS UNDER ITS CELL, SO THE INK FOLLOWS THE SLIDE
+        // A LABEL DARKENS WHILE THE THUMB CENTER SITS UNDER ITS CELL, SO THE INK FOLLOWS THE SLIDE
         for (int i = 0; i < n; i++) {
             final String label = this.segments[i];
             if (label == null || label.isEmpty()) continue;
@@ -166,5 +140,23 @@ public final class SegmentedControl extends Element<SegmentedControl> {
             if (this.onSelect != null) this.onSelect.accept(idx);
         }
         return true;
+    }
+
+    private void slide() {
+        // RESTARTS THE EASE FROM THE CURRENT VISUAL THUMB POSITION; A CONTROL THAT NEVER DREW (A FRESHLY REBUILT ROW
+        // BINDING ITS INITIAL VALUE) SNAPS INSTEAD
+        if (!this.drawn) return;
+        final long now = System.currentTimeMillis();
+        this.animFrom = this.thumbPos(now);
+        this.animStart = now;
+    }
+
+    private float thumbPos(final long now) {
+        // VISUAL THUMB POSITION IN THE CELL-INDEX DOMAIN, CUBIC EASE-OUT WHILE ANIMATING
+        final float target = this.selectedIndex;
+        if (this.animStart == 0L) return target;
+        final float t = Math.min(1f, (now - this.animStart) / (float) ANIM_MS);
+        final float inv = 1f - t;
+        return this.animFrom + (target - this.animFrom) * (1f - inv * inv * inv);
     }
 }

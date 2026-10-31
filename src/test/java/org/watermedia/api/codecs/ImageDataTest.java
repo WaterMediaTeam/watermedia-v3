@@ -20,13 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @DisplayName("ImageData")
 public class ImageDataTest {
 
-    private static ImageData single(final long duration, final int repeat) {
-        final ByteBuffer[] frames = { ByteBuffer.allocate(4) };
-        return new ImageData(frames, PixelFormat.BGRA, 1, 1, new long[] { duration }, duration, repeat);
-    }
-
     @Nested
-    @DisplayName("duration")
+    @DisplayName("Duration")
     class DurationTests {
         @Test
         @DisplayName("duration() is transparent and survives a round-trip")
@@ -58,7 +53,7 @@ public class ImageDataTest {
     }
 
     @Nested
-    @DisplayName("validation")
+    @DisplayName("Validation")
     class ValidationTests {
         @Test
         @DisplayName("A null format or a negative play count is rejected")
@@ -88,5 +83,11 @@ public class ImageDataTest {
         void testScanRejectsMismatch() {
             assertThrows(IllegalArgumentException.class, () -> new ImageData.Scan(2, new long[] { 10L }, 10L, 1));
         }
+    }
+
+    // UTILITY
+    private static ImageData single(final long duration, final int repeat) {
+        final ByteBuffer[] frames = { ByteBuffer.allocate(4) };
+        return new ImageData(frames, PixelFormat.BGRA, 1, 1, new long[] { duration }, duration, repeat);
     }
 }

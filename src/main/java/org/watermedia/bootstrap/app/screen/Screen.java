@@ -14,7 +14,6 @@ import java.util.List;
  * {@code overlay} {@link ParentFrame} for its dialogs. Input arrives only through the {@link Element} dispatch.
  */
 public abstract class Screen extends Group<Screen> {
-
     protected final TextRenderer text;
     private final ParentFrame overlay = new ParentFrame();
     private Element<?> body;
@@ -62,8 +61,7 @@ public abstract class Screen extends Group<Screen> {
     }
 
     /** Called when the screen stops being the active one. */
-    public void onExit() {
-    }
+    public void onExit() {}
 
     /** The footer shortcuts for this screen. Default: none. */
     public List<Keybind> keybinds() {
@@ -81,8 +79,7 @@ public abstract class Screen extends Group<Screen> {
     }
 
     /** Releases any media resources this screen holds (hot-swap hook). Default: no-op. */
-    public void releaseMedia() {
-    }
+    public void releaseMedia() {}
 
     private void ensureBuilt() {
         if (this.built) return;

@@ -16,9 +16,10 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves VidLii watch pages to the source of their {@code <video>} element. */
 public final class VidLiiPlatform implements Platform {
-    public static final String NAME = "VidLii";
     private static final Marker IT = MarkerManager.getMarker(VidLiiPlatform.class.getSimpleName());
+    public static final String NAME = "VidLii";
     private static final String ORIGIN = "https://www.vidlii.com";
     private static final Pattern VIDEO_SRC_PATTERN = Pattern.compile("<video\\s+[^>]*src=\"([^\"]+)\"");
     private static final String[] HOSTS = { "vidlii.com", "www.vidlii.com" };

@@ -16,9 +16,10 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves Dropbox share links to their direct download through the CDN. */
 public final class DropboxPlatform implements Platform {
-    public static final String NAME = "Dropbox";
     private static final Marker IT = MarkerManager.getMarker(DropboxPlatform.class.getSimpleName());
+    public static final String NAME = "Dropbox";
     private static final String[] HOSTS = { "dropbox.com", "www.dropbox.com" };
     // SHARE LINKS: /s/<id>/<name>, /sh/<id>/<key>/<name> AND /scl/fi/<id>/<name>?rlkey=...; FOLDERS AND APP PAGES ARE NOT PLAYABLE
     private static final String[] SHARE_PREFIXES = { "/s/", "/sh/", "/scl/fi/" };

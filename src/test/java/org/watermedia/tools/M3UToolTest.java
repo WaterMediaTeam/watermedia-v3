@@ -82,7 +82,7 @@ public class M3UToolTest {
         @Test
         @DisplayName("Unknown playlist type throws IOException")
         void testUnknownPlaylistType() {
-            // #EXTM3U present but NO #EXT-X-STREAM-INF, NO #EXT-X-* tag and NO #EXTINF:
+            // #EXTM3U IS PRESENT BUT THERE IS NO #EXT-X-STREAM-INF, NO #EXT-X-* TAG AND NO #EXTINF:
             final String content = """
                 #EXTM3U
                 # Just some comments, no actual content
@@ -115,12 +115,12 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "master.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
 
             assertEquals(URI.create(BASE + "master.m3u8"), master.source());
             assertEquals("master", master.kind());
-            assertEquals(1, master.version()); // DEFAULT VERSION
+            // DEFAULT VERSION
+            assertEquals(1, master.version());
             assertEquals(2, master.variants().size());
         }
 
@@ -136,8 +136,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
             assertEquals(6, master.version());
         }
 
@@ -152,12 +151,11 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
             assertEquals(1, master.variants().size());
 
             final Variant variant = master.variants().get(0);
-            assertEquals(9014525L, variant.bandwidth());
+            assertEquals(9_014_525L, variant.bandwidth());
             assertEquals(1920, variant.width());
             assertEquals(1080, variant.height());
             assertEquals(URI.create(BASE + "1080p.m3u8"), variant.uri());
@@ -174,8 +172,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
             final Variant variant = master.variants().get(0);
 
             assertEquals("avc1.64002A,mp4a.40.2", variant.codecs());
@@ -195,8 +192,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
             assertEquals(2, master.renditions().size());
 
             final Rendition en = master.renditions().get(0);
@@ -227,8 +223,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
             final Variant variant = master.variants().get(0);
 
             assertEquals("chunked", variant.videoGroup());
@@ -260,8 +255,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "playlist.m3u8"));
 
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
+            final Media media = assertInstanceOf(Media.class, result);
 
             assertEquals(URI.create(BASE + "playlist.m3u8"), media.source());
             assertEquals("media", media.kind());
@@ -287,8 +281,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
+            final Media media = assertInstanceOf(Media.class, result);
 
             final Segment seg1 = media.segments().get(0);
             assertEquals(4.167, seg1.duration(), 0.001);
@@ -315,11 +308,11 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
+            final Media media = assertInstanceOf(Media.class, result);
 
             assertEquals("2025-12-16T10:56:19.451Z", media.segments().get(0).dateTime());
-            assertNull(media.segments().get(1).dateTime()); // ONLY FIRST SEGMENT HAS dateTime
+            // ONLY THE FIRST SEGMENT HAS A dateTime
+            assertNull(media.segments().get(1).dateTime());
         }
 
         @Test
@@ -336,8 +329,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
+            final Media media = assertInstanceOf(Media.class, result);
 
             assertTrue(media.vod());
             assertFalse(media.live());
@@ -355,8 +347,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
+            final Media media = assertInstanceOf(Media.class, result);
 
             assertEquals(1, media.segments().size());
             assertEquals(4.5, media.segments().get(0).duration(), 0.001);
@@ -383,8 +374,7 @@ public class M3UToolTest {
         void testExtractsChannelsWithAttributes() throws IOException {
             final Playlist result = M3UTool.parse(IPTV_SAMPLE, URI.create(BASE + "iptv.m3u"));
 
-            assertInstanceOf(Iptv.class, result);
-            final List<Channel> channels = ((Iptv) result).channels();
+            final List<Channel> channels = assertInstanceOf(Iptv.class, result).channels();
             assertEquals(2, channels.size());
 
             final Channel first = channels.get(0);
@@ -411,14 +401,14 @@ public class M3UToolTest {
                     "https://bare.example/y\n";
 
             final Playlist result = M3UTool.parse(src, URI.create(BASE + "iptv.m3u"));
-            assertInstanceOf(Iptv.class, result);
-            final List<Channel> channels = ((Iptv) result).channels();
+            final List<Channel> channels = assertInstanceOf(Iptv.class, result).channels();
 
             assertEquals(2, channels.size());
             final Channel bare = channels.get(1);
             assertNotNull(bare);
             assertEquals(URI.create("https://bare.example/y"), bare.uri());
-            assertEquals("https://bare.example/y", bare.title()); // SYNTHESISED FROM URL
+            // THE TITLE IS SYNTHESISED FROM THE URL
+            assertEquals("https://bare.example/y", bare.title());
         }
 
         @Test
@@ -432,8 +422,7 @@ public class M3UToolTest {
                     "https://x.example/x\n";
 
             final Playlist result = M3UTool.parse(src, URI.create(BASE + "iptv.m3u"));
-            assertInstanceOf(Iptv.class, result);
-            final List<Channel> channels = ((Iptv) result).channels();
+            final List<Channel> channels = assertInstanceOf(Iptv.class, result).channels();
             assertEquals(1, channels.size());
             assertEquals(URI.create("https://x.example/x"), channels.get(0).uri());
         }
@@ -472,9 +461,9 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
-            assertEquals(0, master.variants().size()); // NO URI FOLLOWS THE STREAM-INF
+            final Master master = assertInstanceOf(Master.class, result);
+            // NO URI FOLLOWS THE STREAM-INF
+            assertEquals(0, master.variants().size());
         }
 
         @Test
@@ -491,8 +480,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create("https://cdn.example.com/live/stream/playlist.m3u8"));
 
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
+            final Media media = assertInstanceOf(Media.class, result);
 
             assertEquals(URI.create("https://cdn.example.com/live/stream/segments/segment1.ts"), media.segments().get(0).uri());
             assertEquals(URI.create("https://cdn.example.com/live/other/segment2.ts"), media.segments().get(1).uri());
@@ -509,8 +497,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
             final Variant variant = master.variants().get(0);
 
             assertEquals(0, variant.width());
@@ -538,8 +525,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
             // A DEFAULT ABOVE ZERO WOULD LET A TAG-LESS VARIANT OUTRANK A SIBLING THAT DECLARED ITS REAL RATE, AND A VALUE
             // PAST THE FLOAT RANGE WOULD REACH THE QUALITY RECORDS AS INFINITY
             for (int i = 0; i < 5; i++) assertEquals(0.0, master.variants().get(i).fps(), 0.0, master.variants().get(i).uri().toString());
@@ -562,8 +548,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
+            final Media media = assertInstanceOf(Media.class, result);
 
             assertEquals("2025-12-16T10:00:00.000Z", media.segments().get(0).dateTime());
             assertEquals("2025-12-16T10:00:04.000Z", media.segments().get(1).dateTime());
@@ -581,8 +566,7 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "test.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
             final Variant variant = master.variants().get(0);
 
             assertEquals("stereo", variant.audioGroup());
@@ -611,17 +595,16 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "master.m3u8"));
 
-            assertInstanceOf(Master.class, result);
-            final Master master = (Master) result;
+            final Master master = assertInstanceOf(Master.class, result);
 
             // RENDITIONS
             assertEquals(4, master.renditions().size());
 
             // VARIANTS KEEP THE DECLARATION ORDER OF THE LADDER
             assertEquals(4, master.variants().size());
-            assertEquals(9014525L, master.variants().get(0).bandwidth());
+            assertEquals(9_014_525L, master.variants().get(0).bandwidth());
             assertEquals(URI.create("https://example.com/chunked.m3u8"), master.variants().get(0).uri());
-            assertEquals(630000L, master.variants().get(3).bandwidth());
+            assertEquals(630_000L, master.variants().get(3).bandwidth());
             assertEquals(URI.create("https://example.com/360p30.m3u8"), master.variants().get(3).uri());
         }
 
@@ -644,14 +627,14 @@ public class M3UToolTest {
 
             final Playlist result = M3UTool.parse(content, URI.create(BASE + "playlist.m3u8"));
 
-            assertInstanceOf(Media.class, result);
-            final Media media = (Media) result;
+            final Media media = assertInstanceOf(Media.class, result);
 
             assertEquals(URI.create(BASE + "playlist.m3u8"), media.source());
             assertEquals(3, media.version());
             assertEquals(6.0, media.targetDuration(), 0.001);
             assertEquals(1074L, media.sequence());
-            assertTrue(media.live()); // NO ENDLIST
+            // NO ENDLIST
+            assertTrue(media.live());
             assertFalse(media.vod());
             assertEquals(12.5, media.totalDuration(), 0.001);
 

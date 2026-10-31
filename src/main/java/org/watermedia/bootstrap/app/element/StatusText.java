@@ -19,8 +19,7 @@ public final class StatusText extends Element<StatusText> {
     private Supplier<StatusSquare.Status> status = () -> StatusSquare.Status.OFF;
     private BooleanSupplier strike = () -> false;
 
-    public StatusText() {
-    }
+    public StatusText() {}
 
     public StatusText(final String label) {
         this.label(label);
@@ -86,9 +85,7 @@ public final class StatusText extends Element<StatusText> {
         final int glyphH = this.ctx.text.glyphHeight(AppTheme.TEXT_BODY);
         final int textY = y + Math.max(0, (h - glyphH) / 2);
         canvas.text(this.label, textX, textY, c, AppTheme.TEXT_BODY, false);
-        if (this.strike.getAsBoolean()) {
-            canvas.lineH(textX, textY + Math.max(1, glyphH / 2),
-                    this.ctx.text.width(this.label, AppTheme.TEXT_BODY), c, 1f);
-        }
+        if (this.strike.getAsBoolean())
+            canvas.lineH(textX, textY + Math.max(1, glyphH / 2), this.ctx.text.width(this.label, AppTheme.TEXT_BODY), c, 1f);
     }
 }

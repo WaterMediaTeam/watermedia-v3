@@ -24,7 +24,7 @@ public final class BootstrapProbe {
         final Path root = Path.of("").toAbsolutePath();
         WaterConfig.setPath(root.resolve("config"));
         WaterMediaConfig.network.server = WaterMediaConfig.Network.Server.OFF;
-        WaterMediaConfig.network.timeout = 1000;
+        WaterMediaConfig.network.timeout = 1_000;
         WaterMediaConfig.codecs.ffmpeg.disable = !scenario.equals("native") && !scenario.equals("native-failure") && !scenario.startsWith("tls");
         switch (scenario) {
             case "tls" -> TLSLifecycleProbe.run(root, false);

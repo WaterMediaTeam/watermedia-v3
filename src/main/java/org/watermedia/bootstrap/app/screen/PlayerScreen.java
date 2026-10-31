@@ -54,7 +54,6 @@ import static org.watermedia.bootstrap.app.render.RenderSystem.mediaEngineSuppli
  * source/quality and video-settings dialogs.
  */
 public final class PlayerScreen extends Screen {
-
     private static final float META_SCALE = AppTheme.TEXT_SECTION;
     private static final float META_HEAD_SCALE = AppTheme.TEXT_DISPLAY;
     private static final float META_DESC_LABEL_SCALE = AppTheme.TEXT_BUTTON;
@@ -207,9 +206,7 @@ public final class PlayerScreen extends Screen {
         if (this.videoDialog != null) this.syncVideoDialog();
     }
 
-    // ==========================================================================
-    // PLAYER CONTROL
-    // ==========================================================================
+    // ==== PLAYER CONTROL ====
 
     private void startPlayer() {
         if (this.ctx.media.selectedMRL == null || this.ctx.media.selectedSource == null) return;
@@ -302,10 +299,6 @@ public final class PlayerScreen extends Screen {
         return nativeMax > 0 ? Math.min(value, nativeMax) : value;
     }
 
-    private String lodLabel() {
-        return MediaPlayer.LodLevel.values()[this.lodSelectedIndex].name();
-    }
-
     private String scaleLabel() {
         final MediaPlayer player = this.ctx.media.player;
         if (player == null) return "FULL";
@@ -315,26 +308,6 @@ public final class PlayerScreen extends Screen {
         return (mw == 0 ? "*" : mw) + "x" + (mh == 0 ? "*" : mh);
     }
 
-    private String formatDate(final Metadata meta) {
-        return DATE_FORMAT.format(meta.postedAt());
-    }
-
-    private MediaType currentMediaType() {
-        return this.ctx.media.selectedSource == null ? null : this.ctx.media.selectedSource.type();
-    }
-
-    private String playerResolution(final MediaPlayer player) {
-        if (player == null || player.width() <= 0 || player.height() <= 0) return "--";
-        return player.width() + "x" + player.height();
-    }
-
-    private static Color mediaTypeColor(final MediaType type) {
-        if (type == MediaType.IMAGE) return AppTheme.GREEN;
-        if (type == MediaType.VIDEO) return AppTheme.AMBER;
-        if (type == MediaType.AUDIO) return AppTheme.CYAN;
-        return AppTheme.TEXT_FAINT;
-    }
-
     private int typeTagWidth(final MediaType type) {
         final String label = type == null ? "MEDIA" : type.name();
         return this.text.width(label, AppTheme.TEXT_BODY) + 22;
@@ -342,7 +315,10 @@ public final class PlayerScreen extends Screen {
 
     private void drawTypeTag(final Canvas canvas, final int x, final int y, final MediaType type) {
         final String label = type == null ? "MEDIA" : type.name();
-        final Color color = mediaTypeColor(type);
+        final Color color = type == MediaType.IMAGE ? AppTheme.GREEN
+                : type == MediaType.VIDEO ? AppTheme.AMBER
+                : type == MediaType.AUDIO ? AppTheme.CYAN
+                : AppTheme.TEXT_FAINT;
         final int w = this.typeTagWidth(type);
         canvas.fill(x, y, w, 22, AppTheme.alpha(AppTheme.BG_1, 188));
         canvas.stroke(x, y, w, 22, color, 1f);
@@ -357,9 +333,8 @@ public final class PlayerScreen extends Screen {
         return "SOURCE " + (sourceIndex + 1);
     }
 
-    // ==========================================================================
-    // KEYBOARD — THE TREE (INCLUDING OPEN DIALOGS) ALWAYS WINS FIRST
-    // ==========================================================================
+    // ==== KEYBOARD ====
+    // THE TREE (INCLUDING OPEN DIALOGS) ALWAYS WINS FIRST
 
     @Override
     public boolean dispatchKey(final int key, final int action) {
@@ -443,9 +418,7 @@ public final class PlayerScreen extends Screen {
         return nearest;
     }
 
-    // ==========================================================================
-    // QUALITY DIALOG (SOURCE + QUALITY SELECTION)
-    // ==========================================================================
+    // ==== QUALITY DIALOG (SOURCE + QUALITY SELECTION) ====
 
     private void openQualityDialog() {
         if (this.ctx.media.availableSources == null || this.ctx.media.availableSources.length == 0) return;
@@ -622,19 +595,16 @@ public final class PlayerScreen extends Screen {
         if (this.ctx.media.availableSources == null || sourceIndex < 0 || sourceIndex >= this.ctx.media.availableSources.length) return;
         this.sourcePreviewIndex = sourceIndex;
         this.loadQualitiesForSource(sourceIndex);
-        this.refreshQualityList();
+        if (this.qualList != null && this.ctx.media.availableQualities != null) {
+            this.qualList.items(Arrays.asList(this.ctx.media.availableQualities)).selection(this.qualitySelectedIndex);
+            if (this.qualHead != null) this.qualHead.count(this.ctx.media.availableQualities.length + " AVAILABLE");
+        }
         if (!apply || sourceIndex == this.ctx.media.selectedSourceIndex) return;
         if (this.ctx.media.availableQualities != null && this.ctx.media.availableQualities.length > 0)
             this.ctx.media.selectedQuality = this.ctx.media.availableQualities[this.qualitySelectedIndex];
         this.ctx.media.selectedSourceIndex = sourceIndex;
         this.ctx.media.selectedSource = this.ctx.media.availableSources[sourceIndex];
         this.startPlayer();
-    }
-
-    private void refreshQualityList() {
-        if (this.qualList == null || this.ctx.media.availableQualities == null) return;
-        this.qualList.items(Arrays.asList(this.ctx.media.availableQualities)).selection(this.qualitySelectedIndex);
-        if (this.qualHead != null) this.qualHead.count(this.ctx.media.availableQualities.length + " AVAILABLE");
     }
 
     private void applyQuality(final int index) {
@@ -651,9 +621,7 @@ public final class PlayerScreen extends Screen {
         this.hideQualityDialog();
     }
 
-    // ==========================================================================
-    // VIDEO DIALOG (UPLOAD RESOLUTION CAP + LOD LEVEL)
-    // ==========================================================================
+    // ==== VIDEO DIALOG (UPLOAD RESOLUTION CAP + LOD LEVEL) ====
 
     private void openVideoDialog() {
         if (this.ctx.media.player == null || this.ctx.media.player.error()) return;
@@ -789,9 +757,7 @@ public final class PlayerScreen extends Screen {
             if (c >= '0' && c <= '9') digits.append(c);
         }
         String value = digits.toString();
-        if (!value.isEmpty() && nativeMax > 0 && Integer.parseInt(value) > nativeMax) {
-            value = String.valueOf(nativeMax);
-        }
+        if (!value.isEmpty() && nativeMax > 0 && Integer.parseInt(value) > nativeMax) value = String.valueOf(nativeMax);
         if (!value.equals(raw)) field.value(value);
         if (width) this.resWidthText = value;
         else this.resHeightText = value;
@@ -808,14 +774,11 @@ public final class PlayerScreen extends Screen {
         this.ctx.requestRender();
     }
 
-    // ==========================================================================
-    // INNER ELEMENTS
-    // ==========================================================================
+    // ==== INNER ELEMENTS ====
 
     // DIALOG CONTENT ROW: CHILDREN GET EACH KEY FIRST, THEN THE HANDLER RUNS ON RELEASE;
     // THE HOSTING Dialog SWALLOWS WHATEVER IS LEFT
     private static final class DialogKeys extends Parent {
-
         private final IntPredicate keys;
 
         DialogKeys(final IntPredicate keys) {
@@ -868,7 +831,6 @@ public final class PlayerScreen extends Screen {
 
     // DEBUG METRICS AND METADATA PANEL: A DRAW-ONLY LEAF THAT READS THE LIVE PLAYER EVERY FRAME
     private final class MetricsPanel extends Element<MetricsPanel> {
-
         // maxScroll IS THE PREVIOUS FRAME'S OVERFLOW, WHICH CLAMPS THE WHEEL OFFSET
         private int scroll;
         private int maxScroll;
@@ -950,7 +912,8 @@ public final class PlayerScreen extends Screen {
             y = this.metric(canvas, "Time", timeValue, x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "Volume", player.volume() + "%", x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "Quality", player.quality().name() + " - " + PlayerScreen.this.scaleLabel(), x, y, AppTheme.CYAN);
-            y = this.metric(canvas, "Dimensions", PlayerScreen.this.playerResolution(player), x, y, AppTheme.CYAN);
+            y = this.metric(canvas, "Dimensions", player.width() <= 0 || player.height() <= 0 ? "--" : player.width() + "x" + player.height(),
+                    x, y, AppTheme.CYAN);
             y = this.metric(canvas, "Speed", this.speedStr + "x", x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "Live", player.live() ? "Yes" : "No", x, y, AppTheme.TEXT_SOFT);
 
@@ -960,9 +923,7 @@ public final class PlayerScreen extends Screen {
             if (meta != null) {
                 y = this.wrappedMetric(canvas, this.titleWrap, "Title", meta.title(), x, y);
                 y = this.metric(canvas, "Author", meta.author(), x, y, AppTheme.TEXT_SOFT);
-                if (meta.postedAt() != null) {
-                    y = this.metric(canvas, "Published", PlayerScreen.this.formatDate(meta), x, y, AppTheme.TEXT_SOFT);
-                }
+                if (meta.postedAt() != null) y = this.metric(canvas, "Published", DATE_FORMAT.format(meta.postedAt()), x, y, AppTheme.TEXT_SOFT);
                 y = this.descriptionBox(canvas, meta, x, y + 8, pw - 28);
             } else {
                 canvas.text("Unavailable", x, y, AppTheme.TEXT_FAINT, META_SCALE, false);
@@ -989,9 +950,7 @@ public final class PlayerScreen extends Screen {
             final int valueX = this.valueX(x);
             final int maxValueW = Math.max(80, this.left + this.measuredWidth - valueX - 14);
             canvas.text(label + ":", x, y, AppTheme.TEXT_FAINT, META_SCALE, false);
-            if (value != null) {
-                canvas.text(text.truncateToWidth(value, maxValueW, META_SCALE), valueX, y, valueColor, META_SCALE, false);
-            }
+            if (value != null) canvas.text(text.truncateToWidth(value, maxValueW, META_SCALE), valueX, y, valueColor, META_SCALE, false);
             return y + text.lineHeight(META_SCALE) + 4;
         }
 
@@ -1105,7 +1064,6 @@ public final class PlayerScreen extends Screen {
         // WRAPPED LINES OF ONE ROW, REBUILT ONLY WHEN ITS TEXT, WIDTH OR LINE CAP CHANGES; ONLY onDraw
         // TOUCHES IT, ON THE RENDER THREAD, SO IT NEEDS NO SYNCHRONIZATION
         private final class WrapCache {
-
             private String text;
             private int width = -1;
             private int maxLines = -1;
@@ -1127,7 +1085,6 @@ public final class PlayerScreen extends Screen {
     // HUD LAYER: onDraw PAINTS THE CHROME (FADES, BAR PANELS, DIVIDERS, TEXTS) AND EVERY INTERACTIVE
     // PIECE IS A CHILD PLACED AT ABSOLUTE POSITIONS BY onLayout
     private final class Hud extends Group<Hud> {
-
         private final Button back;
         private final Icon srcIcon;
         private final MetricsPanel metrics = new MetricsPanel();
@@ -1288,7 +1245,7 @@ public final class PlayerScreen extends Screen {
                     .textColor(loopOn ? AppTheme.GREEN : AppTheme.TEXT_FAINT);
             final String scale = PlayerScreen.this.scaleLabel();
             this.qual.label(p.quality().name()).subText(scale);
-            this.lod.label(PlayerScreen.this.lodLabel()).subText(scale);
+            this.lod.label(MediaPlayer.LodLevel.values()[PlayerScreen.this.lodSelectedIndex].name()).subText(scale);
             // THE SELECTION SNAPS TO THE PRESET NEAREST THE LIVE SPEED; LOCKED WHEN THE PLAYER CANNOT
             // CHANGE SPEED (LIVE STREAM OR AN ENGINE FIXED AT 1.0x)
             this.speedDrop.enabled(p.canSpeed());
@@ -1377,11 +1334,11 @@ public final class PlayerScreen extends Screen {
             final String title = meta != null && meta.title() != null ? meta.title() : ctx.media.selectedMRLName;
             final String author = meta != null && meta.author() != null ? meta.author() : p.getClass().getSimpleName();
             final String host = ctx.media.selectedMRL != null && ctx.media.selectedMRL.uri().getHost() != null ? ctx.media.selectedMRL.uri().getHost() : "local";
-            final String posted = meta != null && meta.postedAt() != null ? PlayerScreen.this.formatDate(meta) : "unknown date";
+            final String posted = meta != null && meta.postedAt() != null ? DATE_FORMAT.format(meta.postedAt()) : "unknown date";
             final int sources = ctx.media.availableSources != null ? ctx.media.availableSources.length : 1;
             this.titleStr = text.truncateToWidth(title, Math.max(180, w - 520), AppTheme.TEXT_SECTION, Font.BOLD);
             int tagX = x0 + 108 + text.widthBold(this.titleStr, AppTheme.TEXT_SECTION) + 12;
-            this.tagType = PlayerScreen.this.currentMediaType();
+            this.tagType = ctx.media.selectedSource == null ? null : ctx.media.selectedSource.type();
             this.showTypeTag = this.tagType != null && tagX < x0 + w - 180;
             if (this.showTypeTag) {
                 this.typeTagXA = tagX;
@@ -1423,9 +1380,7 @@ public final class PlayerScreen extends Screen {
 
                 // TOP INFO ROW
                 canvas.text(this.titleStr, x0 + 108, this.topYA - 3, AppTheme.TEXT, AppTheme.TEXT_SECTION, true);
-                if (this.showTypeTag) {
-                    PlayerScreen.this.drawTypeTag(canvas, this.typeTagXA, this.topYA - 5, this.tagType);
-                }
+                if (this.showTypeTag) PlayerScreen.this.drawTypeTag(canvas, this.typeTagXA, this.topYA - 5, this.tagType);
                 if (this.srcIcon.visible()) {
                     canvas.fill(this.srcTagXA, this.topYA - 6, this.srcTagW, 24, AppTheme.alpha(AppTheme.BG_1, 188));
                     canvas.stroke(this.srcTagXA, this.topYA - 6, this.srcTagW, 24, AppTheme.NEON_LIGHT, 1f);

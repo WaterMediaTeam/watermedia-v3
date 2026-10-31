@@ -7,8 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * pHYs - Physical Pixel Dimensions Chunk
- * Specifies the intended pixel size or aspect ratio for display
+ * pHYs (physical pixel dimensions) chunk: the intended pixel size or aspect ratio for display.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11pHYs">PNG Specification - pHYs</a>
  */
@@ -27,14 +26,10 @@ public record PHYS(long pixelsPerUnitX, long pixelsPerUnitY, int unit) implement
 
     /** Converts a generic chunk to pHYs. */
     public static PHYS convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for pHYs: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for pHYs: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("pHYs data must be 9 bytes, got " + data.length);
-        }
+        if (data.length != LENGTH) throw new CodecException("pHYs data must be 9 bytes, got " + data.length);
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         return new PHYS(
@@ -44,31 +39,23 @@ public record PHYS(long pixelsPerUnitX, long pixelsPerUnitY, int unit) implement
         );
     }
 
-    /**
-     * Returns whether the unit is meters (allows DPI calculation)
-     */
+    /** Returns whether the unit is the meter, which allows the DPI calculation. */
     public boolean isMetric() {
         return this.unit == UNIT_METER;
     }
 
-    /**
-     * Returns the aspect ratio (X/Y)
-     */
+    /** Returns the aspect ratio (X/Y). */
     public double aspectRatio() {
         return (double) this.pixelsPerUnitX / this.pixelsPerUnitY;
     }
 
-    /**
-     * Returns DPI for X axis (only valid if unit is meter)
-     */
+    /** Returns the DPI of the X axis, or 0 when the unit is not the meter. */
     public double dpiX() {
         if (this.unit != UNIT_METER) return 0;
         return this.pixelsPerUnitX * 0.0254; // METERS TO INCHES
     }
 
-    /**
-     * Returns DPI for Y axis (only valid if unit is meter)
-     */
+    /** Returns the DPI of the Y axis, or 0 when the unit is not the meter. */
     public double dpiY() {
         if (this.unit != UNIT_METER) return 0;
         return this.pixelsPerUnitY * 0.0254;

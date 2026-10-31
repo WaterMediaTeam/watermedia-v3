@@ -26,8 +26,8 @@ import java.nio.charset.StandardCharsets;
  * {@link #next()} reads the raster lazily and decodes into BGRA.
  */
 public final class NetpbmReader extends ImageReader {
-    // HEADER CEILINGS. P1..P6 CARRY FOUR NUMERIC TOKENS AND P7 A HANDFUL OF KEY-VALUE LINES, BUT
-    // NOTHING ENFORCED THAT: A FILE THAT NEVER TERMINATES ITS HEADER WAS BUFFERED WHOLE INTO SCRATCH
+    // HEADER CEILINGS: P1..P6 CARRY FOUR NUMERIC TOKENS AND P7 A HANDFUL OF KEY-VALUE LINES, SO A HEADER THAT NEVER
+    // TERMINATES (A P7 WITHOUT ENDHDR, AN ALL-COMMENT P4/P5/P6) IS REFUSED INSTEAD OF BUFFERING THE WHOLE BODY
     private static final int MAX_PLAIN_HEADER_BYTES = 4_096;
     private static final int MAX_PAM_HEADER_BYTES = 65_536;
     // A PLAIN SAMPLE IS AT MOST MAXVAL (65535), SO FIVE DIGITS; LONGER RUNS ARE MALFORMED, NOT BIG NUMBERS
@@ -222,8 +222,6 @@ public final class NetpbmReader extends ImageReader {
     // DEPENDS ON THE VERSION: P1..P6 END AFTER THE LAST NUMERIC TOKEN'S TRAILING WHITESPACE BYTE (CONSUMED),
     // P7 ENDS AFTER THE "ENDHDR\n" LINE
     private static byte[] readHeaderBytes(final ByteBuffer in, final int version) throws CodecException {
-        // WITHOUT A CEILING THE SCAN BUFFERS THE WHOLE BODY OF A FILE THAT NEVER TERMINATES ITS
-        // HEADER (A P7 WITH NO ENDHDR, OR AN ALL-COMMENT P4/P5/P6) ONLY TO DISCARD IT
         final int maxHeader = version == 7 ? MAX_PAM_HEADER_BYTES : MAX_PLAIN_HEADER_BYTES;
         final ByteArrayOutputStream out = new ByteArrayOutputStream(64);
         out.write('P');
@@ -240,7 +238,6 @@ public final class NetpbmReader extends ImageReader {
                 if (out.size() >= maxHeader) throw new CodecException("Netpbm header exceeds " + maxHeader + " bytes");
                 out.write(b);
                 if (endhdrSeen) {
-                    // IGNORE THE REST OF THE ENDHDR LINE UNTIL ITS TERMINATOR
                     if (b == '\n') return out.toByteArray();
                     continue;
                 }
@@ -256,11 +253,9 @@ public final class NetpbmReader extends ImageReader {
             }
         }
 
-        // P1..P6: HEADER IS "<digit> WSP <width> WSP <height> [WSP <maxval>] WSP".
-        // TOKENS ARE WHITESPACE-SEPARATED; COMMENTS START WITH '#' AND RUN TO '\n'.
-        // BITMAPS (P1/P4) CARRY 3 TOKENS (Pn, width, height), THE REST 4 (PLUS maxval).
-        // THE TOKEN RULES MUST MATCH NetpbmHeader.nextToken EXACTLY: THIS SCAN DECIDES WHERE THE
-        // RASTER STARTS WHILE THAT ONE DECIDES WHAT THE DIMENSIONS ARE, AND A DISAGREEMENT DESYNCS THEM
+        // P1..P6: "Pn WSP width WSP height [WSP maxval] WSP" WITH '#' COMMENTS TO '\n'; BITMAPS (P1/P4) CARRY 3 TOKENS.
+        // THE TOKEN RULES MUST MATCH NetpbmHeader.nextToken EXACTLY: THIS SCAN DECIDES WHERE THE RASTER STARTS AND
+        // THAT ONE WHAT THE DIMENSIONS ARE, SO A DISAGREEMENT DESYNCS THEM
         final int expectedTokens = (version == 1 || version == 4) ? 3 : 4;
         int tokens = 1; // ALREADY WROTE "Pn"
         boolean inComment = false;

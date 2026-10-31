@@ -12,11 +12,6 @@ public record Spacing(int top, int right, int bottom, int left) {
         return new Spacing(vertical, horizontal, vertical, horizontal);
     }
 
-    public int horizontal() {
-        return this.left + this.right;
-    }
-
-    public int vertical() {
-        return this.top + this.bottom;
-    }
+    public int horizontal() { return this.left + this.right; }
+    public int vertical() { return this.top + this.bottom; }
 }

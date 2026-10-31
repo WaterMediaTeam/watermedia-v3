@@ -48,7 +48,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
         this.arm();
     }
 
-    // --- SESSION FACTS ---
+    // ==== SESSION FACTS ====
 
     /**
      * Synchronizes the total media duration a client reported.
@@ -93,7 +93,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
         this.revision.incrementAndGet();
     }
 
-    // --- SNAPSHOTS ---
+    // ==== SNAPSHOTS ====
 
     /** Returns the mutation counter, seeded from the clock and bumped by every state change, the loop wrap and {@link #release()}, so a host sends {@link #snapshot()} only when it moved. */
     public int revision() {
@@ -117,7 +117,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
         this.update();
     }
 
-    // --- PLAYBACK CONTROLS ---
+    // ==== PLAYBACK CONTROLS ====
 
     // THE MONITOR release() TAKES KEEPS A RELEASED CLOCK STOPPED
     @Override
@@ -300,10 +300,10 @@ public final class ServerMediaPlayer extends MediaPlayer {
         super.release();
     }
 
-    // --- INTERNAL ---
+    // ==== INTERNAL ====
 
-    // POSITION OF THE RUNNING SEGMENT AT THE GIVEN RATE. THE RATE IS EXPLICIT BECAUSE a speed change
-    // MUST CLOSE THE SEGMENT AT THE OUTGOING VALUE BEFORE THE NEW ONE APPLIES.
+    // POSITION OF THE RUNNING SEGMENT AT THE GIVEN RATE. THE RATE IS EXPLICIT BECAUSE A SPEED CHANGE
+    // MUST CLOSE THE SEGMENT AT THE OUTGOING VALUE BEFORE THE NEW ONE APPLIES
     private long computeTime(final float rate) {
         // NO TIMELINE, NO PROGRESSION: WITHOUT A DURATION (AND NOT LIVE) THE CLOCK CANNOT WRAP OR
         // END, SO RUNNING IT ACCUMULATES HOURS OF NONSENSE ON SESSIONS PLAYING UNWATCHED AND THE
@@ -333,8 +333,8 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 this.ticking(false);
                 this.queueStatus(Status.PLAYING, Status.ENDED);
             } else {
-                // CARRY THE OVERSHOOT ACROSS THE LOOP BOUNDARY — DISCARDING IT SLIPPED THE AUTHORITATIVE
-                // CLOCK BY UP TO ONE TICK (50ms) PER LOOP, DESYNCING EVERY CLIENT THAT TRUSTS IT.
+                // CARRY THE OVERSHOOT ACROSS THE LOOP BOUNDARY: DISCARDING IT WOULD SLIP THE AUTHORITATIVE
+                // CLOCK BY UP TO ONE TICK (50ms) PER LOOP, DESYNCING EVERY CLIENT THAT TRUSTS IT
                 this.accumulatedMs = now % d;
                 this.segmentStartNanos = System.nanoTime();
                 // THE WRAP REBASES THE TIMELINE — BUMP SO THE HOST RESENDS WHERE CLIENTS DRIFT MOST

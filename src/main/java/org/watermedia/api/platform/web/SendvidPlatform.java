@@ -20,9 +20,10 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves Sendvid video pages, waiting a short while for an upload still in the processing queue. */
 public final class SendvidPlatform implements Platform {
-    public static final String NAME = "Sendvid";
     private static final Marker IT = MarkerManager.getMarker(SendvidPlatform.class.getSimpleName());
+    public static final String NAME = "Sendvid";
     private static final String STATUS_API = "https://sendvid.com/api/v1/videos/%s/status.json";
     private static final Pattern PATTERN_SOURCE = Pattern.compile("var\\s+video_source\\s*=\\s*\"([^\"]+)\"");
     private static final Pattern PATTERN_POSTER = Pattern.compile("var\\s+video_poster\\s*=\\s*\"([^\"]+)\"");
@@ -76,7 +77,7 @@ public final class SendvidPlatform implements Platform {
                 // PREFER THE PAGE'S video_duration; FALL BACK TO THE STATUS API VALUE
                 final Matcher durationMatcher = PATTERN_DURATION.matcher(html);
                 final double seconds = durationMatcher.find() ? DataTool.parseDouble(durationMatcher.group(1), status.duration()) : status.duration();
-                final Metadata metadata = new Metadata(null, null, null, (long) Math.max(0d, seconds * 1000d), null);
+                final Metadata metadata = new Metadata(null, null, null, (long) Math.max(0d, seconds * 1_000d), null);
 
                 // THE SIGNED CDN URL CARRIES ITS OWN EXPIRY (validto EPOCH SECONDS); HONOR IT FOR CACHE INVALIDATION
                 final Instant expires = DataTool.expiry(videoUri);
@@ -107,6 +108,5 @@ public final class SendvidPlatform implements Platform {
         throw new PlatformException(NAME, "Video '" + videoId + "' did not become ready after " + MAX_POLLS * POLL_DELAY_MS / 1_000L + " seconds");
     }
 
-    private record StatusResponse(int progress, @SerializedName("place_in_queue") int placeInQueue, String state, double duration) {
-    }
+    private record StatusResponse(int progress, @SerializedName("place_in_queue") int placeInQueue, String state, double duration) {}
 }

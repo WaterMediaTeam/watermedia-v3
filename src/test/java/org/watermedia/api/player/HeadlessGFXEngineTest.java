@@ -17,11 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the headless capture engine honors the shared {@link GFXEngine} contract: sentinel
- * texture, refused layouts, malformed plane sets, preload gating and an idempotent release that
- * drops later uploads.
- */
+/** Verifies that the headless capture engine honors the {@link GFXEngine} contract, from refused layouts to an idempotent release. */
 @DisplayName("HeadlessGFXEngine")
 public class HeadlessGFXEngineTest {
 

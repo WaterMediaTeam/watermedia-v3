@@ -25,17 +25,16 @@ public final class RenderSystem {
     /** The render backends the app can run on. */
     public enum Engine { OPENGL, VULKAN }
 
-    // A GL DEBUG CONTEXT ADDS PER-CALL DRIVER VALIDATION OVERHEAD — OFF BY DEFAULT, OPT IN WITH -Dwatermedia.gldebug=true
+    // A GL DEBUG CONTEXT ADDS PER-CALL DRIVER VALIDATION OVERHEAD: OFF BY DEFAULT, OPT IN WITH -Dwatermedia.gldebug=true
     public static final boolean GL_DEBUG = Boolean.getBoolean("watermedia.gldebug");
 
     // READ OFF THE RENDER THREAD (deviceName(), engineKind()) AND REPLACED ON EVERY HOT SWAP
     private static volatile Engine kind = Engine.OPENGL;
     private static volatile RenderEngine engine;
-    // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX) — REMEMBERED HERE SO ENGINES ATTACHED LATER INHERIT IT
+    // PHYSICAL PX PER LOGICAL PX, REMEMBERED HERE SO ENGINES ATTACHED LATER INHERIT IT
     private static volatile float uiScale = 1f;
 
-    private RenderSystem() {
-    }
+    private RenderSystem() {}
 
     /** Selects the engine for the next window, downgrading Vulkan to OpenGL when no Vulkan loader is present. */
     public static void chooseEngine(final Engine requested) {
@@ -47,7 +46,7 @@ public final class RenderSystem {
     /** Applies the GLFW window hints the chosen engine needs. Call right after {@code glfwDefaultWindowHints()}. */
     public static void applyWindowHints() {
         if (kind == Engine.VULKAN) {
-            // NO GL CONTEXT — THE VULKAN BACKEND PRESENTS THROUGH ITS OWN SURFACE/SWAPCHAIN
+            // NO GL CONTEXT: THE VULKAN BACKEND PRESENTS THROUGH ITS OWN SURFACE AND SWAPCHAIN
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         } else {
             glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_DEBUG ? GLFW_TRUE : GLFW_FALSE);
@@ -73,13 +72,9 @@ public final class RenderSystem {
                 WaterMedia.LOGGER.warn(IT, "Vulkan engine init failed; running on OpenGL", t);
                 // THE VkSurfaceKHR MUST DIE BEFORE THE CALLER REBUILDS THE WINDOW, OR THE DRIVER CAN CRASH AND
                 // THE DEVICE AND INSTANCE LEAK
-                if (vk != null) {
-                    try {
-                        vk.cleanup();
-                    } catch (final Throwable ct) {
-                        WaterMedia.LOGGER.error(IT, "Vulkan backend cleanup after failed init also failed", ct);
-                    }
-                }
+                if (vk != null)
+                    try { vk.cleanup(); }
+                    catch (final Throwable ct) { WaterMedia.LOGGER.error(IT, "Vulkan backend cleanup after failed init also failed", ct); }
                 engine = null;
                 kind = Engine.OPENGL;
                 return false;
@@ -87,7 +82,7 @@ public final class RenderSystem {
         }
         engine = new RenderEngine(new OpenGLRenderBackend(window));
         engine.uiScale(uiScale);
-        // init() MAKES THE GL CONTEXT CURRENT ITSELF, SO RenderBackend.init() SUFFICES FOR BOTH BACKENDS.
+        // init() MAKES THE GL CONTEXT CURRENT ITSELF, SO RenderBackend.init() SUFFICES FOR BOTH BACKENDS
         engine.init();
         engine.configureFrameState();
         WaterMedia.LOGGER.info(IT, "Render engine: OpenGL");
@@ -132,10 +127,10 @@ public final class RenderSystem {
         return uiScale;
     }
 
-    // NULLS THE ENGINE SO WINDOW-CREATION MESSAGES BETWEEN A TEARDOWN AND THE NEXT attach() (ENGINE
-    // HOT-SWAP) CANNOT REACH A DEAD BACKEND WHOSE CONTEXT DIED WITH THE PREVIOUS WINDOW
     public static void cleanup() {
         final RenderEngine current = engine;
+        // WINDOW-CREATION MESSAGES BETWEEN A TEARDOWN AND THE NEXT attach() (HOT SWAP) MUST NOT REACH A DEAD
+        // BACKEND WHOSE CONTEXT DIED WITH THE PREVIOUS WINDOW
         engine = null;
         if (current != null) current.cleanup();
     }
@@ -160,9 +155,9 @@ public final class RenderSystem {
     public static void configureFrameState() { engine.configureFrameState(); }
     public static void clear(final float r, final float g, final float b, final float a) { engine.clear(r, g, b, a); }
 
-    // NULL-SAFE: WinFrame'S SWP_FRAMECHANGED FIRES THE SIZE CALLBACK DURING WINDOW CREATION, BEFORE attach();
-    // GL TAKES ITS FIRST VIEWPORT FROM THE FRAMEBUFFER AND THE SWAP PATH CALLS viewport() AGAIN
     public static void viewport(final int width, final int height) {
+        // NULL-SAFE: WinFrame'S SWP_FRAMECHANGED FIRES THE SIZE CALLBACK DURING WINDOW CREATION, BEFORE attach();
+        // GL TAKES ITS FIRST VIEWPORT FROM THE FRAMEBUFFER AND THE SWAP PATH CALLS viewport() AGAIN
         final RenderEngine current = engine;
         if (current != null) current.viewport(width, height);
     }

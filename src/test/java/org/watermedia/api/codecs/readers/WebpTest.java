@@ -13,6 +13,7 @@ import org.watermedia.api.codecs.readers.webp.FourCC;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.FrameReplay;
+import org.watermedia.test.support.ImageBytes;
 import org.watermedia.test.support.PamImage;
 import org.watermedia.test.support.PixelDiff;
 
@@ -225,7 +226,8 @@ public class WebpTest {
         @Test
         @DisplayName("A final odd-sized chunk may end the file without its padding byte")
         void unpaddedFinalChunk() throws IOException {
-            final byte[] xmp = "<x:xmpmeta/> ".getBytes(StandardCharsets.UTF_8); // 13 BYTES: ODD, SO A PAD BYTE WOULD FOLLOW
+            // 13 BYTES: ODD, SO A PAD BYTE WOULD FOLLOW
+            final byte[] xmp = "<x:xmpmeta/> ".getBytes(StandardCharsets.UTF_8);
             final byte[] tagged = append(Fixtures.readAll(Fixtures.WEBP_ANIMATED), FourCC.XMP, xmp, false);
             final ImageData image = CodecsAPI.decode(tagged);
             assertTrue(image.frames().length > 1);
@@ -273,21 +275,11 @@ public class WebpTest {
     // APPENDS AN EXIF CHUNK: A SIMPLE FILE IS FIRST WRAPPED INTO A VP8X CONTAINER, AN EXTENDED ONE JUST GAINS THE EXIF FLAG
     private static byte[] withExif(final byte[] webp, final byte[] exif, final int width, final int height) {
         final boolean extended = webp[12] == 'V' && webp[13] == 'P' && webp[14] == '8' && webp[15] == 'X';
-        final ByteBuffer out = ByteBuffer.allocate(webp.length + 8 + exif.length + (exif.length & 1) + (extended ? 0 : 18))
-                .order(ByteOrder.LITTLE_ENDIAN);
-        out.put(webp, 0, 12);
-        if (!extended) {
-            out.put((byte) 'V').put((byte) 'P').put((byte) '8').put((byte) 'X').putInt(10)
-                    .put((byte) 0x08).put((byte) 0).put((byte) 0).put((byte) 0)
-                    .put((byte) (width - 1)).put((byte) ((width - 1) >> 8)).put((byte) ((width - 1) >> 16))
-                    .put((byte) (height - 1)).put((byte) ((height - 1) >> 8)).put((byte) ((height - 1) >> 16));
-        }
-        out.put(webp, 12, webp.length - 12);
-        if (extended) out.put(20, (byte) (webp[20] | 0x08));
-        out.put((byte) 'E').put((byte) 'X').put((byte) 'I').put((byte) 'F').putInt(exif.length).put(exif);
-        if ((exif.length & 1) == 1) out.put((byte) 0);
-        out.putInt(4, out.position() - 8);
-        return Arrays.copyOf(out.array(), out.position());
+        final byte[] chunks = Arrays.copyOfRange(webp, 12, webp.length);
+        // THE VP8X FLAGS BYTE FOLLOWS ITS 8-BYTE CHUNK HEADER
+        if (extended) chunks[8] |= 0x08;
+        final byte[] tag = ImageBytes.webpChunk("EXIF", exif);
+        return extended ? ImageBytes.riff(chunks, tag) : ImageBytes.riff(ImageBytes.webpChunk("VP8X", ImageBytes.vp8x(0x08, width, height)), chunks, tag);
     }
 
     private static List<Path> listWebp(final Path dir) {

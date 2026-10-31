@@ -151,9 +151,7 @@ public final class TextField extends Element<TextField> {
         return this;
     }
 
-    public String value() {
-        return this.value;
-    }
+    public String value() { return this.value; }
 
     @Override
     public boolean textInputActive() {
@@ -162,7 +160,7 @@ public final class TextField extends Element<TextField> {
 
     @Override
     public void clearFocus() {
-        // A CONSUMED CLICK LANDED ELSEWHERE — DROP THE CARET AND STOP SUPPRESSING GLOBAL SHORTCUTS
+        // A CONSUMED CLICK LANDED ELSEWHERE: DROP THE CARET AND STOP SUPPRESSING GLOBAL SHORTCUTS
         if (this.focused && !this.keepFocus) {
             this.focused = false;
             this.invalidate();
@@ -274,8 +272,10 @@ public final class TextField extends Element<TextField> {
         if (this.onChange != null) this.onChange.accept(this.value);
     }
 
-    // DROPS TRAILING SPACES, THEN THE LAST WORD, THEN ONE BREAK CHARACTER BEFORE IT
+    // UTILITY
+
     private static String withoutLastWord(final String value) {
+        // DROPS TRAILING SPACES, THEN THE LAST WORD, THEN ONE BREAK CHARACTER BEFORE IT
         int i = value.length();
         while (i > 0 && Character.isWhitespace(value.charAt(i - 1))) i--;
         while (i > 0 && !Character.isWhitespace(value.charAt(i - 1)) && WORD_BREAKS.indexOf(value.charAt(i - 1)) < 0) i--;

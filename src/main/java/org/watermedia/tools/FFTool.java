@@ -185,9 +185,8 @@ public final class FFTool {
     /** Records whether the loaded natives came from WaterMedia Binaries; the FFmpeg boot calls it once. */
     public static void bundled(final boolean value) { bundled = value; }
 
-    // ==========================================================================
-    // NATIVE TLS
-    // ==========================================================================
+    // ==== NATIVE TLS ====
+
     /** Exports the JVM trust anchors as the PEM bundle every input verifies against, after checking the patched transport options. */
     public static void startTLS() throws Exception {
         // HTTP MUST RETAIN TLS OPTIONS AND CREDENTIAL ORIGINS FOR NESTED MEDIA REQUESTS.

@@ -9,10 +9,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * DirectDraw Surface (DDS) container with the modern {@code DX10} extended header — the storage
- * format for BC-compressed frames, the same way
- * RIFF is the container for WebP.
- * This class knows the container only; the block layout comes from the frame's {@link PixelFormat}.
+ * DirectDraw Surface (DDS) container with the modern {@code DX10} extended header — the storage format for
+ * BC-compressed frames, the same way RIFF is the container for WebP. This class knows the container only; the block
+ * layout comes from the frame's {@link PixelFormat}.
  *
  * <p>An animation is stored as a 2D texture array (one array slice per frame). DDS itself has no
  * field for per-frame delays, so an optional WaterMedia footer is appended after the texture data:
@@ -25,26 +24,15 @@ import java.nio.ByteOrder;
  * {@link #readFooter} gives zero delays when the bytes after the texture do not start with the footer magic.
  */
 public final class DdsHeader {
-
     /** Byte length of the {@code "DDS "} + {@code DDS_HEADER} + {@code DDS_HEADER_DXT10} prefix. */
     public static final int BYTES = 148;
-    // LITTLE-ENDIAN ARRAY SIZE OFFSET IN THE DXT10 HEADER.
-    private static final int ARRAYSIZE_OFFSET = 140;
-    // WATERMEDIA ANIMATION FOOTER IDENTIFIER: 'W','M','T','C' AS A LITTLE-ENDIAN INT, SO IT READS IN A HEX DUMP LIKE "DDS "
-    private static final int FOOTER_MAGIC = 0x43544D57;
-    private static final int FOOTER_VERSION = 1;
-    // MAGIC, VERSION AND FRAME COUNT PRECEDE THE DELAY LONGS.
-    private static final int FOOTER_HEAD_BYTES = 12;
-    // ONE SLICE PER ANIMATION FRAME; A DECLARED COUNT COSTS TWO BUFFER OBJECTS AND EIGHT FOOTER BYTES
-    private static final int MAX_ARRAY_SIZE = 4_096;
 
-    // 'D','D','S',' ' AS A LITTLE-ENDIAN INT
-    private static final int MAGIC = 0x20534444;
-    // 'D','X','1','0' AS A LITTLE-ENDIAN INT
-    private static final int FOURCC_DX10 = 0x30315844;
+    // DDS HEADER
+    private static final int MAGIC = 0x20534444; // 'D','D','S',' ' AS A LITTLE-ENDIAN INT
+    private static final int FOURCC_DX10 = 0x30315844; // 'D','X','1','0' AS A LITTLE-ENDIAN INT
     private static final int HEADER_SIZE = 124;
     private static final int PIXEL_FORMAT_SIZE = 32;
-
+    private static final int ARRAYSIZE_OFFSET = 140; // LITTLE-ENDIAN ARRAY SIZE IN THE DXT10 HEADER
     private static final int DDPF_FOURCC = 0x4;
     private static final int DDSCAPS_TEXTURE = 0x1000;
     private static final int DX10_RESOURCE_DIMENSION_TEXTURE1D = 2;
@@ -56,6 +44,13 @@ public final class DdsHeader {
     private static final int DXGI_BC1_UNORM = 71;
     private static final int DXGI_BC3_UNORM = 77;
     private static final int DXGI_BC7_UNORM = 98;
+
+    // WATERMEDIA ANIMATION FOOTER
+    private static final int FOOTER_MAGIC = 0x43544D57; // 'W','M','T','C' AS A LITTLE-ENDIAN INT, READS IN A HEX DUMP LIKE "DDS "
+    private static final int FOOTER_VERSION = 1;
+    private static final int FOOTER_HEAD_BYTES = 12; // MAGIC, VERSION AND FRAME COUNT PRECEDE THE DELAY LONGS
+    // ONE SLICE PER ANIMATION FRAME; A DECLARED COUNT COSTS TWO BUFFER OBJECTS AND EIGHT FOOTER BYTES
+    private static final int MAX_ARRAY_SIZE = 4_096;
 
     private DdsHeader() {}
 

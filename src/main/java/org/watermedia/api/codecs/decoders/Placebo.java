@@ -15,8 +15,8 @@ import static org.bytedeco.ffmpeg.global.avutil.av_free;
 import static org.bytedeco.ffmpeg.global.avutil.av_q2d;
 
 /**
- * buffer, libplacebo and buffersink over one decoder pool on a Vulkan device: frames leave cropped as RGBA in SDR
- * BT.709 (HDR tone-mapped, other primaries gamut-mapped), for the engine to scale. Used by one thread at a time.
+ * Runs decoded Vulkan frames through a {@code buffer → libplacebo → buffersink} graph over one decoder pool: they leave
+ * cropped as RGBA in SDR BT.709 (HDR tone-mapped, other primaries gamut-mapped), for the engine to scale. One thread at a time.
  */
 public final class Placebo {
     // NO deinterlace: WITH IT, av_buffersink_get_frame NEVER RETURNS ONCE AN INTERLACED FRAME ENTERS (FFMPEG 9.0.2, LIBPLACEBO 7.387)

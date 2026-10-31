@@ -1,23 +1,10 @@
 package org.watermedia.api.codecs.readers.svg;
 
 /**
- * Minimal 2x3 affine transform used by the SVG rasterizer, kept fully independent of
- * AWT's affine transform so the codec path never loads AWT.
- *
- * <p>The matrix maps a point {@code (x, y)} to
- * {@code (a*x + c*y + e, b*x + d*y + f)}, matching the column-vector convention of the SVG
- * {@code matrix(a b c d e f)} primitive. Modelled as a record: immutable, allocation-friendly, and
- * every operation returns a new transform.
- *
- * @param a scale-x / m00
- * @param b shear-y / m10
- * @param c shear-x / m01
- * @param d scale-y / m11
- * @param e translate-x / m02
- * @param f translate-y / m12
+ * Immutable 2x3 affine transform of the SVG rasterizer, independent of AWT: maps {@code (x, y)} to
+ * {@code (a*x + c*y + e, b*x + d*y + f)}, the column-vector convention of SVG {@code matrix(a b c d e f)}.
  */
 record Affine(double a, double b, double c, double d, double e, double f) {
-
     static final Affine IDENTITY = new Affine(1, 0, 0, 1, 0, 0);
 
     static Affine translate(final double tx, final double ty) {
@@ -63,7 +50,7 @@ record Affine(double a, double b, double c, double d, double e, double f) {
 
     double det() { return this.a * this.d - this.b * this.c; }
 
-    // UNIFORM-ish DEVICE SCALE ESTIMATE — USED TO PICK A USER-SPACE FLATTENING TOLERANCE
+    // UNIFORM DEVICE SCALE ESTIMATE (SQUARE ROOT OF |det|) THAT MAPS A USER-SPACE STROKE WIDTH TO PIXELS
     double scaleFactor() {
         final double det = Math.abs(this.det());
         return det > 0 ? Math.sqrt(det) : 1.0;

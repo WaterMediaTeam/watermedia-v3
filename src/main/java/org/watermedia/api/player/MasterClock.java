@@ -26,6 +26,8 @@ import java.util.function.BiConsumer;
  * the FFmpeg decoder follows.
  */
 final class MasterClock implements FFDecoder.Timeline {
+    // AUDIO PTS DRIFT FROM THE CLOCK, IN SECONDS, PAST WHICH update() RECALIBRATES ptsDrift
+    private static final double DRIFT_RECALIBRATION_SEC = 0.050;
 
     // STATE MACHINE — VALID TRANSITIONS
     private static final Map<Status, Set<Status>> TRANSITIONS = new EnumMap<>(Status.class);
@@ -69,28 +71,16 @@ final class MasterClock implements FFDecoder.Timeline {
     private final ArrayDeque<Status[]> events = new ArrayDeque<>();
     private boolean draining;
 
-    // CLOCK RECALIBRATION THRESHOLD (SECONDS) — ONLY RECALIBRATE ptsDrift
-    // WHEN AUDIO PTS DRIFTS MORE THAN THIS FROM WALLCLOCK. PREVENTS VIDEO
-    // PROCESSING DELAY FROM PULLING THE CLOCK BACKWARD EVERY AUDIO UPDATE.
-    private static final double DRIFT_RECALIBRATION_SEC = 0.050;
-
     // FRAME TIMING
     private volatile double frameDurationSec = 1.0 / 30.0;
     private volatile float fpsValue = 30.0f;
     private volatile long skipThresholdMs = 165;
 
-    // WALLCLOCK
-    // WALLCLOCK IN SECONDS WITH NANOSECOND PRECISION
-    private static double wallclock() {
-        return System.nanoTime() / 1_000_000_000.0;
-    }
+    // ==========================================================================
+    // CLOCK
+    // ==========================================================================
 
-    // CLOCK READ (LOCK-FREE VIA VOLATILE)
-    /**
-     * Returns the current clock time in seconds.
-     * When playing: {@code ptsDrift + now}, adjusted for speed.
-     * When not playing: frozen at the last PTS value.
-     */
+    /** Returns the clock time in seconds, lock-free: speed-corrected {@code ptsDrift + now} while playing, else the frozen last PTS. */
     public double time() {
         final Status s = this.status;
         if (s != Status.PLAYING) return this.pts; // FROZEN IN ALL NON-PLAYING STATES
@@ -99,40 +89,24 @@ final class MasterClock implements FFDecoder.Timeline {
         return this.ptsDrift + now - elapsed * (1.0 - this.speed);
     }
 
-    /** Convenience: current clock time in milliseconds. */
+    /** Returns the clock time in milliseconds. */
     public long timeMs() {
-        return (long) (this.time() * 1000.0);
+        return (long) (this.time() * 1_000.0);
     }
 
-    // CLOCK WRITE (UNDER LOCK)
-    /**
-     * Audio-driven clock update. Called each time the audio decoder processes a frame.
-     * If buffering and the serial matches, transitions to playing or paused based on the
-     * pause intent.
-     * <p>
-     * No backward guard — the serial system handles stale frames.
-     *
-     * @param ptsSec PTS of the frame in seconds
-     * @param serial serial of the packet queue that originated this frame
-     */
+    /** Updates the clock from a decoded frame of the current serial (audio, or video while it drives the clock); the first one while buffering resolves the pause intent. */
     public void update(final double ptsSec, final int serial) {
         this.lock.lock();
         try {
-            if (serial != this.serial) return; // STALE FRAME — REJECT
+            // NO BACKWARD GUARD: THE SERIAL REJECTS STALE FRAMES
+            if (serial != this.serial) return;
             final double now = wallclock();
 
             // ALWAYS UPDATE PTS (FOR DISPLAY AND BUFFERING TRANSITION)
             this.pts = ptsSec;
 
-            // ONLY RECALIBRATE DRIFT IF AUDIO IS SIGNIFICANTLY OUT OF SYNC (>50MS).
-            // WITHOUT THIS, EVERY update() PULLS THE CLOCK BACKWARD WHEN VIDEO
-            // PROCESSING (sws_scale ~30MS) DELAYS AUDIO CONSUMPTION BEYOND THE
-            // AUDIO FRAME PERIOD (~20MS). THE CLOCK EFFECTIVELY RUNS AT
-            // audio_duration/video_duration SPEED (e.g., 20/30 = 0.67x).
-            // WITH THE THRESHOLD, THE CLOCK RUNS AT WALLCLOCK RATE AND ONLY
-            // CORRECTS FOR REAL DESYNC (SEEK, AUDIO DISCONTINUITY).
-            // COMPARE AGAINST THE SPEED-CORRECTED time(); A PLAIN ptsDrift+now DIVERGED FROM THE
-            // REAL CLOCK AT |1-speed| AND TRIPPED THE THRESHOLD ON NEARLY EVERY FRAME WHEN speed != 1.
+            // RECALIBRATE ONLY ON REAL DESYNC (SEEK, AUDIO GAP): AUDIO CONSUMED LATE BEHIND SLOW VIDEO WORK WOULD OTHERWISE
+            // DRAG THE CLOCK BELOW WALL-CLOCK RATE. time() IS SPEED-CORRECTED, SO THE CHECK HOLDS AT ANY SPEED
             final double drift = ptsSec - this.time();
             if (this.status == Status.BUFFERING || Math.abs(drift) > DRIFT_RECALIBRATION_SEC) {
                 this.ptsDrift = ptsSec - now;
@@ -151,7 +125,34 @@ final class MasterClock implements FFDecoder.Timeline {
         this.drain();
     }
 
-    /** Registers the listener that receives every status transition, in order, outside the lock. */
+    /** Updates the clock from a PTS in milliseconds; see {@link #update(double, int)}. */
+    public void updateMs(final long ptsMs, final int serial) {
+        this.update(ptsMs / 1_000.0, serial);
+    }
+
+    /** Sets the playback speed, recalibrating the clock so the current position stays continuous. */
+    public void speed(final double speed) {
+        this.lock.lock();
+        try {
+            final double current = this.time();
+            this.speed = speed;
+            final double now = wallclock();
+            this.pts = current;
+            this.ptsDrift = current - now;
+            this.lastUpdated = now;
+        } finally {
+            this.lock.unlock();
+        }
+    }
+
+    /** Returns the playback speed multiplier (1.0 = normal). */
+    public double speed() { return this.speed; }
+
+    // ==========================================================================
+    // STATUS
+    // ==========================================================================
+
+    /** Registers the listener of every status transition, delivered in order outside the lock. */
     public void listener(final BiConsumer<Status, Status> listener) {
         this.listener = listener;
     }
@@ -184,51 +185,29 @@ final class MasterClock implements FFDecoder.Timeline {
         }
     }
 
-    /** Convenience: update with milliseconds. */
-    public void updateMs(final long ptsMs, final int serial) {
-        this.update(ptsMs / 1000.0, serial);
-    }
+    /** Returns the current status, lock-free. */
+    public Status status() { return this.status; }
 
-    // STATE (STATUS IS VOLATILE FOR LOCK-FREE READS)
-    /** Current status — lock-free read via volatile. */
-    public Status status() {
-        return this.status;
-    }
-
-    /**
-     * Validated state transition. Checks the state machine for legality, updates the status,
-     * adjusts the clock when entering or leaving the playing state, and signals all waiting
-     * threads.
-     *
-     * @param newStatus the desired status to transition to
-     * @return true if the transition was valid and applied
-     */
+    /** Applies a transition the state machine allows; true when it applied (see {@link #exchange(Status)}). */
     public boolean transition(final Status newStatus) {
         return this.exchange(newStatus) != null;
     }
 
-    /**
-     * Validated state transition that reports the status it left, so the caller can publish the
-     * exact pair that happened instead of a status read before or after the swap.
-     *
-     * @param newStatus the desired status to transition to
-     * @return the previous status when the transition applied, null when it was rejected
-     */
+    /** Applies a transition the state machine allows and returns the status it left, or null when rejected. */
     public Status exchange(final Status newStatus) {
+        // THE CLOCK FREEZES OR RECALIBRATES AROUND PLAYING AND EVERY WAITER WAKES; THE RETURNED STATUS LETS THE CALLER PUBLISH
+        // THE EXACT PAIR INSTEAD OF A STATUS READ BEFORE OR AFTER THE SWAP
         final Status current;
         this.lock.lock();
         try {
             current = this.status;
             if (current == newStatus) return null; // NO-OP — ALREADY IN THAT STATE
 
-            // VALIDATE AGAINST STATE MACHINE
             final Set<Status> allowed = TRANSITIONS.get(current);
             if (allowed == null || !allowed.contains(newStatus)) return null;
 
             // ADJUST CLOCK WHEN LEAVING PLAYING — FREEZE PTS
-            if (current == Status.PLAYING) {
-                this.pts = this.time();
-            }
+            if (current == Status.PLAYING) this.pts = this.time();
 
             // ADJUST CLOCK WHEN ENTERING PLAYING — RECALIBRATE DRIFT
             if (newStatus == Status.PLAYING) {
@@ -249,14 +228,9 @@ final class MasterClock implements FFDecoder.Timeline {
         return current;
     }
 
-    /**
-     * Forces the terminal stopped state regardless of the state machine, for a release that tears
-     * the pipeline down from any status (including error). The transition is queued, not delivered:
-     * the caller runs {@link #drain()} once it holds no lock of its own.
-     *
-     * @return the previous status, or null when the clock was already stopped
-     */
+    /** Forces the terminal stopped state from any status for a release and returns the status it left, or null when already stopped. */
     public Status halt() {
+        // THE TRANSITION IS QUEUED, NOT DELIVERED: THE CALLER RUNS drain() ONCE IT HOLDS NO LOCK OF ITS OWN
         final Status current;
         this.lock.lock();
         try {
@@ -293,7 +267,8 @@ final class MasterClock implements FFDecoder.Timeline {
         return true;
     }
 
-    /** Starts the run from loading at time 0, playing or paused as the latched intent says, or buffering at a seek requested while loading. */
+    // STARTS THE RUN FROM LOADING AT TIME 0, PLAYING OR PAUSED AS THE LATCHED INTENT SAYS, OR BUFFERING AT A SEEK REQUESTED
+    // WHILE LOADING
     @Override
     public void start() {
         this.lock.lock();
@@ -315,33 +290,28 @@ final class MasterClock implements FFDecoder.Timeline {
         this.drain();
     }
 
-    // SEEK (UNDER LOCK, SIGNALS CONDITION)
-    /**
-     * Requests a seek. Stores the request atomically, freezes the clock at the target
-     * position, transitions to buffering, and wakes all waiting threads. Rejected when no
-     * pipeline can serve it (waiting, ended, stopped or error); while loading the request is
-     * kept for {@link #start()} and the status stays loading.
-     *
-     * @param targetMs target position in milliseconds
-     * @param precise  if true, request a precise (frame-exact) seek
-     * @return true if the seek was accepted
-     */
+    // ==========================================================================
+    // SEEK AND PAUSE
+    // ==========================================================================
+
+    /** Requests a seek, freezing the clock at the target in buffering; false without a pipeline to serve it (waiting, ended, stopped, error). */
     public boolean requestSeek(final long targetMs, final boolean precise) {
         this.lock.lock();
         try {
+            // WHILE LOADING THE REQUEST WAITS FOR start() AND THE STATUS STAYS LOADING
             final Status current = this.status;
             if (current == Status.WAITING || current == Status.ENDED || current == Status.STOPPED || current == Status.ERROR)
                 return false;
             this.pendingSeek = new FFDecoder.Seek(targetMs, precise);
             this.pts = targetMs / 1_000.0; // FREEZE CLOCK AT TARGET
-            this.serial++; // INVALIDATE ALL CURRENT FRAMES — PREVENTS update() FROM
-                           // AUTO-TRANSITIONING BUFFERING→PLAYING WITH STALE AUDIO
+            // INVALIDATE ALL CURRENT FRAMES, SO update() NEVER TURNS BUFFERING INTO PLAYING WITH STALE AUDIO
+            this.serial++;
             if (current != Status.LOADING && current != Status.BUFFERING) {
                 this.status = Status.BUFFERING;
                 this.events.addLast(new Status[] { current, Status.BUFFERING });
             }
             this.demuxFinished = false; // CLEAR EOF FLAG FOR SEEK AFTER EOF
-            this.condition.signalAll(); // WAKE ALL THREADS
+            this.condition.signalAll();
         } finally {
             this.lock.unlock();
         }
@@ -349,11 +319,6 @@ final class MasterClock implements FFDecoder.Timeline {
         return true;
     }
 
-    /**
-     * Consumes the pending seek request, returning and clearing it.
-     *
-     * @return the pending seek request, or null if none
-     */
     @Override
     public FFDecoder.Seek consumeSeek() {
         this.lock.lock();
@@ -366,22 +331,10 @@ final class MasterClock implements FFDecoder.Timeline {
         }
     }
 
-    /** Checks if a seek request is pending — lock-free via volatile. */
     @Override
-    public boolean seekPending() {
-        return this.pendingSeek != null;
-    }
+    public boolean seekPending() { return this.pendingSeek != null; }
 
-    // PAUSE (CONVENIENCE — DELEGATES TO transition())
-
-    /**
-     * Sets the paused state. Convenience method that delegates to {@link #transition(Status)}.
-     * Also stores the pause intent for buffering resolution; while loading only the intent
-     * changes and {@link #start()} applies it.
-     *
-     * @param paused true to pause, false to resume
-     * @return true if the state (or the latched intent while loading) changed
-     */
+    /** Pauses or resumes, latching the intent that resolves buffering; true when the state, or the intent while loading, changed. */
     public boolean paused(final boolean paused) {
         final boolean changed;
         this.lock.lock();
@@ -390,6 +343,7 @@ final class MasterClock implements FFDecoder.Timeline {
             if (this.status == Status.WAITING) return false;
             final boolean was = this.pauseIntent;
             this.pauseIntent = paused;
+            // WHILE LOADING ONLY THE INTENT CHANGES AND start() APPLIES IT
             if (this.status == Status.LOADING) return was != paused;
             if (paused) {
                 // PAUSE IS ALWAYS ALLOWED (BUFFERING→PAUSED, PLAYING→PAUSED)
@@ -408,25 +362,18 @@ final class MasterClock implements FFDecoder.Timeline {
         return changed;
     }
 
-    /** Stored pause intent for buffering to playing/paused resolution. */
-    public boolean pauseRequested() {
-        return this.pauseIntent;
-    }
+    /** Whether the latched pause intent resolves buffering into paused rather than playing. */
+    public boolean pauseRequested() { return this.pauseIntent; }
 
-    /** Whether playback is held paused by request, so the demuxer parks. */
+    // PLAYBACK IS HELD PAUSED BY REQUEST, SO THE DEMUXER PARKS
     @Override
-    public boolean holding() {
-        return this.pauseIntent && this.status == Status.PAUSED;
-    }
+    public boolean holding() { return this.pauseIntent && this.status == Status.PAUSED; }
 
-    // THREAD COORDINATION (UNDER LOCK)
-    /**
-     * Blocks until the status changes or a new seek request arrives.
-     * Polls every 50ms to bound latency.
-     *
-     * @param timeoutMs maximum time to wait (0 = indefinite)
-     * @throws InterruptedException if the thread is interrupted
-     */
+    // ==========================================================================
+    // THREAD COORDINATION
+    // ==========================================================================
+
+    // BLOCKS UNTIL THE STATUS CHANGES OR A NEW SEEK ARRIVES (timeoutMs 0 = INDEFINITE)
     @Override
     public void awaitChange(final long timeoutMs) throws InterruptedException {
         this.lock.lock();
@@ -438,7 +385,7 @@ final class MasterClock implements FFDecoder.Timeline {
                 final long remaining = timeoutMs > 0 ? TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()) : Long.MAX_VALUE;
                 if (remaining <= 0) break;
                 // KEEP A COARSE SAFETY CAP: consumeSeek() CLEARS pendingSeek WITHOUT SIGNALLING,
-                // SO A pure-signal WAIT COULD MISS THAT ONE TRANSITION.
+                // SO A PURE-SIGNAL WAIT COULD MISS THAT ONE TRANSITION.
                 this.condition.await(Math.min(remaining, 50), TimeUnit.MILLISECONDS);
             }
         } finally {
@@ -446,14 +393,7 @@ final class MasterClock implements FFDecoder.Timeline {
         }
     }
 
-    /**
-     * Blocks until the status is no longer the given value.
-     *
-     * @param current   the status to wait to leave
-     * @param timeoutMs maximum time to wait (0 = indefinite)
-     * @return the status at the time of return
-     * @throws InterruptedException if the thread is interrupted
-     */
+    /** Blocks until the status leaves {@code current} or {@code timeoutMs} elapses (0 = indefinite) and returns the status it found. */
     public Status awaitNotStatus(final Status current, final long timeoutMs) throws InterruptedException {
         this.lock.lock();
         try {
@@ -470,7 +410,10 @@ final class MasterClock implements FFDecoder.Timeline {
         }
     }
 
-    // PIPELINE LIFECYCLE
+    // ==========================================================================
+    // PIPELINE AND FRAME TIMING
+    // ==========================================================================
+
     /** Resets the pipeline state for a new run; the playback speed is a player setting and survives. */
     public void reset() {
         this.lock.lock();
@@ -493,7 +436,6 @@ final class MasterClock implements FFDecoder.Timeline {
         this.drain();
     }
 
-    /** Signals that the demuxer has reached end-of-stream. */
     @Override
     public void signalDemuxFinished() {
         this.lock.lock();
@@ -505,38 +447,7 @@ final class MasterClock implements FFDecoder.Timeline {
         }
     }
 
-    /** Checks if the demuxer has finished — lock-free via volatile. */
-    public boolean demuxFinished() {
-        return this.demuxFinished;
-    }
-
-    // FRAME TIMING
-    /** Current serial number — lock-free via volatile. */
-    public int serial() {
-        return this.serial;
-    }
-
-    /**
-     * Sets the serial to match an external source (the decoder's packet queue serial after a
-     * flush). Called by the seek handler after flushing queues so that {@link #update(double, int)}
-     * accepts post-seek frames (a serial match is required for the buffering to playing transition).
-     *
-     * @param serial the serial value to set
-     */
-    @Override
-    public void serial(final int serial) {
-        this.lock.lock();
-        try {
-            this.serial = serial;
-        } finally {
-            this.lock.unlock();
-        }
-    }
-
-    /**
-     * Signals that the demux has resumed after EOF (e.g. after a seek).
-     * Clears the {@code demuxFinished} flag and signals all waiting threads.
-     */
+    // THE DEMUX RESUMED AFTER EOF (E.G. AFTER A SEEK)
     @Override
     public void signalDemuxResumed() {
         this.lock.lock();
@@ -548,62 +459,45 @@ final class MasterClock implements FFDecoder.Timeline {
         }
     }
 
-    /**
-     * Sets the FPS of the stream. Called when opening the video stream.
-     * Also updates the frame duration and skip threshold.
-     *
-     * @param fps frames per second (clamped to a minimum of 1.0)
-     */
+    /** Whether the demuxer reached end-of-stream, lock-free. */
+    public boolean demuxFinished() { return this.demuxFinished; }
+
+    /** Returns the current serial, lock-free. */
+    public int serial() { return this.serial; }
+
+    // ADOPTS THE DECODER'S PACKET QUEUE SERIAL AFTER A SEEK FLUSH, SO update() ACCEPTS POST-SEEK FRAMES AGAIN (A SERIAL MATCH
+    // IS REQUIRED FOR THE BUFFERING TO PLAYING TRANSITION)
+    @Override
+    public void serial(final int serial) {
+        this.lock.lock();
+        try {
+            this.serial = serial;
+        } finally {
+            this.lock.unlock();
+        }
+    }
+
+    /** Sets the stream rate (at least 1 fps) when the video stream opens, with its frame duration and skip threshold. */
     public void fps(final float fps) {
         this.fpsValue = Math.max(fps, 1.0f);
         this.frameDurationSec = 1.0 / this.fpsValue;
         // SKIP THRESHOLD: ~5 FRAMES WORTH
-        this.skipThresholdMs = (long) (this.frameDurationSec * 5.0 * 1000.0);
+        this.skipThresholdMs = (long) (this.frameDurationSec * 5.0 * 1_000.0);
     }
 
-    /** Current FPS value. */
-    public float fps() {
-        return this.fpsValue;
-    }
-
-    /** Frame duration in milliseconds. */
-    public long frameDurationMs() {
-        return (long) (this.frameDurationSec * 1000.0);
-    }
-
-    /** Frame duration in seconds. */
+    /** Returns the stream rate in frames per second. */
+    public float fps() { return this.fpsValue; }
+    /** Returns the frame duration in milliseconds. */
+    public long frameDurationMs() { return (long) (this.frameDurationSec * 1_000.0); }
     @Override
-    public double frameDurationSec() {
-        return this.frameDurationSec;
-    }
+    public double frameDurationSec() { return this.frameDurationSec; }
+    /** Returns the lateness in milliseconds (~5 frames) past which a video frame is skipped. */
+    public long skipThresholdMs() { return this.skipThresholdMs; }
 
-    /** Skip threshold in milliseconds (~5 frames). */
-    public long skipThresholdMs() {
-        return this.skipThresholdMs;
-    }
+    // UTILITY
 
-    /** Current playback speed multiplier. */
-    public double speed() {
-        return this.speed;
-    }
-
-    /**
-     * Sets the playback speed. Recalibrates the clock to maintain continuity at the current
-     * time position.
-     *
-     * @param speed playback speed multiplier (1.0 = normal)
-     */
-    public void speed(final double speed) {
-        this.lock.lock();
-        try {
-            final double current = this.time();
-            this.speed = speed;
-            final double now = wallclock();
-            this.pts = current;
-            this.ptsDrift = current - now;
-            this.lastUpdated = now;
-        } finally {
-            this.lock.unlock();
-        }
+    // WALLCLOCK IN SECONDS WITH NANOSECOND PRECISION
+    private static double wallclock() {
+        return System.nanoTime() / 1_000_000_000.0;
     }
 }

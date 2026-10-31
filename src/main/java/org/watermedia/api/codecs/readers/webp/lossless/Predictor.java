@@ -2,17 +2,16 @@ package org.watermedia.api.codecs.readers.webp.lossless;
 
 import org.watermedia.api.util.MathUtil;
 
+// THE VP8L PREDICTOR INVERSE TRANSFORM (RFC 9649 MODES 0-13)
 final class Predictor {
-
     // SWAR PER-BYTE MASKS FOR ARGB ARITHMETIC
     private static final int MASK_LO = 0x00FF00FF;
     private static final int MASK_HI = 0xFF00FF00;
     private static final int MASK_LSB = 0xFEFEFEFE;
 
-    private Predictor() {
-    }
+    private Predictor() {}
 
-    /** Adds block-selected WebP predictors to residual ARGB pixels in row order, in place. */
+    // ADDS THE BLOCK-SELECTED PREDICTORS TO THE RESIDUAL ARGB PIXELS IN ROW ORDER, IN PLACE
     public static void inverse(final int[] pixels, final int width, final int height, final int[] modes, final int blockBits) {
         if (width == 0 || height == 0) return;
 
@@ -21,11 +20,9 @@ final class Predictor {
 
         // ROW 0: TOP-LEFT IS BLACK, REST USE LEFT
         pixels[0] = addPixels(pixels[0], 0xFF000000);
-        for (int x = 1; x < width; x++) {
-            pixels[x] = addPixels(pixels[x], pixels[x - 1]);
-        }
+        for (int x = 1; x < width; x++) pixels[x] = addPixels(pixels[x], pixels[x - 1]);
 
-        // ROWS 1..H-1: PROCESS TILE-BY-TILE TO HOIST BLOCK LOOKUP OUT OF THE INNER LOOP.
+        // ROWS 1..H-1: PROCESS TILE-BY-TILE TO HOIST BLOCK LOOKUP OUT OF THE INNER LOOP
         for (int y = 1; y < height; y++) {
             final int blockY = y >> blockBits;
             final int rowOff = blockY * blocksPerRow;
@@ -135,23 +132,21 @@ final class Predictor {
         }
     }
 
-    // ADD RESIDUAL TO PREDICTED (PER CHANNEL, WRAP AT 256) - SWAR FORM.
-    // The two MASK_LO additions can carry into the high byte of each pair, but the final mask
-    // strips those carries before OR'ing in the high bytes.
+    // ADDS RESIDUAL TO PREDICTED PER CHANNEL, WRAPPING AT 256 (SWAR): A MASK_LO SUM MAY CARRY INTO THE HIGH BYTE
+    // OF ITS PAIR, BUT THE FINAL MASK STRIPS THAT CARRY BEFORE THE HIGH BYTES ARE OR'ED IN
     private static int addPixels(final int a, final int b) {
         final int lo = ((a & MASK_LO) + (b & MASK_LO)) & MASK_LO;
         final int hi = ((a & MASK_HI) + (b & MASK_HI)) & MASK_HI;
         return lo | hi;
     }
 
-    // AVERAGE OF TWO PIXELS (PER CHANNEL) - SWAR FORM.
-    // (a + b) / 2 = (a & b) + ((a ^ b) >> 1); clearing the LSB of each byte before the shift
-    // prevents the carry from one byte's LSB leaking into the previous byte's MSB.
+    // PER-CHANNEL AVERAGE OF TWO PIXELS (SWAR): (a + b) / 2 = (a & b) + ((a ^ b) >> 1), CLEARING EACH BYTE'S LSB
+    // BEFORE THE SHIFT SO IT NEVER LEAKS INTO THE NEIGHBOUR BYTE'S MSB
     private static int avg2(final int a, final int b) {
         return (a & b) + (((a ^ b) & MASK_LSB) >>> 1);
     }
 
-    // SELECT PREDICTOR
+    // SELECT PREDICTOR: L OR T, WHICHEVER IS CLOSER (MANHATTAN, TIES TO T) TO THE GRADIENT ESTIMATE L + T - TL
     private static int select(final int L, final int T, final int TL) {
         final int pA = ((L >> 24) & 0xFF) + ((T >> 24) & 0xFF) - ((TL >> 24) & 0xFF);
         final int pR = ((L >> 16) & 0xFF) + ((T >> 16) & 0xFF) - ((TL >> 16) & 0xFF);
@@ -166,8 +161,7 @@ final class Predictor {
         return (pL < pT) ? L : T;
     }
 
-    // CLAMP VALUE TO 0-255
-    // CLAMP_ADD_SUBTRACT_FULL
+    // CLAMP_ADD_SUBTRACT_FULL: a + b - c PER CHANNEL, CLAMPED TO 0-255
     private static int clampAddSubFull(final int a, final int b, final int c) {
         final int aa = MathUtil.clip255(((a >> 24) & 0xFF) + ((b >> 24) & 0xFF) - ((c >> 24) & 0xFF));
         final int ra = MathUtil.clip255(((a >> 16) & 0xFF) + ((b >> 16) & 0xFF) - ((c >> 16) & 0xFF));
@@ -176,7 +170,7 @@ final class Predictor {
         return (aa << 24) | (ra << 16) | (ga << 8) | ba;
     }
 
-    // CLAMP_ADD_SUBTRACT_HALF
+    // CLAMP_ADD_SUBTRACT_HALF: a + (a - b) / 2 PER CHANNEL, CLAMPED TO 0-255
     private static int clampAddSubHalf(final int a, final int b) {
         final int aa = MathUtil.clip255(((a >> 24) & 0xFF) + (((a >> 24) & 0xFF) - ((b >> 24) & 0xFF)) / 2);
         final int ra = MathUtil.clip255(((a >> 16) & 0xFF) + (((a >> 16) & 0xFF) - ((b >> 16) & 0xFF)) / 2);

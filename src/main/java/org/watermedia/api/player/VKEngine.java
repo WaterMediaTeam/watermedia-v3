@@ -321,27 +321,11 @@ public final class VKEngine extends GFXEngine {
     // ==========================================================================
     // PUBLIC API
     // ==========================================================================
-    /**
-     * Returns the {@code VkImageView} handle of the final RGBA image for the newest completed frame.
-     * <p>
-     * Passthrough formats (BGRA, RGBA) are copied directly into the engine-owned managed image.
-     * Every other format is resolved to RGBA by a compute pass; a subset of 8-bit SDR planar YUV is
-     * instead sampled through a {@code VkSamplerYcbcrConversion} built from the frame's matrix, range
-     * and chroma siting that converts in sampler hardware. Either way the handle returned here is
-     * always a ready-to-sample RGBA view, never a raw luma or chroma plane.
-     * <p>
-     * The view is fence-gated: this returns the most recent slot whose GPU work has signalled its
-     * fence, rotating across the slot ring as frames complete, and 0 until the first frame is ready.
-     * <p>
-     * <b>Pipeline caution.</b> Read this fresh on every draw and sample it within (or right after)
-     * the engine's render cycle. The view rotates per frame; a format or resolution change keeps
-     * the previous view until the first frame of the new layout completes, so the handle never
-     * drops to 0 mid-stream, but caching it across frames or using it from an unrelated render
-     * stage can sample a stale view or one whose backing image has already been destroyed.
-     * @return the RGBA {@code VkImageView} handle, or 0 if no frame has completed yet
-     */
+    /** Returns the RGBA {@code VkImageView} of the newest frame whose fence signaled, or 0 before the first one; read it fresh on every draw. */
     @Override
     public long texture() {
+        // ALWAYS A READY-TO-SAMPLE RGBA VIEW, NEVER A RAW PLANE. IT ROTATES PER FRAME, AND A LAYOUT CHANGE KEEPS THE PREVIOUS VIEW
+        // UNTIL THE NEW LAYOUT'S FIRST FRAME COMPLETES, SO A CACHED HANDLE MAY POINT AT A STALE OR DESTROYED IMAGE
         if (this.released) return 0L;
         // THE QUEUE LOCK SERIALIZES THIS FENCE POLL WITH vkResetFences/vkQueueSubmit AND KEEPS THE lastSeq/lastView
         // READ-MODIFY-WRITE ATOMIC WITH apply(), WHICH ZEROES THE SLOT VIEWS UNDER THE SAME LOCK
@@ -604,11 +588,9 @@ public final class VKEngine extends GFXEngine {
         final Slot slot = this.slots[cur];
 
         try (final MemoryStack stack = stackPush()) {
-            // RETENTION: BLOCK UNTIL THE FRAME SUBMITTED TWO CALLS AGO HAS FINISHED READING THE
-            // PRODUCER'S BUFFERS. (head + 1) % SLOTS IS THE SLOT OF FRAME head-2. WAITING IT HERE
-            // GUARANTEES THAT BY THE TIME upload(N+2) RUNS, FRAME N IS COMPLETE — EXACTLY THE
-            // GFXEngine "FINISH READING BEFORE THE SECOND SUBSEQUENT UPLOAD" CONTRACT, WHICH MATTERS
-            // FOR THE ZERO-COPY PATH WHERE THE GPU READS THE DECODER'S MEMORY DIRECTLY.
+            // RETENTION: BLOCK UNTIL FRAME head-2 (SLOT (head + 1) % SLOTS) FINISHED READING THE PRODUCER'S BUFFERS, SO FRAME N IS
+            // COMPLETE BY upload(N+2): THE GFXEngine "FINISH READING BEFORE THE SECOND SUBSEQUENT UPLOAD" CONTRACT, WHICH MATTERS
+            // FOR THE ZERO-COPY PATH WHERE THE GPU READS THE DECODER'S MEMORY DIRECTLY
             final Slot twoAgo = this.slots[(int) ((this.head + 1) % SLOTS)];
             if (this.head >= 2 && twoAgo.submitted && !this.await(this.device, twoAgo.fence, "Retention wait")) return;
             // THE SLOT WE REUSE LAST HELD FRAME head-SLOTS; ITS WORK MUST BE DONE BEFORE WE RESET
@@ -633,12 +615,9 @@ public final class VKEngine extends GFXEngine {
                 final long ptr = memAddress(bufs[i]);
                 long buffer = 0L;
                 if (this.minAlign > 0 && bufs[i].position() == 0 && (ptr % this.minAlign) == 0L
-                        && (bufs[i].capacity() % this.minAlign) == 0) {
+                        && (bufs[i].capacity() % this.minAlign) == 0)
                     buffer = this.importBuffer(ptr, bufs[i].capacity());
-                }
-                if (buffer == 0L) {
-                    buffer = this.stageInto(slot, i, bufs[i], needed[i]);
-                }
+                if (buffer == 0L) buffer = this.stageInto(slot, i, bufs[i], needed[i]);
                 src[i] = buffer;
             }
             if (this.failed) return; // A WEDGED DRAIN WHILE REPLACING AN IMPORT PARKED THE ENGINE MID-LOOP
@@ -1198,9 +1177,8 @@ public final class VKEngine extends GFXEngine {
             // WHICH MEMORY TYPES MAY THIS HOST POINTER BE IMPORTED AS.
             final VkMemoryHostPointerPropertiesEXT props = VkMemoryHostPointerPropertiesEXT.calloc(stack).sType$Default();
             if (vkGetMemoryHostPointerPropertiesEXT(this.device,
-                    VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr, props) != VK_SUCCESS) {
+                    VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr, props) != VK_SUCCESS)
                 return 0L;
-            }
             int type = this.memType(props.memoryTypeBits(),
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             if (type < 0) type = this.memType(props.memoryTypeBits(), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -1572,10 +1550,9 @@ public final class VKEngine extends GFXEngine {
         this.ycbcrFmt = fmt;
         this.ycbcrX = cosX ? VK_CHROMA_LOCATION_COSITED_EVEN : VK_CHROMA_LOCATION_MIDPOINT;
         this.ycbcrY = cosY ? VK_CHROMA_LOCATION_COSITED_EVEN : VK_CHROMA_LOCATION_MIDPOINT;
-        // LINEAR ONLY WHEN THE FORMAT ADVERTISES BOTH YCBCR LINEAR CHROMA RECONSTRUCTION
-        // (VUID-VkSamplerYcbcrConversionCreateInfo-chromaFilter-01657) AND PLAIN LINEAR SAMPLING
-        // (VUID-vkCmdDispatch-magFilter-04553). min/mag/chroma ALWAYS SHARE ONE FILTER BECAUSE
-        // WITHOUT SEPARATE-RECONSTRUCTION SUPPORT THEY MUST BE EQUAL (VUID-VkSamplerCreateInfo-minFilter-01645).
+        // LINEAR ONLY WHEN THE FORMAT ADVERTISES YCBCR LINEAR CHROMA RECONSTRUCTION (VUID-VkSamplerYcbcrConversionCreateInfo-chromaFilter-01657)
+        // AND PLAIN LINEAR SAMPLING (VUID-vkCmdDispatch-magFilter-04553); min/mag/chroma SHARE ONE FILTER, AS WITHOUT SEPARATE
+        // RECONSTRUCTION SUPPORT THEY MUST BE EQUAL (VUID-VkSamplerCreateInfo-minFilter-01645)
         final int linNeed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
                 | VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
         this.ycbcrFilter = (feats & linNeed) == linNeed ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
@@ -1637,9 +1614,8 @@ public final class VKEngine extends GFXEngine {
             if (compiler == 0L) throw new IllegalStateException("VKEngine: shaderc_compiler_initialize failed");
             result = shaderc_compile_into_spv(compiler, glsl, shaderc_compute_shader, name, "main", 0L);
             if (result == 0L) throw new IllegalStateException("VKEngine: shaderc compile returned null");
-            if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
+            if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
                 throw new IllegalStateException("VKEngine: shader compile failed: " + shaderc_result_get_error_message(result));
-            }
             final ByteBuffer spv = shaderc_result_get_bytes(result);
             if (spv == null) throw new IllegalStateException("VKEngine: shaderc produced no SPIR-V");
             final byte[] bytes = new byte[spv.remaining()];
@@ -2172,7 +2148,7 @@ public final class VKEngine extends GFXEngine {
                 check(vkCreateDescriptorSetLayout(this.device, dlci, null, p), "create ycbcr set layout");
                 y.layout = p.get(0);
 
-                // PIPELINE LAYOUT: JUST { int width; int height; } PUSH CONSTANTS.
+                // PIPELINE LAYOUT: THE YCBCR_PUSH_BYTES PUSH CONSTANTS { int width; int height; vec2 crop; vec2 origin; }
                 final VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
                 pcr.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(YCBCR_PUSH_BYTES);
                 final VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
@@ -2316,5 +2292,4 @@ public final class VKEngine extends GFXEngine {
     private static final class PlaneSpec {
         int format, texelBytes, w, h;
     }
-
 }

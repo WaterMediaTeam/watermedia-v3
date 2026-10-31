@@ -14,11 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies how a follower tracks its session between snapshots. Snapshots arrive seconds apart, so
- * the value is entirely in what happens <em>in between</em>: the last one fed is aged into a live
- * position, folded into the media timeline, and replaced by whichever snapshot comes next.
- */
+/** Verifies how a follower ages the last snapshot fed into a live position and folds it into the media timeline. */
 @DisplayName("Follower clock")
 public class FollowerClockTest {
 

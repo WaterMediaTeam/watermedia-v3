@@ -2,50 +2,28 @@ package org.watermedia.api.util;
 
 import java.util.Set;
 
-/**
- * Quality levels for media streams.
- */
+/** Quality levels of media streams, each named by the smallest side its bucket starts at. */
 public enum MediaQuality {
-    /**
-     * Unknown quality
-     */
+    /** Unknown size. */
     UNKNOWN(0),
-    /**
-     * Anything above 1 and below {@link MediaQuality#LOWER} threshold
-     */
+    /** Any known size below {@link #LOWER}. */
     LOWEST(144),
-    /**
-     * Anything equals or above its threshold and below {@link MediaQuality#LOW} threshold
-     */
+    /** From 240 pixels up to {@link #LOW}. */
     LOWER(240),
-    /**
-     * Anything equals or above its threshold and below {@link MediaQuality#LOWISH} threshold
-     */
+    /** From 360 pixels up to {@link #LOWISH}. */
     LOW(360),
-    /**
-     * Anything equals or above its threshold and below {@link MediaQuality#MEDIUM} threshold
-     */
+    /** From 480 pixels up to {@link #MEDIUM}. */
     LOWISH(480),
-    /**
-     * Anything equals or above its threshold and below {@link MediaQuality#HIGH} threshold
-     */
+    /** From 720 pixels up to {@link #HIGH}. */
     MEDIUM(720),
-    /**
-     * Anything equals or above its threshold and below {@link MediaQuality#HIGHER} threshold
-     */
-    HIGH(1080),
-    /**
-     * Anything equals or above its threshold and below {@link MediaQuality#HIGHEST} threshold
-     */
-    HIGHER(1440),
-    /**
-     * Anything equals or above its threshold and below {@link MediaQuality#ULTRA_8K} threshold
-     */
-    HIGHEST(2160),
-    /**
-     * Anything equals or above its threshold
-     */
-    ULTRA_8K(4320);
+    /** From 1080 pixels up to {@link #HIGHER}. */
+    HIGH(1_080),
+    /** From 1440 pixels up to {@link #HIGHEST}. */
+    HIGHER(1_440),
+    /** From 2160 pixels up to {@link #ULTRA_8K}. */
+    HIGHEST(2_160),
+    /** 4320 pixels and above. */
+    ULTRA_8K(4_320);
 
     private static final MediaQuality[] VALUES = values();
 
@@ -63,19 +41,7 @@ public enum MediaQuality {
         return of(resolution, resolution);
     }
 
-    /**
-     * Determines quality from video dimensions.
-     * It picks the smallest non-zero one — landscape videos (1920x1080)
-     * will use 1080 to determine quality (HIGH). When a single dimension
-     * is reported (HLS rendition tags often give height only), the
-     * non-zero value is used directly. Sizes between 1 and 143 pixels
-     * map to {@link #LOWEST}.
-     *
-     * @param width  video width (0 if unknown)
-     * @param height video height (0 if unknown)
-     * @return the matching quality, {@link #LOWEST} for any known size below 144 pixels,
-     *         or {@link #UNKNOWN} when both dimensions are unknown
-     */
+    /** Determines quality from the smallest known side (1920x1080 is {@link #HIGH}); zero means unknown, and both unknown is {@link #UNKNOWN}. */
     public static MediaQuality of(final int width, final int height) {
         final int size;
         if (width <= 0 && height <= 0) return UNKNOWN;
@@ -85,21 +51,12 @@ public enum MediaQuality {
 
         // UNKNOWN (INDEX 0) IS NO THRESHOLD: A KNOWN SIZE UNDER EVERY REAL ONE IS STILL THE LOWEST QUALITY
         for (int i = VALUES.length - 1; i > LOWEST.ordinal(); i--) {
-            if (size >= VALUES[i].height) {
-                return VALUES[i];
-            }
+            if (size >= VALUES[i].height) return VALUES[i];
         }
         return LOWEST;
     }
 
-    /**
-     * Finds the closest available quality from a set.
-     *
-     * @param available set of available qualities
-     * @param preferred the preferred quality
-     * @return the closest available quality, or null if none available
-     * @throws IllegalArgumentException when {@code preferred} is null
-     */
+    /** Returns the available quality closest to {@code preferred}, the lower one on a tie, or null when none is available. */
     public static MediaQuality closest(final Set<MediaQuality> available, final MediaQuality preferred) {
         if (preferred == null) throw new IllegalArgumentException("Preferred quality cannot be null");
         if (available == null || available.isEmpty()) return null;

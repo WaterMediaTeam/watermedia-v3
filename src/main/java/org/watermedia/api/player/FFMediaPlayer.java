@@ -13,6 +13,7 @@ import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.IntPointer;
 import org.bytedeco.javacpp.Pointer;
+import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.decoders.FFDecoder;
 import org.watermedia.api.codecs.decoders.FrameQueue;
@@ -25,7 +26,6 @@ import org.watermedia.tools.DataTool;
 import org.watermedia.tools.FFTool;
 import org.watermedia.tools.M3UTool;
 import org.watermedia.tools.ThreadTool;
-import org.lwjgl.system.MemoryUtil;
 
 import java.io.IOException;
 import java.net.URI;
@@ -59,24 +59,25 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
     // PIPELINE THREADS ARE OWNED WORKERS (THEIR CALLBACKS CANNOT RUN LIFECYCLE OPERATIONS) NAMED FFThread-<PLAYER>-<ROLE>
     private static final ThreadFactory THREADS = ThreadTool.workerFactory("FFThread", Thread.NORM_PRIORITY);
-    private static int players; // GUARDED BY THREADS
 
     // A/V SYNC THRESHOLDS (SECONDS)
     private static final double AV_SYNC_TOO_EARLY_SEC = 0.040;
-    // AUDIO IS FED TO THE SFX ENGINE EAGERLY — THE ENGINE'S OWN BUFFER POOL IS THE
-    // BACKPRESSURE (upload() RETURNS FALSE WHEN FULL) AND ITS QUEUE DEPTH IS WHAT
-    // ABSORBS GAME HITCHES. THIS LEAD IS ONLY A SAFETY CAP AGAINST BOGUS PTS JUMPS;
-    // IT MUST STAY WELL BELOW FFDecoder.PTS_DISCONTINUITY_SEC.
+    // AUDIO FEEDS THE SFX ENGINE EAGERLY: ITS BUFFER POOL IS THE BACKPRESSURE (upload() FALSE WHEN FULL) AND ITS QUEUE DEPTH
+    // ABSORBS GAME HITCHES. THIS LEAD ONLY CAPS BOGUS PTS JUMPS AND MUST STAY WELL BELOW FFDecoder.PTS_DISCONTINUITY_SEC
     private static final double AUDIO_MAX_LEAD_SEC = 0.5;
 
     // PERFORMANCE MONITORING: THE CLOCK RATE IS SAMPLED AND CHECKED EVERY INTERVAL; SLOW CONSUMPTION ITERATIONS ARE
     // COUNTED AND REPORTED ONCE WHEN THE RUN ENDS
-    private static final long PERF_CHECK_INTERVAL_MS = 2000;
+    private static final long PERF_CHECK_INTERVAL_MS = 2_000;
     private static final double PERF_RATE_WARN_THRESHOLD = 0.90;
     private static final String SLOW_REPORT = "Slow consumption iterations: {} in {}ms (worst={}ms, audio={}ms, video={}ms, frame={}ms)";
 
     // STARVATION DETECTION
     private static final long STARVATION_THRESHOLD_MS = 500;
+    // BUFFER SETS OF THE ROTATING UPLOAD POOL (SEE planePool)
+    private static final int PLANE_POOL_SETS = 4;
+
+    private static int players; // GUARDED BY THREADS
 
     // DECODER: ONE PER RUN (A QUALITY SWITCH OPENS ANOTHER), null BETWEEN RUNS
     private volatile FFDecoder decoder;
@@ -111,10 +112,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     private volatile int runSerial; // BUMPED PER lifecycle() RUN SO ASYNC PROBES CANNOT WRITE INTO A LATER RUN
     private volatile Boolean hlsLiveSource;
 
-    // NATIVE-FREE SNAPSHOTS FOR PUBLIC GETTERS
-    // duration()/live()/canPlay() ARE CALLED FROM THE GAME/RENDER THREAD WHILE
-    // THE LIFECYCLE THREAD MAY BE CLOSING THE DECODER — READING ITS NATIVE
-    // STRUCTS THERE IS A USE-AFTER-FREE (JVM CRASH). CACHE THE VALUES INSTEAD.
+    // NATIVE-FREE SNAPSHOTS FOR PUBLIC GETTERS: duration()/live()/canPlay() RUN ON THE GAME/RENDER THREAD WHILE THE
+    // LIFECYCLE THREAD MAY BE CLOSING THE DECODER, AND READING ITS NATIVE STRUCTS THERE IS A USE-AFTER-FREE (JVM CRASH)
     private volatile boolean opened;
     private volatile long mediaDurationMs = NO_DURATION;
 
@@ -123,14 +122,9 @@ public final class FFMediaPlayer extends MediaPlayer {
     // A FRAME DECODED ON THE ENGINE'S DEVICE IN A LAYOUT IT CANNOT SAMPLE, BROUGHT DOWN TO RAM (LAZY-INIT)
     private AVFrame downloadedFrame;
 
-    // ROTATING PLANE BUFFER POOL FOR UPLOADS
-    // FRAME DATA FROM FrameQueue IS EPHEMERAL — RECYCLED AFTER next() — SO PLANE
-    // DATA IS COPIED HERE BEFORE PASSING TO gfx.upload(). THE UPLOAD MAY BE
-    // DISPATCHED ASYNC TO THE RENDER THREAD, AND THE CONSUMPTION LOOP CAN UPLOAD
-    // SEVERAL FRAMES (~1ms APART) BEFORE THE RENDER THREAD RUNS THE QUEUED TASKS;
-    // A SINGLE BUFFER SET WOULD BE OVERWRITTEN MID-READ (TORN FRAMES). ROTATING
-    // SETS COVER THE REALISTIC BURST DEPTH (POST-HITCH CATCH-UP ≈ skipThreshold).
-    private static final int PLANE_POOL_SETS = 4;
+    // ROTATING PLANE POOL FOR UPLOADS: FrameQueue RECYCLES FRAME DATA AFTER next() AND THE RENDER THREAD MAY RUN A QUEUED
+    // UPLOAD AFTER SEVERAL LATER FRAMES (~1ms APART), SO ONE BUFFER SET WOULD TEAR MID-READ; THE SETS COVER THE REALISTIC
+    // BURST DEPTH (POST-HITCH CATCH-UP ≈ skipThreshold)
     private final ByteBuffer[][] planePool = new ByteBuffer[PLANE_POOL_SETS][];
     private int planePoolIdx;
     // BASE-ADDRESS ALIGNMENT THE GFXENGINE WANTS FOR ZERO-COPY HOST IMPORT (-1 = NOT YET QUERIED, 0 = NONE).
@@ -191,7 +185,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.arm();
     }
 
+    // ==========================================================================
     // MEDIAPLAYER OVERRIDES
+    // ==========================================================================
+
     // LAUNCHES A LIFECYCLE RUN, ABORTING THE ONE IN FLIGHT. THE PAUSE INTENT AND THE INITIAL SEEK TRAVEL
     // WITH THE RUN (THE CLOCK IS RESET BY IT); THE THREAD STARTS UNDER THE LOCK SO release() ALWAYS JOINS IT
     @Override
@@ -294,11 +291,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public boolean pause(final boolean paused) {
         final boolean changed = this.clock.paused(paused);
-        // ALSO PAUSE/RESUME THE AUDIO ENGINE — WITHOUT THIS, OPENAL KEEPS PLAYING
-        // ITS QUEUED BUFFERS UNTIL IT UNDERRUNS AND STOPS, AND THE NEXT RESUME
-        // STARTS FROM A STOPPED SOURCE (AUDIBLE GAP) INSTEAD OF A PAUSED ONE.
-        // ONLY ON A REAL TRANSITION: play() ON A TERMINAL STATE (ENDED/STOPPED)
-        // WOULD REPLAY THE RESIDUAL OPENAL QUEUE.
+        // THE AUDIO ENGINE FOLLOWS, OR OPENAL PLAYS ITS QUEUE INTO AN UNDERRUN AND RESUMES FROM A STOPPED SOURCE (AUDIBLE
+        // GAP). ONLY ON A REAL TRANSITION: play() ON A TERMINAL STATE (ENDED/STOPPED) WOULD REPLAY THE RESIDUAL QUEUE
         if (changed && this.sfx != null) {
             if (paused) this.sfx.pause();
             else this.sfx.play();
@@ -450,10 +444,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         return false;
     }
 
-    /**
-     * Reports whether the active video pipeline is decoding on the GPU.
-     * @return {@code true} while a hardware decoder is in use, {@code false} for software decoding
-     */
+    /** Whether the active video pipeline decodes on the GPU (a hardware decoder is in use). */
     public boolean hwAccel() {
         final FFDecoder decoder = this.decoder;
         return decoder != null && decoder.hardware();
@@ -487,10 +478,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         return new Colorimetry(matrix, full, cositedX, cositedY, curve, wide);
     }
 
-    // COPIES AVFRAME PLANE DATA TO A POOLED BUFFER SET, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
+    // COPIES THE FRAME PLANES INTO A POOLED BUFFER SET AND UPLOADS IT: GLEngine MAY RUN THE UPLOAD LATER ON THE RENDER THREAD,
+    // BUT FrameQueue.next() RECYCLES THE FRAME DATA. STRIDES ARE IN BYTES (FFMPEG LINESIZE CONVENTION)
     private void uploadNativePlanes(final AVFrame frame, final PixelFormat cs, final int height) {
-        // QUERY THE ENGINE'S BUFFER ALIGNMENT ONCE — NON-ZERO ASKS FOR PAGE-ALIGNED POOLS SO A ZERO-COPY ENGINE CAN IMPORT THE HOST POINTER
         if (this.gfx == null) return;
+        // QUERY THE ENGINE'S BUFFER ALIGNMENT ONCE — NON-ZERO ASKS FOR PAGE-ALIGNED POOLS SO A ZERO-COPY ENGINE CAN IMPORT THE HOST POINTER
         if (this.planeAlign < 0) this.planeAlign = this.gfx.alignment();
 
         // GRAB THE NEXT BUFFER SET FROM THE ROTATING POOL (SEE planePool), ALLOCATING ON FIRST USE
@@ -507,7 +499,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             strides[i] = frame.linesize(i);
             final long size = (long) strides[i] * cs.planeHeight(i, height);
             planes[i] = this.ensurePlane(planes[i], size);
-            copyPlane(frame.data(i), size, planes[i]);
+            // DIRECT NATIVE-TO-NATIVE COPY, NO WRAPPER ByteBuffer PER PLANE PER FRAME; CLEARED FIRST SO memAddress IS THE BASE
+            final BytePointer src = frame.data(i);
+            planes[i].clear();
+            MemoryUtil.memCopy(src.address() + src.position(), MemoryUtil.memAddress(planes[i]), size);
+            planes[i].limit((int) size);
             bufs[i] = planes[i];
         }
         this.gfx.upload(bufs, strides);
@@ -530,21 +526,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         return ByteBuffer.allocateDirect((int) needed);
     }
 
-    private static void copyPlane(final BytePointer src, final long bytes, final ByteBuffer dst) {
-        // DIRECT NATIVE-TO-NATIVE COPY — AVOIDS ALLOCATING A WRAPPER ByteBuffer PER PLANE PER FRAME
-        // (asByteBuffer). CLEAR FIRST SO memAddress RESOLVES TO THE BUFFER BASE (POSITION 0).
-        dst.clear();
-        MemoryUtil.memCopy(src.address() + src.position(), MemoryUtil.memAddress(dst), bytes);
-        dst.limit((int) bytes);
-    }
-
     // LAZY-INIT SWS RESOURCES FOR FORMAT CONVERSION AND/OR DOWNSCALE. RETURNS FALSE IF INIT FAILS.
     private boolean ensureScaler(final int srcWidth, final int srcHeight, final int srcFormat,
                                  final int dstWidth, final int dstHeight, final int dstFormat, final Colorimetry color) {
-        // ALLOCATE THE DESTINATION FRAME ON FIRST USE (OR TARGET CHANGE).
-        // TRACK THE REALLOCATION — COMPARING scaledFrame PROPERTIES BELOW WOULD
-        // ALWAYS MATCH AFTER THE REALLOC, LEAVING A STALE SWS CONTEXT CONFIGURED
-        // FOR THE OLD TARGET (HEAP CORRUPTION IN sws_scale).
+        // (RE)ALLOCATE THE DESTINATION FRAME ON FIRST USE OR A TARGET CHANGE, AND TRACK IT: AFTER A REALLOC THE scaledFrame
+        // CHECKS BELOW ALWAYS MATCH, SO AN UNTRACKED ONE KEEPS A SWS CONTEXT FOR THE OLD TARGET (HEAP CORRUPTION IN sws_scale)
         boolean frameRecreated = false;
         if (this.scaledFrame == null
                 || this.scaledFrame.width() != dstWidth
@@ -566,9 +552,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         // (RE)CREATE SWS CONTEXT ON SOURCE FORMAT/DIMENSION CHANGE
         if (this.swsContext == null || this.swsInputFormat != srcFormat
-                || this.swsInputWidth != srcWidth || this.swsInputHeight != srcHeight || frameRecreated) {
+                || this.swsInputWidth != srcWidth || this.swsInputHeight != srcHeight || frameRecreated)
             this.recreateSwsContext(srcWidth, srcHeight, srcFormat, dstWidth, dstHeight, dstFormat);
-        }
 
         // BGRA OUTPUT NEEDS THE SOURCE MATRIX AND RANGE, OR SWS CONVERTS EVERY YUV FRAME AS BT.601; IT CANNOT TONE MAP, SO
         // HDR REACHES SOFTWARE ENGINES UNMAPPED. YUV OUTPUT KEEPS ITS SAMPLES AND THE ENGINE CONVERTS THEM
@@ -603,7 +588,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 continue;
             }
             if (current != Status.BUFFERING) {
-                final double lead = (slot.ptsMs / 1000.0) - this.clock.time();
+                final double lead = (slot.ptsMs / 1_000.0) - this.clock.time();
                 if (lead > AUDIO_MAX_LEAD_SEC) break;
             }
 
@@ -628,9 +613,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             // ENGINE FULL — ITS BUFFER POOL IS THE BACKPRESSURE; STOP UNTIL IT FREES SLOTS
             if (!this.sfx.upload(audioData)) {
-                if (this.clock.status() == Status.BUFFERING) {
+                if (this.clock.status() == Status.BUFFERING)
                     LOGGER.debug(IT, "drainAudio: SFX engine full during BUFFERING — can't upload PTS={}ms", framePtsMs);
-                }
                 // RE-ASSERT PLAY EVEN ON FAILURE: A STALE MAINTENANCE pause() RACING A RESUME WOULD
                 // OTHERWISE DEADLOCK — A PAUSED ENGINE NEVER FREES BUFFERS, SO UPLOADS FAIL FOREVER
                 if (!this.clock.pauseRequested()) this.sfx.play();
@@ -650,10 +634,9 @@ public final class FFMediaPlayer extends MediaPlayer {
             final Status beforeUpdate = this.clock.status();
             this.clock.updateMs(audiblePtsMs, frameSerial);
             final Status afterUpdate = this.clock.status();
-            if (beforeUpdate != afterUpdate) {
+            if (beforeUpdate != afterUpdate)
                 LOGGER.debug(IT, "Clock update: {} → {} (PTS={}ms, audible={}ms, serial={}, clockSerial={})",
                         beforeUpdate, afterUpdate, framePtsMs, audiblePtsMs, frameSerial, this.clock.serial());
-            }
 
             didWork = true;
         }
@@ -711,11 +694,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final FrameQueue audioFrames = decoder.audioFrames();
 
                 if (this.clock.demuxFinished() && !decoder.decoding() && videoFrames.empty() && audioFrames.empty()) {
-                    // A VIDEO STREAM THAT DRAINED WITHOUT EVER EMITTING A FRAME (NEITHER
-                    // RENDERED NOR SKIPPED) IS A DECODE FAILURE, NOT A NORMAL END — E.G. AN
-                    // AV1 STREAM THE SELECTED DECODER CANNOT HANDLE. REPORTING ENDED THERE
-                    // LOOKS LIKE AN INSTANT 0-LENGTH PLAYBACK; SURFACE ERROR INSTEAD SO THE
-                    // FAILURE IS VISIBLE AND NOT RETRIED FOREVER BY repeat().
+                    // A VIDEO STREAM THAT DRAINED WITHOUT EMITTING A FRAME (NEITHER RENDERED NOR SKIPPED) IS A DECODE FAILURE,
+                    // E.G. AN AV1 STREAM THE SELECTED DECODER CANNOT HANDLE: ENDED WOULD LOOK LIKE AN INSTANT 0-LENGTH PLAYBACK
+                    // AND repeat() WOULD RETRY IT FOREVER
                     if (decoder.video() && this.totalRenderedFrames == 0 && this.totalSkippedFrames == 0) {
                         LOGGER.error(IT, "Video decoder emitted no frames for {} — failing instead of reporting ENDED", decoder.uri());
                         this.exception(new IOException("Video decoder emitted no frames — unsupported or broken stream"));
@@ -738,9 +719,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         continue;
                     }
                     if (this.repeat()) {
-                        // ALL DATA CONSUMED — SEEK TO BEGINNING FOR REPEAT.
-                        // THIS TRIGGERS AFTER FULL DRAIN, NOT AT DEMUX EOF,
-                        // SO NO UNPROCESSED PACKETS ARE THROWN AWAY.
+                        // ALL DATA CONSUMED: SEEK TO THE BEGINNING AFTER THE FULL DRAIN, NOT AT DEMUX EOF, SO NO PACKET IS LOST
                         this.clock.requestSeek(0, false);
                         continue;
                     }
@@ -763,13 +742,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                     continue;
                 }
 
-                if (current == Status.STOPPED || current == Status.ERROR) {
-                    break;
-                }
-
-                if (current != Status.PLAYING && current != Status.BUFFERING) {
-                    break;
-                }
+                // STOPPED, ERROR AND EVERY OTHER STATUS LEFT HERE END THE LOOP
+                if (current != Status.PLAYING && current != Status.BUFFERING) break;
 
                 boolean didWork = false;
 
@@ -820,18 +794,16 @@ public final class FFMediaPlayer extends MediaPlayer {
                             continue;
                         }
 
-                        // A/V SYNC — SKIP TIMING CHECKS DURING BUFFERING SO THAT THE
-                        // FIRST AVAILABLE FRAME CAN RECALIBRATE THE CLOCK (VIA clock.update)
-                        // AND RESOLVE BUFFERING. WITHOUT THIS BYPASS, A TIMESTAMP GAP CAUSES
-                        // FRAMES TO BE REJECTED AS "TOO EARLY" INDEFINITELY (CLOCK IS FROZEN).
+                        // A/V SYNC, BYPASSED WHILE BUFFERING SO THE FIRST AVAILABLE FRAME RECALIBRATES THE CLOCK (clock.update)
+                        // AND RESOLVES BUFFERING: THE CLOCK IS FROZEN THEN, SO A TIMESTAMP GAP WOULD REJECT EVERY FRAME AS TOO EARLY
                         final boolean buffering = this.clock.status() == Status.BUFFERING;
                         final double clockSec = this.clock.time();
-                        final double frameSec = slot.ptsMs / 1000.0;
+                        final double frameSec = slot.ptsMs / 1_000.0;
                         final int frameSerial = slot.serial;
                         final double diff = frameSec - clockSec;
 
                         if (!buffering && diff > AV_SYNC_TOO_EARLY_SEC) break;
-                        if (!buffering && diff < -(this.clock.skipThresholdMs() / 1000.0)) {
+                        if (!buffering && diff < -(this.clock.skipThresholdMs() / 1_000.0)) {
                             videoFrames.next();
                             this.totalSkippedFrames++;
                             continue;
@@ -917,9 +889,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                             uploadW = targetW;
                             uploadH = targetH;
                         } else if (mapping == null || targetW != slot.width || targetH != slot.height) {
-                            // SWS PATH: DOWNSCALE AND/OR CONVERT. THE NATIVE FORMAT IS KEPT WHEN SWS
-                            // CAN WRITE IT (SKIPS THE BGRA EXPANSION AND UPLOADS FEWER BYTES);
-                            // UNSUPPORTED OUTPUTS CONVERT TO BGRA INSTEAD.
+                            // SWS PATH: DOWNSCALE AND/OR CONVERT, KEEPING THE NATIVE FORMAT WHEN SWS CAN WRITE IT (NO BGRA
+                            // EXPANSION, FEWER UPLOADED BYTES); UNSUPPORTED OUTPUTS CONVERT TO BGRA INSTEAD
                             final int dstFormat = mapping != null && swscale.sws_isSupportedOutput(layout) != 0
                                     ? layout : AV_PIX_FMT_BGRA;
                             if (this.ensureScaler(slot.width, slot.height, layout, targetW, targetH, dstFormat, color)) {
@@ -986,11 +957,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                         // TRACK RENDER DEBT (CONVERT+UPLOAD TIME VS FRAME BUDGET)
                         final double workSec = (System.nanoTime() - workStart) / 1_000_000_000.0;
-                        if (workSec > frameDurSec) {
-                            renderDebtSec += (workSec - frameDurSec);
-                        } else {
-                            renderDebtSec = Math.max(0, renderDebtSec - (frameDurSec - workSec));
-                        }
+                        if (workSec > frameDurSec) renderDebtSec += (workSec - frameDurSec);
+                        else renderDebtSec = Math.max(0, renderDebtSec - (frameDurSec - workSec));
 
                         // CONSUME (frameSec AND frameSerial ALREADY HOLD THE TIMING — slot IS RECYCLED BY next())
                         videoFrames.next();
@@ -1000,9 +968,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         }
 
                         // CLOCK UPDATE (ONLY WHEN VIDEO DRIVES THE CLOCK: NO AUDIO, OR DURING BUFFERING)
-                        if (!decoder.audio() || this.clock.status() == Status.BUFFERING) {
-                            this.clock.update(frameSec, frameSerial);
-                        }
+                        if (!decoder.audio() || this.clock.status() == Status.BUFFERING) this.clock.update(frameSec, frameSerial);
 
                         didWork = true;
                         break;
@@ -1029,42 +995,32 @@ public final class FFMediaPlayer extends MediaPlayer {
                 }
 
                 // TRACK BUFFERING→PLAYING RECOVERY FOR STARVATION COOLDOWN
-                if (current == Status.BUFFERING && this.clock.status() == Status.PLAYING) {
-                    lastStarvationRecoveryMs = nowMs();
-                }
+                if (current == Status.BUFFERING && this.clock.status() == Status.PLAYING) lastStarvationRecoveryMs = nowMs();
 
                 if (!didWork) {
-                    // STARVATION DETECTION — TRANSITION TO BUFFERING INSTEAD OF SEEKING.
-                    // A FULL requestSeek IS DESTRUCTIVE: IT INCREMENTS SERIAL, FLUSHES QUEUES,
-                    // AND CALLS av_seek_frame, WHICH CAUSES A FEEDBACK LOOP WHEN FRAMES ARRIVE
-                    // IN BURSTS (E.G. GC PAUSES, RENDER LAG IN MINECRAFT). INSTEAD JUST GO TO
-                    // BUFFERING — THE PIPELINE IS STILL RUNNING, AND clock.update() WILL RETURN
-                    // TO PLAYING WHEN FRAMES ARRIVE.
+                    // STARVATION GOES TO BUFFERING, NEVER A SEEK: requestSeek BUMPS THE SERIAL, FLUSHES THE QUEUES AND CALLS
+                    // av_seek_frame, A FEEDBACK LOOP WHEN FRAMES ARRIVE IN BURSTS (GC PAUSES, RENDER LAG). THE PIPELINE STILL
+                    // RUNS, AND clock.update() RETURNS TO PLAYING WHEN FRAMES ARRIVE
                     if (current == Status.PLAYING && !this.clock.demuxFinished()) {
                         final long starvNowMs = nowMs();
                         final boolean queuesEmpty = videoFrames.empty() && audioFrames.empty();
 
-                        // ALSO DETECT UNREACHABLE FRAMES: QUEUES HAVE DATA BUT ALL
-                        // FRAMES ARE >10s AHEAD OF THE CLOCK. THIS HAPPENS FOR LIVE
-                        // HLS STREAMS WHERE PTS STARTS AT THE STREAM'S ELAPSED TIME
-                        // (E.G., 14890s) BUT THE CLOCK STARTS AT 0 AFTER clock.start().
-                        // WITHOUT THIS, THE PLAYER DEADLOCKS: FRAMES ARE "TOO EARLY"
-                        // BUT QUEUES AREN'T EMPTY SO STARVATION NEVER FIRES.
+                        // UNREACHABLE FRAMES STARVE TOO: QUEUED BUT ALL PAST PTS_DISCONTINUITY_SEC AHEAD OF THE CLOCK, AS ON LIVE
+                        // HLS WHOSE PTS STARTS AT THE STREAM'S ELAPSED TIME (E.G. 14890s) WHILE THE CLOCK STARTS AT 0. THEY STAY
+                        // TOO EARLY FOREVER AND THE QUEUES NEVER EMPTY, SO PLAIN STARVATION WOULD NEVER FIRE
                         boolean unreachable = false;
                         if (!queuesEmpty) {
                             final double clockSec = this.clock.time();
                             unreachable = true;
                             final FrameQueue.Slot a = audioFrames.peek();
                             if (a != null && a.serial == this.clock.serial()
-                                    && (a.ptsMs / 1000.0 - clockSec) <= FFDecoder.PTS_DISCONTINUITY_SEC) {
+                                    && (a.ptsMs / 1_000.0 - clockSec) <= FFDecoder.PTS_DISCONTINUITY_SEC)
                                 unreachable = false;
-                            }
                             if (unreachable) {
                                 final FrameQueue.Slot v = videoFrames.peek();
                                 if (v != null && v.serial == this.clock.serial()
-                                        && (v.ptsMs / 1000.0 - clockSec) <= FFDecoder.PTS_DISCONTINUITY_SEC) {
+                                        && (v.ptsMs / 1_000.0 - clockSec) <= FFDecoder.PTS_DISCONTINUITY_SEC)
                                     unreachable = false;
-                                }
                             }
                         }
 
@@ -1099,10 +1055,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             // PLAYING/BUFFERING BEHIND WOULD REPORT A LIVE STATUS, AND A stop() DURING THE ENDED TEARDOWN MUST WIN
             final Status finalStatus = this.clock.status();
             final boolean interrupted = Thread.currentThread().isInterrupted();
-            if (finalStatus != Status.ERROR && finalStatus != Status.STOPPED && (finalStatus != Status.ENDED || interrupted)) {
+            if (finalStatus != Status.ERROR && finalStatus != Status.STOPPED && (finalStatus != Status.ENDED || interrupted))
                 this.publishTransition(interrupted ? Status.STOPPED : Status.ENDED);
-            }
-
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             this.stopDecoder();
@@ -1229,10 +1183,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.downloadedFrame = null;
         }
 
-        // FREE THE PLANE POOL ON EVERY TEARDOWN SO A STOPPED-BUT-KEPT PLAYER RETAINS NO FRAME MEMORY
-        // (UP TO 4 FULL FRAME SETS). SAFE FOR VULKAN: release(buffer) DROPS THE ENGINE'S HOST IMPORTS
-        // (DRAINING PENDING GPU READS) BEFORE EACH BUFFER IS FREED. release() CALLS THIS AGAIN AS A
-        // SAFETY NET — IDEMPOTENT.
+        // FREE THE PLANE POOL ON EVERY TEARDOWN SO A STOPPED-BUT-KEPT PLAYER RETAINS NO FRAME MEMORY (UP TO 4 FRAME SETS); SAFE
+        // FOR VULKAN, WHOSE release(buffer) DROPS EACH HOST IMPORT (DRAINING GPU READS) FIRST. release() REPEATS IT IDEMPOTENTLY
         this.freePlanePool();
         this.lastFormat = null;
         this.lastColor = null;
@@ -1310,20 +1262,17 @@ public final class FFMediaPlayer extends MediaPlayer {
         public void opened(final FFDecoder decoder) {
             final FFMediaPlayer player = FFMediaPlayer.this;
             if (decoder.hls()) {
-                // ASYNC ON PURPOSE: THE PROBE COSTS 1-2 EXTRA HTTP ROUNDTRIPS AND ONLY REFINES
-                // live() — UNTIL IT LANDS, THE DURATION HEURISTIC (HLS VOD PLAYLISTS CARRY A
-                // DURATION, LIVE ONES DON'T) ANSWERS CORRECTLY, SO PLAYBACK NEEDN'T WAIT FOR IT.
-                // IT FETCHES WITH THE SOURCE'S OWN HEADERS (AN AUTHENTICATED PLAYLIST IS COMMON) AND
-                // ONLY WRITES INTO THE RUN THAT STARTED IT; A FAILED PROBE LEAVES THE HEURISTIC IN CHARGE
+                // ASYNC ON PURPOSE: THE PROBE COSTS 1-2 HTTP ROUNDTRIPS AND ONLY REFINES live(), WHICH THE DURATION HEURISTIC
+                // ANSWERS MEANWHILE (HLS VOD PLAYLISTS CARRY A DURATION). IT USES THE SOURCE'S HEADERS (AUTHENTICATED PLAYLISTS
+                // ARE COMMON) AND WRITES ONLY INTO THE RUN THAT STARTED IT; A FAILED PROBE LEAVES THE HEURISTIC IN CHARGE
                 final int run = player.runSerial;
                 final URI uri = decoder.uri();
                 final Thread probe = player.thread("hls-probe", () -> {
                     try {
                         M3UTool.Playlist hlsResult = M3UTool.fetch(uri, player.source.headers());
                         // MASTER PLAYLIST: FOLLOW THE FIRST VARIANT (URL ALREADY ABSOLUTE) DOWN TO A REAL MEDIA PLAYLIST
-                        if (hlsResult instanceof final M3UTool.Master master && !master.variants().isEmpty()) {
+                        if (hlsResult instanceof final M3UTool.Master master && !master.variants().isEmpty())
                             hlsResult = M3UTool.fetch(master.variants().get(0).uri(), player.source.headers());
-                        }
                         if (run != player.runSerial) return;
                         if (hlsResult instanceof final M3UTool.Media media) {
                             player.hlsLiveSource = media.live();

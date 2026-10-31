@@ -5,12 +5,12 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
-import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.codecs.common.Limits;
 import org.watermedia.api.codecs.common.Tiff;
 import org.watermedia.api.codecs.common.Xmp;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
@@ -76,10 +76,9 @@ public final class JpegReader extends ImageReader {
     // WHAT FALLS PAST EITHER CAP IS SKIPPED, NEVER A DECODE FAILURE
     private static final int MAX_COMMENTS = 64;
     private static final int MAX_ICC_BYTES = 8 << 20;
-    // WORKING-SET CAP FOR ONE FRAME (COEFFICIENTS + SAMPLE PLANES + OUTPUT BUFFER). DELIBERATELY AN
-    // ABSOLUTE FIGURE RATHER THAN A MULTIPLE OF ImageReader.MAX_DECODED_BYTES: THAT ONE TRACKS WHAT
-    // REAL ANIMATIONS RETAIN AND MOVES WITH THEM, WHICH HAS NO BEARING ON ONE FRAME'S DECODE COST.
-    // NEEDED BECAUSE MAX_PIXELS ALONE STILL ALLOWS 12 BYTES OF COEFFICIENTS PER PIXEL ON 4:4:4 FRAMES.
+    // WORKING-SET CAP FOR ONE FRAME (COEFFICIENTS + SAMPLE PLANES + OUTPUT): MAX_PIXELS ALONE STILL ALLOWS 12 BYTES OF
+    // COEFFICIENTS PER PIXEL ON 4:4:4. ABSOLUTE ON PURPOSE: ImageReader.MAX_DECODED_BYTES TRACKS WHAT REAL ANIMATIONS
+    // RETAIN, WHICH HAS NO BEARING ON ONE FRAME'S DECODE COST
     private static final long MAX_FRAME_BYTES = 512L << 20;
     // SCAN CEILING (libjpeg-turbo USES THE SAME 100). EVERY SCAN REWALKS THE WHOLE COEFFICIENT GRID,
     // SO AN UNBOUNDED SOS CHAIN IS A CPU BOMB NO MATTER HOW LITTLE ENTROPY DATA EACH SCAN CARRIES.
@@ -135,7 +134,6 @@ public final class JpegReader extends ImageReader {
             CB_TO_G[i] = (int) Math.round(-0.34414 * v * 65536.0) + (1 << 15);
         }
     }
-
 
     private final int[][] quantTables = new int[4][];
     private final HuffmanTable[][] huffmanTables = new HuffmanTable[2][4];
@@ -226,7 +224,11 @@ public final class JpegReader extends ImageReader {
                 }
                 case DQT -> this.readQuantTables();
                 case DHT -> this.readHuffmanTables();
-                case DRI -> this.readRestartInterval();
+                case DRI -> {
+                    final ByteBuffer segment = this.segment();
+                    if (segment.remaining() != 2) throw new CodecException("Invalid JPEG DRI segment length " + (segment.limit() + 2));
+                    this.restartInterval = readU16(segment);
+                }
                 case SOS -> {
                     if (++this.scans > MAX_SCANS) throw new CodecException("Too many JPEG scans (max " + MAX_SCANS + ")");
                     final Scan scan = this.readScanHeader();
@@ -427,12 +429,6 @@ public final class JpegReader extends ImageReader {
         }
     }
 
-    private void readRestartInterval() throws CodecException {
-        final ByteBuffer segment = this.segment();
-        if (segment.remaining() != 2) throw new CodecException("Invalid JPEG DRI segment length " + (segment.limit() + 2));
-        this.restartInterval = readU16(segment);
-    }
-
     private Scan readScanHeader() throws CodecException {
         if (this.components == null) throw new CodecException("JPEG scan before frame header");
         final ByteBuffer segment = this.segment();
@@ -478,10 +474,9 @@ public final class JpegReader extends ImageReader {
         if (scan.al > MAX_APPROXIMATION || (scan.ah != 0 && scan.ah != scan.al + 1))
             throw new CodecException("Invalid JPEG successive approximation Ah=" + scan.ah + " Al=" + scan.al);
 
-        // SCAN-ORDERING GATE. approx[k] IS THE POINT TRANSFORM COEFFICIENT k WAS LAST CODED AT, -1 WHEN NEVER
-        // CODED. WITHOUT IT A LONE REFINEMENT SCAN REFINES AN ALL-ZERO ARRAY, AND refineNonZero() THEN WALKS 63
-        // POSITIONS PER BLOCK WHILE CONSUMING NO BITS AT ALL: ONE 15-BIT EOB SYMBOL BUYS 16384 BLOCKS OF WORK.
-        // IT ALSO BOUNDS TOTAL EFFORT, SINCE EACH COEFFICIENT IS NOW VISITABLE ONCE PER APPROXIMATION LEVEL ONLY.
+        // SCAN-ORDERING GATE: approx[k] IS THE POINT TRANSFORM COEFFICIENT k WAS LAST CODED AT (-1 NEVER). A LONE REFINEMENT
+        // SCAN WOULD REFINE AN ALL-ZERO ARRAY, refineNonZero() WALKING 63 POSITIONS PER BLOCK FOR NO BITS (ONE 15-BIT EOB
+        // BUYS 16384 BLOCKS OF WORK); THE GATE ALSO BOUNDS EFFORT TO ONE VISIT PER COEFFICIENT AND APPROXIMATION LEVEL
         for (final Component component: scan.components) {
             for (int k = scan.ss; k <= scan.se; k++) {
                 if (scan.ah == 0) {
@@ -664,9 +659,7 @@ public final class JpegReader extends ImageReader {
                                    final EntropyReader entropy) throws IOException {
         final int value = coefficients[index];
         final int correction = entropy.readBit();
-        if ((Math.abs(value) & bit) == 0 && correction == 1) {
-            coefficients[index] += value > 0 ? bit : -bit;
-        }
+        if ((Math.abs(value) & bit) == 0 && correction == 1) coefficients[index] += value > 0 ? bit : -bit;
     }
 
     private void forEachMcu(final Scan scan, final EntropyReader entropy, final BlockConsumer consumer) throws IOException {
@@ -710,27 +703,19 @@ public final class JpegReader extends ImageReader {
         final int next = count + 1;
         if (next < this.restartInterval) return next;
         entropy.consumeRestart();
-        this.resetPredictors();
+        for (final Component component: this.components) component.dc = 0;
         this.eobRun = 0;
         return 0;
     }
 
-    private void resetPredictors() {
-        if (this.components == null) return;
-        for (final Component component: this.components) component.dc = 0;
-    }
-
     private void validateTables(final Scan scan) throws CodecException {
         for (final Component component: scan.components) {
-            if (this.quantTables[component.quantTable] == null) {
+            if (this.quantTables[component.quantTable] == null)
                 throw new CodecException("Missing JPEG quantization table " + component.quantTable);
-            }
-            if (this.huffmanTables[0][component.dcTable] == null) {
+            if (this.huffmanTables[0][component.dcTable] == null)
                 throw new CodecException("Missing JPEG DC Huffman table " + component.dcTable);
-            }
-            if ((scan.se > 0 || !this.progressive) && this.huffmanTables[1][component.acTable] == null) {
+            if ((scan.se > 0 || !this.progressive) && this.huffmanTables[1][component.acTable] == null)
                 throw new CodecException("Missing JPEG AC Huffman table " + component.acTable);
-            }
         }
     }
 
@@ -744,14 +729,21 @@ public final class JpegReader extends ImageReader {
         this.outputFormat = gray && this.requestedFormat != PixelFormat.BGRA ? PixelFormat.GRAY : PixelFormat.BGRA;
         this.directOut = ByteBuffer.allocateDirect(this.width * this.height * (this.outputFormat == PixelFormat.GRAY ? 1 : 4))
                 .order(ByteOrder.LITTLE_ENDIAN);
-        if (this.outputFormat == PixelFormat.GRAY) {
+        if (gray) {
             final byte[] samples = this.components[0].samples;
             final int stride = this.components[0].blocksX * 8;
-            // ONE BULK COPY WHEN THE MCU GRID ADDS NO RIGHT PADDING, OTHERWISE ONE PER ROW
-            if (stride == this.width) this.directOut.put(samples, 0, this.width * this.height);
-            else for (int y = 0; y < this.height; y++) this.directOut.put(samples, y * stride, this.width);
-        } else if (gray) {
-            this.writeGrayscaleBgra();
+            if (this.outputFormat == PixelFormat.GRAY) {
+                // ONE BULK COPY WHEN THE MCU GRID ADDS NO RIGHT PADDING, OTHERWISE ONE PER ROW
+                if (stride == this.width) this.directOut.put(samples, 0, this.width * this.height);
+                else for (int y = 0; y < this.height; y++) this.directOut.put(samples, y * stride, this.width);
+            } else {
+                for (int y = 0; y < this.height; y++) {
+                    for (int x = 0; x < this.width; x++) {
+                        final int g = samples[y * stride + x] & 0xFF;
+                        this.directOut.putInt(0xFF000000 | (g << 16) | (g << 8) | g);
+                    }
+                }
+            }
         } else {
             // libjpeg RULE: JFIF MEANS YCbCr; OTHERWISE THE ADOBE TRANSFORM DECIDES (0 = NONE, SO RGB); OTHERWISE
             // COMPONENT IDS 'R', 'G', 'B' MEAN RGB AND ANYTHING ELSE YCbCr
@@ -813,7 +805,9 @@ public final class JpegReader extends ImageReader {
     private static void idct(final int[] coef, final int block, final int[] quant,
                              final int[] tmp, final byte[] dst, final int dstOff, final int dstStride) {
         // FAST PATH: ENTIRE BLOCK IS DC ONLY (FLAT 8x8)
-        if (isDcOnly(coef, block)) {
+        int ac = 1;
+        while (ac < 64 && coef[block + ac] == 0) ac++;
+        if (ac == 64) {
             final int dc = MathUtil.clip255(((coef[block] * quant[0] + 4) >> 3) + 128);
             final byte b = (byte) dc;
             for (int y = 0; y < 8; y++) {
@@ -949,28 +943,6 @@ public final class JpegReader extends ImageReader {
             dst[base + dstStride * 5] = (byte) MathUtil.clip255(((tmp12 - tmp1 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
             dst[base + dstStride * 3] = (byte) MathUtil.clip255(((tmp13 + tmp0 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
             dst[base + dstStride * 4] = (byte) MathUtil.clip255(((tmp13 - tmp0 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
-        }
-    }
-
-    private static boolean isDcOnly(final int[] coef, final int block) {
-        for (int i = 1; i < 64; i++) {
-            if (coef[block + i] != 0) return false;
-        }
-        return true;
-    }
-
-    private void writeGrayscaleBgra() {
-        final Component yComponent = this.components[0];
-        final byte[] src = yComponent.samples;
-        final int stride = yComponent.blocksX * 8;
-        final ByteBuffer out = this.directOut;
-        for (int y = 0; y < this.height; y++) {
-            final int row = y * stride;
-            for (int x = 0; x < this.width; x++) {
-                final int g = src[row + x] & 0xFF;
-                // BGRA LITTLE-ENDIAN: BYTE 0=B, 1=G, 2=R, 3=A
-                out.putInt(0xFF000000 | (g << 16) | (g << 8) | g);
-            }
         }
     }
 
@@ -1143,7 +1115,7 @@ public final class JpegReader extends ImageReader {
         private final int[] valueOffset = new int[17];
         private final int[] values;
         // PER-PREFIX FAST LOOKUP: ENTRY 0 = NO MATCH (CODE LONGER THAN LUT_BITS),
-        // OTHERWISE (LENGTH << 8) | SYMBOL.  LENGTH IN 1..LUT_BITS, SYMBOL IN 0..255.
+        // OTHERWISE (LENGTH << 8) | SYMBOL WITH LENGTH IN 1..LUT_BITS AND SYMBOL IN 0..255
         private final int[] lut = new int[LUT_SIZE];
 
         HuffmanTable(final int[] counts, final int[] values) throws CodecException {

@@ -119,7 +119,11 @@ public class AppConfig {
     public static void crt(final boolean on) {
         crt = on;
         if (late) crtBeforeLoad = on;
-        dirty("crt");
+        // THE WATERCONFIG WORKER SAVES A SPEC ONCE ONE OF ITS FIELDS IS MARKED DIRTY
+        final ConfigSpec s = spec;
+        if (s == null) return;
+        final IConfigField<?, ?> field = s.findField("crt");
+        if (field != null) s.markDirty(field);
     }
 
     /** Returns the factor {@code value} asks for: 0 for automatic, else snapped to {@link #SCALE_STEP} within the bounds. */
@@ -144,13 +148,5 @@ public class AppConfig {
 
     private static boolean settled(final ConfigSpec s) {
         return s == null || s.isLoaded() || s.status() == ConfigSpec.Status.FAILED;
-    }
-
-    // THE WATERCONFIG WORKER SAVES A SPEC ONCE ONE OF ITS FIELDS IS MARKED DIRTY
-    private static void dirty(final String key) {
-        final ConfigSpec s = spec;
-        if (s == null) return;
-        final IConfigField<?, ?> field = s.findField(key);
-        if (field != null) s.markDirty(field);
     }
 }

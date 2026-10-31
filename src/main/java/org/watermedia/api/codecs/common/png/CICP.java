@@ -6,8 +6,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
- * cICP - Coding-Independent Code Points Chunk
- * Specifies video signal type identification for HDR images
+ * cICP (coding-independent code points) chunk: the video signal type identification of HDR images.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#cICP-chunk">PNG Specification - cICP</a>
  */
@@ -33,14 +32,10 @@ public record CICP(int colorPrimaries, int transferFunction, int matrixCoefficie
 
     /** Converts a generic chunk to cICP. */
     public static CICP convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for cICP: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for cICP: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("cICP data must be 4 bytes, got " + data.length);
-        }
+        if (data.length != LENGTH) throw new CodecException("cICP data must be 4 bytes, got " + data.length);
 
         return new CICP(
                 data[0] & 0xFF, // COLOR PRIMARIES
@@ -50,23 +45,17 @@ public record CICP(int colorPrimaries, int transferFunction, int matrixCoefficie
         );
     }
 
-    /**
-     * Returns whether the image uses full range (0-255) or limited range (16-235)
-     */
+    /** Returns whether the image uses full range (0-255) rather than limited range (16-235). */
     public boolean isFullRange() {
         return this.videoFullRangeFlag == 1;
     }
 
-    /**
-     * Returns whether this indicates an HDR image (PQ or HLG transfer)
-     */
+    /** Returns whether this indicates an HDR image (PQ or HLG transfer). */
     public boolean isHDR() {
         return this.transferFunction == TRANSFER_PQ || this.transferFunction == TRANSFER_HLG;
     }
 
-    /**
-     * Returns whether this uses sRGB transfer function
-     */
+    /** Returns whether this uses the sRGB transfer function. */
     public boolean isSRGB() {
         return this.transferFunction == TRANSFER_SRGB;
     }

@@ -19,8 +19,6 @@ public final class WaterMediaConfig {
     /** Upload token shipped by default; a file server reachable from other machines refuses to start with it. */
     public static final String DEFAULT_NETWORK_TOKEN = "watermedia_default_token_change_it";
 
-    private WaterMediaConfig() {}
-
     @Spec.Field
     @Comment("CodecsAPI settings")
     public static final Codecs codecs = new Codecs();
@@ -36,6 +34,8 @@ public final class WaterMediaConfig {
     @Spec.Field
     @Comment("Platform-specific settings")
     public static final Platforms platforms = new Platforms();
+
+    private WaterMediaConfig() {}
 
     /** Settings of the house image codecs and the FFmpeg natives. */
     @Spec(value = "codecs", disableStatic = true)
@@ -68,7 +68,7 @@ public final class WaterMediaConfig {
             @Spec.Field(suffix = "px")
             @Comment("Default maximum dimension (px) when rasterizing vector SVG images")
             @Comment("SVG is resolution-independent; the larger raster side is capped to this, preserving aspect ratio (never upscaled)")
-            @NumberConditions(minInt = 1, maxInt = 8192, math = true)
+            @NumberConditions(minInt = 1, maxInt = 8_192, math = true)
             public int maxSize = 512;
         }
 
@@ -100,7 +100,7 @@ public final class WaterMediaConfig {
         @Spec(value = "ffmpeg", disableStatic = true)
         public static final class Ffmpeg {
             @Spec.Field
-            @Comment("Disables FFMPEG bootstrap, run this requires a restart")
+            @Comment("Disables the FFmpeg bootstrap; changing it requires a restart")
             public boolean disable = false;
 
             @Spec.Field(control = Control.INPUT_FOLDER)
@@ -133,7 +133,7 @@ public final class WaterMediaConfig {
             @Comment("Higher values help FFmpeg detect audio/video parameters (sample rate, channels) on slow or live HLS streams, at the cost of startup latency")
             @Comment("Zero leaves FFmpeg's own default in place")
             @NumberConditions(minLong = 0L, maxLong = 60_000)
-            public long analyzeDuration = 7000;
+            public long analyzeDuration = 7_000;
 
             @Spec.Field(suffix = "MB")
             @Comment("FFMediaPlayer stream probing size (FFmpeg probesize), in megabytes")
@@ -160,7 +160,7 @@ public final class WaterMediaConfig {
         @Comment("Total on-disk budget (in MB) for the shared cache of downloaded media files under %TEMP%")
         @Comment("Checked after every cache write; once the store grows past this cap the oldest entries are evicted until it fits again")
         @NumberConditions(minInt = 1, math = true)
-        public int cacheBudget = 1024 * 8;
+        public int cacheBudget = 8 * 1_024;
 
         @Spec.Field
         @Comment("WaterTexture general settings")
@@ -232,13 +232,13 @@ public final class WaterMediaConfig {
 
         @Spec.Field(suffix = "ms")
         @Comment("Maximum idle time of a file-server request: it is cut once this long passes without headers or transfer progress")
-        @NumberConditions(minInt = 1000, maxInt = 600_000)
+        @NumberConditions(minInt = 1_000, maxInt = 600_000)
         public int serverTimeout = 30_000;
 
         @Spec.Field(suffix = "MB")
         @Comment("Total file-server storage budget, including uploads in progress")
         @NumberConditions(minInt = 1, math = true)
-        public int maxStorageSize = 1024;
+        public int maxStorageSize = 1_024;
 
         @Spec.Field(suffix = "MB")
         @Comment("Maximum upload file size in megabytes, files larger than this will be rejected by the server")
@@ -250,7 +250,7 @@ public final class WaterMediaConfig {
 
         @Spec.Field
         @NumberConditions(minInt = 1, maxInt = 65_535)
-        @Comment("Sets file storage server port, ask to your provider if the port is open worldwide before start the server or blame the lib")
+        @Comment("File server port; check with your provider that it is reachable from outside before starting the server")
         @Comment("Used by the file server: on the server, or on a client with server = ALWAYS")
         public int serverPort = DEFAULT_NETWORK_SERVER_PORT;
 
@@ -270,7 +270,7 @@ public final class WaterMediaConfig {
 
         @Spec.Field(suffix = "ms")
         @Comment("Default connect/read timeout for NetRequest, in milliseconds")
-        @NumberConditions(minInt = 1000, maxInt = 600_000)
+        @NumberConditions(minInt = 1_000, maxInt = 600_000)
         public int timeout = 15_000;
 
         @Spec.Field(control = Control.SEEKBAR)
@@ -280,8 +280,8 @@ public final class WaterMediaConfig {
 
         @Spec.Field(suffix = "bytes")
         @Comment("Hard cap (in bytes) for NetRequest text/JSON bodies — anything larger throws")
-        @NumberConditions(minInt = 1024, math = true)
-        public int maxTextBytes = (1024 * 1024) * 16;
+        @NumberConditions(minInt = 1_024, math = true)
+        public int maxTextBytes = 16 * 1_024 * 1_024;
     }
 
     /** Internal bootstrap operation for the configuration facade. */

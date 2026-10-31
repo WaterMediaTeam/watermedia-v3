@@ -31,6 +31,8 @@ import java.util.Objects;
 /** Loads WaterMedia's modules once for the life of the process and holds the environment they run in. */
 public final class WaterMedia {
     private static final Marker IT = MarkerManager.getMarker(WaterMedia.class.getSimpleName());
+
+    // ==== IDENTITY ====
     public static final String ID = "watermedia";
     public static final String NAME = "WaterMedia";
     public static final String VERSION = IOTool.jarVersion();
@@ -190,11 +192,7 @@ public final class WaterMedia {
     /** Whether WaterMedia runs on a client; throws before {@link #start}. */
     public static boolean clientSide() { return instance().clientSide; }
 
-    /**
-     * Rejects a client-only operation requested by {@code type} before {@link #start} or on a server.
-     * Engines, media players and any client-only tool call it from their constructors, so a dedicated server
-     * cannot reach rendering, audio or decoding code even where the host does not hide those classes.
-     */
+    /** Rejects a client-only operation of {@code type} before {@link #start} or on a server; engines, players and client-only tools call it from their constructors. */
     public static void checkIsClientSideOrThrow(final Class<?> type) {
         if (!instance().clientSide) throw new IllegalStateException("Called " + type.getSimpleName() + " in a server environment");
     }

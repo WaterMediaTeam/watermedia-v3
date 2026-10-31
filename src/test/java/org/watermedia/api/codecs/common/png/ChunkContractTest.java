@@ -4,14 +4,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.test.support.ImageBytes;
 
-import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.CRC32;
-import java.util.zip.DeflaterOutputStream;
+import java.util.zip.Deflater;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -85,7 +85,7 @@ public class ChunkContractTest {
             assertEquals(phys, PHYS.read(envelope(phys)));
             final SRGB srgb = new SRGB(SRGB.SATURATION);
             assertEquals(srgb, SRGB.read(envelope(srgb)));
-            final TIME time = new TIME(2_026, 10, 18, 12, 30, 59);
+            final TIME time = new TIME(2026, 10, 18, 12, 30, 59);
             assertEquals(time, TIME.read(envelope(time)));
         }
 
@@ -114,7 +114,7 @@ public class ChunkContractTest {
             final TEXT text = new TEXT(TEXT.KEYWORD_TITLE, "WaterMedia");
             assertEquals(text, TEXT.read(envelope(text)));
 
-            final ZTXT ztxt = ZTXT.read(envelope(new ZTXT(TEXT.KEYWORD_COMMENT, 0, deflate("compressed"))));
+            final ZTXT ztxt = ZTXT.read(envelope(new ZTXT(TEXT.KEYWORD_COMMENT, 0, ImageBytes.deflate(latin1("compressed"), Deflater.DEFAULT_COMPRESSION))));
             assertEquals(TEXT.KEYWORD_COMMENT, ztxt.keyword());
             assertEquals("compressed", ztxt.text());
 
@@ -125,7 +125,7 @@ public class ChunkContractTest {
             assertEquals(translated, itxt.translatedKeyword());
             assertEquals("Hola", itxt.text());
 
-            final ICCP iccp = ICCP.read(envelope(new ICCP("sRGB", 0, deflate("profile"))));
+            final ICCP iccp = ICCP.read(envelope(new ICCP("sRGB", 0, ImageBytes.deflate(latin1("profile"), Deflater.DEFAULT_COMPRESSION))));
             assertEquals("sRGB", iccp.profileName());
             assertArrayEquals(latin1("profile"), iccp.profile());
 
@@ -203,7 +203,8 @@ public class ChunkContractTest {
         @DisplayName("Fails malformed envelopes before parsing the data")
         void failsMalformedEnvelopes() {
             final ByteBuffer truncated = envelope(new SRGB(SRGB.PERCEPTUAL));
-            truncated.limit(truncated.limit() - 4); // DROPS THE CRC FIELD
+            // DROPS THE CRC FIELD
+            truncated.limit(truncated.limit() - 4);
             assertThrows(EOFException.class, () -> SRGB.read(truncated));
 
             // AN UNSIGNED LENGTH ABOVE 2^31 READS BACK NEGATIVE
@@ -308,13 +309,5 @@ public class ChunkContractTest {
 
     private static byte[] latin1(final String text) {
         return text.getBytes(StandardCharsets.ISO_8859_1);
-    }
-
-    private static byte[] deflate(final String text) throws IOException {
-        final ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (final DeflaterOutputStream deflater = new DeflaterOutputStream(out)) {
-            deflater.write(latin1(text));
-        }
-        return out.toByteArray();
     }
 }

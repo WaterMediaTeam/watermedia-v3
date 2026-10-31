@@ -72,11 +72,9 @@ public final class KeyChip extends Element<KeyChip> {
             canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.alpha(AppTheme.BG_2, 220));
             canvas.stroke(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.STROKE_BRIGHT, 1f);
             canvas.icon(this.icon, this.left + 7, this.top + (this.measuredHeight - 12) / 2, 12, AppTheme.TEXT_FAINT);
-            if (!this.key.isEmpty()) {
-                canvas.text(this.upper, this.left + 24,
-                        this.top + (this.measuredHeight - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2,
+            if (!this.key.isEmpty())
+                canvas.text(this.upper, this.left + 24, this.top + (this.measuredHeight - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2,
                         AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
-            }
             return;
         }
         canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.alpha(AppTheme.NEON_DARK, 60));

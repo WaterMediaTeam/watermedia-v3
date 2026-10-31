@@ -90,7 +90,9 @@ public class SpinnerTest {
         @Test
         @DisplayName("keys reach the screen while the spinner is not editing")
         void idle() {
-            final Spinner spinner = laidOut(new Spinner());
+            final Spinner spinner = new Spinner().size(200, 30);
+            spinner.measure(200, 30);
+            spinner.layout(0, 0);
             assertFalse(spinner.dispatchKey(GLFW_KEY_ESCAPE, GLFW_PRESS));
             assertFalse(spinner.dispatchKey(GLFW_KEY_ESCAPE, GLFW_RELEASE));
             assertFalse(spinner.dispatchChar('1'));
@@ -105,16 +107,12 @@ public class SpinnerTest {
         list.layout(0, 0);
     }
 
-    private static Spinner laidOut(final Spinner spinner) {
+    // A CLICK ON THE VALUE, BETWEEN THE 24 PX STEP BOXES, OPENS THE TYPED EDIT
+    private static Spinner editing(final Spinner spinner) {
         spinner.size(200, 30);
         spinner.measure(200, 30);
         spinner.layout(0, 0);
-        return spinner;
-    }
-
-    // A CLICK ON THE VALUE, BETWEEN THE 24 PX STEP BOXES, OPENS THE TYPED EDIT
-    private static Spinner editing(final Spinner spinner) {
-        laidOut(spinner).dispatchClick(100, 15);
+        spinner.dispatchClick(100, 15);
         assertTrue(spinner.textInputActive());
         return spinner;
     }

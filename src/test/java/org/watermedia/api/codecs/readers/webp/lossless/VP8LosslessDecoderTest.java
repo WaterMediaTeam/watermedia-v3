@@ -32,7 +32,7 @@ public class VP8LosslessDecoderTest {
     class BundledPalette {
 
         @Test
-        @DisplayName("two colors unpack eight indexes per byte and the predictor read after them runs at the packed width")
+        @DisplayName("Two colors unpack eight indexes per byte and the predictor read after them runs at the packed width")
         void twoColorsWithPackedPredictor() throws IOException {
             final Bits bits = new Bits();
             // COLOR INDEXING, 2 COLORS: OPAQUE BLACK THEN WHITE (DELTA-CODED SECOND ENTRY 0x00FFFFFF)
@@ -65,7 +65,7 @@ public class VP8LosslessDecoderTest {
         }
 
         @Test
-        @DisplayName("sixteen colors unpack two indexes per byte, the last byte of an odd row half used")
+        @DisplayName("Sixteen colors unpack two indexes per byte, the last byte of an odd row half used")
         void sixteenColorsOddWidth() throws IOException {
             final Bits bits = new Bits();
             bits.put(1, 1).put(3, 2).put(15, 8);
@@ -83,7 +83,7 @@ public class VP8LosslessDecoderTest {
         }
 
         @Test
-        @DisplayName("four levels in a lossless ALPH plane unpack four indexes per byte")
+        @DisplayName("Four levels in a lossless ALPH plane unpack four indexes per byte")
         void fourLevelAlphaPlane() throws IOException {
             final Bits bits = new Bits();
             bits.put(1, 1).put(3, 2).put(3, 8);

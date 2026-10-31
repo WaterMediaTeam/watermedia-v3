@@ -24,7 +24,7 @@ import java.util.TreeSet;
  * its mutators then throw, and {@link #HttpHeaders(HttpHeaders) copying} it yields a mutable bag again.
  */
 public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
-
+    /** One header field: an HTTP token name and a value free of control characters. */
     public record Entry(String name, String value) {
         public Entry {
             if (name == null || value == null) throw new IllegalArgumentException("Header name and value are required");
@@ -49,8 +49,10 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
 
     private List<Entry> entries = new ArrayList<>();
 
+    /** Creates an empty, mutable bag. */
     public HttpHeaders() {}
 
+    /** Creates a mutable copy of {@code other}, frozen or not; null yields an empty bag. */
     public HttpHeaders(final HttpHeaders other) {
         if (other != null) this.entries.addAll(other.entries);
     }
@@ -61,11 +63,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         return this;
     }
 
-    /**
-     * Default header bag for outbound platform requests: WaterMedia User-Agent,
-     * {@link NetRequest#ACCEPT_MEDIA} and a Referer derived from {@code uri}'s origin; platforms
-     * stamp it onto each {@link Platform.Source} they emit.
-     */
+    /** Creates the default bag platforms stamp on each {@link Platform.Source}: WaterMedia User-Agent, {@link NetRequest#ACCEPT_MEDIA} and a Referer from {@code uri}'s origin. */
     public static HttpHeaders defaults(final URI uri) {
         final HttpHeaders h = new HttpHeaders().set("User-Agent", WaterMedia.USER_AGENT).set("Accept", NetRequest.ACCEPT_MEDIA);
         final String referer = referer(uri);
@@ -79,9 +77,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         return uri.getScheme() + "://" + uri.getHost() + (uri.getPort() != -1 ? ":" + uri.getPort() : "") + "/";
     }
 
-    /**
-     * Replaces all values for {@code name} with a single entry. Case-insensitive match.
-     */
+    /** Replaces every value of {@code name}, matched case-insensitively, with a single entry. */
     public HttpHeaders set(final String name, final String value) {
         final Entry entry = new Entry(name, value);
         this.removeAll(name);
@@ -89,19 +85,13 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         return this;
     }
 
-    /**
-     * Appends a new value for {@code name}. Existing values are kept.
-     */
+    /** Appends a value for {@code name}, keeping the existing ones. */
     public HttpHeaders add(final String name, final String value) {
         this.entries.add(new Entry(name, value));
         return this;
     }
 
-    /**
-     * Applies {@code other} on top of this bag: the first occurrence of each name replaces any
-     * existing entries (like {@link #set}), later occurrences append (like {@link #add}),
-     * preserving multi-valued headers. A {@code null} or empty bag, or this same bag, is a no-op.
-     */
+    /** Applies {@code other} on top of this bag: the first value of each name replaces ({@link #set}), later ones append ({@link #add}); null, empty or this bag change nothing. */
     public HttpHeaders merge(final HttpHeaders other) {
         if (other == null || other == this || other.empty()) return this;
         final Set<String> seen = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
@@ -112,17 +102,13 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         return this;
     }
 
-    /**
-     * Removes every entry whose name matches (case-insensitive).
-     */
+    /** Removes every entry whose name matches case-insensitively. */
     public HttpHeaders removeAll(final String name) {
         this.entries.removeIf(entry -> DataTool.equalsIgnoreCase(entry.name, name));
         return this;
     }
 
-    /**
-     * First value for {@code name}, or {@code null} if none.
-     */
+    /** Returns the first value of {@code name}, or null when there is none. */
     public String value(final String name) {
         for (final Entry e: this.entries) {
             if (DataTool.equalsIgnoreCase(e.name, name)) return e.value;
@@ -130,9 +116,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         return null;
     }
 
-    /**
-     * All values for {@code name}, in insertion order.
-     */
+    /** Returns every value of {@code name} in insertion order. */
     public List<String> values(final String name) {
         final List<String> out = new ArrayList<>();
         for (final Entry e: this.entries) {
@@ -141,9 +125,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         return out;
     }
 
-    /**
-     * Whether any value exists for {@code name} (case-insensitive).
-     */
+    /** Whether any value exists for {@code name}, matched case-insensitively. */
     public boolean has(final String name) {
         for (final Entry e: this.entries) {
             if (DataTool.equalsIgnoreCase(e.name, name)) return true;
@@ -184,10 +166,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         return out;
     }
 
-    /**
-     * Serializes the headers as {@code "Name: Value\r\n"} pairs (each terminated by {@code CRLF}).
-     * Empty when there are no entries. Suitable for FFmpeg's {@code -headers} option.
-     */
+    /** Serializes the bag as {@code "Name: Value\r\n"} lines, the form of FFmpeg's {@code headers} option; empty without entries. */
     public String toRawString() {
         if (this.entries.isEmpty()) return "";
         final StringBuilder sb = new StringBuilder(this.entries.size() * 32);
@@ -202,5 +181,4 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
 
     @Override
     public String toString() { return "HttpHeaders" + this.entries; }
-
 }

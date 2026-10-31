@@ -9,13 +9,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
-/**
- * Spin-waits that turn the player's volatile state into a synchronization
- * point for tests. Polls every 5 ms and bails after {@code timeoutMs}.
- *
- * <p>Player lifecycles run on their own threads, so tests observe each
- * transition through a bounded wait instead of sleeping an arbitrary time.
- */
+/** Bounded spin-waits that observe player transitions on their own threads instead of sleeping an arbitrary time. */
 public final class PlayerWait {
     private static final long POLL_INTERVAL_MS = 5L;
 
@@ -32,7 +26,7 @@ public final class PlayerWait {
         return awaitCondition(player::canPlay, timeoutMs);
     }
 
-    /** Generic spin-wait helper — returns true if the condition was satisfied within the timeout. */
+    /** Returns whether the condition holds within {@code timeoutMs}, polling every 5 ms. */
     public static boolean awaitCondition(final BooleanSupplier condition, final long timeoutMs) {
         // MONOTONIC: A WALL-CLOCK ADJUSTMENT MUST NEVER STRETCH OR CUT A WAIT
         final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);

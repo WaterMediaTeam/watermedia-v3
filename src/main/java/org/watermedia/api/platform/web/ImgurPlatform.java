@@ -22,9 +22,10 @@ import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Resolves Imgur images, albums and gallery posts through the API v3, and searches its galleries. */
 public final class ImgurPlatform implements Platform {
-    public static final String NAME = "Imgur";
     private static final Marker IT = MarkerManager.getMarker(ImgurPlatform.class.getSimpleName());
+    public static final String NAME = "Imgur";
     private static final String API_URL = "https://api.imgur.com/3";
     private static final String API_KEY = "685cdf74b1229b9";
 
@@ -46,7 +47,6 @@ public final class ImgurPlatform implements Platform {
         final var path = uri.getPath();
         if (path == null || path.length() <= 1) throw PlatformException.unsupported(NAME, uri);
 
-        // REMOVE FIRST SLASH AND SPLIT
         final var pathSplit = path.substring(1).split("/");
 
         // POST KINDS BY PATH: /a/{id} IS AN ALBUM (MAY BE HIDDEN — MISSING FROM THE GALLERY API),
@@ -72,10 +72,8 @@ public final class ImgurPlatform implements Platform {
                 // POSTS CARRY THE IMAGE FIELDS DIRECTLY ON data — BIND THE ENVELOPE FIRST, THEN PICK
                 final JsonObject root = WebRequests.fetchJson(NAME, requestUrl, JsonObject.class);
                 final GalleryResponse res = JSONTool.parse(root, GalleryResponse.class);
-                if (!res.success() || res.data() == null) {
-                    throw new PlatformException(NAME, "Post '" + id + "' response was empty or unsuccessful (status "
-                            + res.status() + ")");
-                }
+                if (!res.success() || res.data() == null)
+                    throw new PlatformException(NAME, "Post '" + id + "' response was empty or unsuccessful (status " + res.status() + ")");
 
                 final Gallery data = res.data();
                 if (Boolean.TRUE.equals(data.nsfw()) && !WaterMediaConfig.platforms.allowMatureContent)
@@ -85,7 +83,7 @@ public final class ImgurPlatform implements Platform {
                 if (data.images() == null && !data.isAlbum()) {
                     final Image img = JSONTool.parse(root.get("data"), Image.class);
                     LOGGER.debug(IT, "Imgur resolved single-image post '{}' ({})", id, img.type());
-                    return new Resolution(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
+                    return new Resolution(null, this.entry(img, img.title(), img.accountUrl(), uri));
                 }
 
                 if (data.images() == null || data.images().length == 0)
@@ -97,7 +95,7 @@ public final class ImgurPlatform implements Platform {
                 PlatformException skipped = null;
                 for (final Image img: data.images()) {
                     try {
-                        entries.add(this.buildEntry(img, data.title(), data.accountUrl(), uri));
+                        entries.add(this.entry(img, data.title(), data.accountUrl(), uri));
                     } catch (final PlatformException | RuntimeException e) {
                         LOGGER.warn(IT, "Imgur skipped item '{}' of post '{}'", img == null ? null : img.id(), id, e);
                         if (skipped == null) skipped = e instanceof final PlatformException platform ? platform
@@ -113,14 +111,12 @@ public final class ImgurPlatform implements Platform {
             // SIMPLE IMAGE
             final String requestUrl = String.format(IMAGE_URL, id);
             final ImageResponse res = WebRequests.fetchJson(NAME, requestUrl, ImageResponse.class);
-            if (!res.success() || res.data() == null) {
-                throw new PlatformException(NAME, "Image '" + id + "' response was empty or unsuccessful (status "
-                        + res.status() + ")");
-            }
+            if (!res.success() || res.data() == null)
+                throw new PlatformException(NAME, "Image '" + id + "' response was empty or unsuccessful (status " + res.status() + ")");
 
             final Image img = res.data();
             LOGGER.debug(IT, "Imgur resolved image '{}' ({})", id, img.type());
-            return new Resolution(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
+            return new Resolution(null, this.entry(img, img.title(), img.accountUrl(), uri));
         } catch (final RuntimeException e) {
             throw new PlatformException(NAME, "Unexpected API response for " + uri, e);
         }
@@ -147,13 +143,11 @@ public final class ImgurPlatform implements Platform {
         return out;
     }
 
-    private Source buildEntry(final Image img, final String fallbackTitle, final String accountUrl, final URI uri) throws PlatformException {
+    private Source entry(final Image img, final String fallbackTitle, final String accountUrl, final URI uri) throws PlatformException {
         if (Boolean.TRUE.equals(img.nsfw()) && !WaterMediaConfig.platforms.allowMatureContent)
             throw new MatureContentException(NAME, "Item '" + img.id() + "' is marked as mature content");
 
-        // PARSE MIME TYPE
         final MediaType type = MediaType.of(img.type());
-
         // IMGUR REPORTS "image/gif" FOR ITEMS IT SERVES AS mp4, WHICH PLAY AS VIDEO
         final String link = switch (type) {
             case IMAGE -> img.link();
@@ -164,7 +158,7 @@ public final class ImgurPlatform implements Platform {
             }
         };
 
-        // BUILD METADATA: account_url IS THE UPLOADER'S USERNAME, NOT A LINK
+        // account_url IS THE UPLOADER'S USERNAME, NOT A LINK
         final String title = img.title() != null ? img.title() : fallbackTitle;
         final Instant date = img.datetime() > 0 ? Instant.ofEpochSecond(img.datetime()) : null;
         final Metadata metadata = new Metadata(title, img.description(), date, 0, accountUrl);
@@ -181,18 +175,11 @@ public final class ImgurPlatform implements Platform {
 
     // DATA RECORDS — BIND ONLY THE CONSUMED FIELDS: IMGUR SENDS null FOR MANY NUMERIC FIELDS
     // DEPENDING ON THE ENDPOINT, AND A null INTO A PRIMITIVE RECORD COMPONENT MAKES GSON THROW
-    private record ImageResponse(Image data, boolean success, int status) {
-    }
-
+    private record ImageResponse(Image data, boolean success, int status) {}
+    private record GalleryResponse(Gallery data, boolean success, int status) {}
     // GALLERY SEARCH RETURNS A MIXED ARRAY OF ALBUMS AND SINGLE IMAGES; ONLY THE DISPLAY FIELDS ARE BOUND
-    private record SearchResponse(SearchItem[] data, boolean success, int status) {
-    }
-
-    private record SearchItem(String id, String title, String cover, @SerializedName("is_album") boolean isAlbum) {
-    }
-
-    private record GalleryResponse(Gallery data, boolean success, int status) {
-    }
+    private record SearchResponse(SearchItem[] data, boolean success, int status) {}
+    private record SearchItem(String id, String title, String cover, @SerializedName("is_album") boolean isAlbum) {}
 
     private record Gallery(
             String title,

@@ -85,7 +85,7 @@ public final class ApiGuideExample {
         player.mute(true);
         player.speed(1.25f);
         player.repeat(true);
-        player.scale(1280, 720);
+        player.scale(1_280, 720);
     }
 
     public static ServerMediaPlayer clock(final long durationMs, final Consumer<Sync> transport) {
@@ -117,7 +117,7 @@ public final class ApiGuideExample {
     }
 
     public static void encode(final Path target, final ByteBuffer frame, final long ptsUs, final ByteBuffer pcm) throws IOException {
-        final Encoder.Video video = new Encoder.Video(VideoCodec.H264, 1280, 720, PixelFormat.BGRA, 60);
+        final Encoder.Video video = new Encoder.Video(VideoCodec.H264, 1_280, 720, PixelFormat.BGRA, 60);
         final Encoder.Audio audio = new Encoder.Audio(AudioCodec.AAC, 48_000, 2, SampleType.S16);
         try (final Encoder encoder = CodecsAPI.encoder(Container.MP4, target, video, audio)) {
             encoder.video(frame, ptsUs);

@@ -42,9 +42,7 @@ public final class CheckBox extends Element<CheckBox> {
         return this;
     }
 
-    public boolean checked() {
-        return this.checked;
-    }
+    public boolean checked() { return this.checked; }
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
@@ -63,9 +61,7 @@ public final class CheckBox extends Element<CheckBox> {
         final int boxX = this.innerLeft();
         final int boxY = this.top + (this.measuredHeight - BOX) / 2;
         final Color edge = this.enabled ? this.accent : AppTheme.alpha(this.accent, 90);
-        if (this.checked) {
-            canvas.fill(boxX, boxY, BOX, BOX, AppTheme.alpha(this.accent, 70));
-        }
+        if (this.checked) canvas.fill(boxX, boxY, BOX, BOX, AppTheme.alpha(this.accent, 70));
         canvas.stroke(boxX, boxY, BOX, BOX, edge, 1.4f);
         if (this.checked) {
             // TICK: FROM THE LOWER-LEFT DOWN TO THE ELBOW, THEN UP TO THE UPPER-RIGHT

@@ -35,14 +35,7 @@ public final class NetworkAPI {
 
     private NetworkAPI() {}
 
-    /**
-     * Uploads multiple files to the remote WaterMedia server on a shared background thread pool.
-     * Every file is checked before the first upload starts, so a bad entry submits nothing.
-     * @param files the files to upload
-     * @return one status tracker per file
-     * @throws IllegalArgumentException when an entry is not an existing regular file
-     * @throws IllegalStateException before WaterMedia loads
-     */
+    /** Uploads every file to the remote WaterMedia server, one status each; all of them are checked before the first upload starts. */
     public static UploadStatus[] upload(final File... files) {
         if (files == null) throw new IllegalArgumentException("Files cannot be null");
         for (final File file: files) if (file == null || !file.isFile()) throw new IllegalArgumentException("Not a file: " + file);
@@ -51,15 +44,7 @@ public final class NetworkAPI {
         return statuses;
     }
 
-    /**
-     * Uploads a file to the remote WaterMedia server in a background thread.
-     * The returned {@link UploadStatus} is updated as the upload progresses; an
-     * unreachable or misconfigured remote server fails the status instead of throwing.
-     * @param file the file to upload
-     * @return status tracker for the upload (poll for progress)
-     * @throws IllegalArgumentException when {@code file} is not an existing regular file
-     * @throws IllegalStateException before WaterMedia loads
-     */
+    /** Uploads a file to the remote WaterMedia server in the background; an unreachable or misconfigured server fails the returned status instead of throwing. */
     public static UploadStatus upload(final File file) {
         if (file == null || !file.isFile()) throw new IllegalArgumentException("Not a file: " + file);
         final ExecutorService workers = uploads;
@@ -75,13 +60,7 @@ public final class NetworkAPI {
         return status;
     }
 
-    /**
-     * Validated base URL of the remote file server ({@code network.remoteUrl}) without the
-     * trailing slash. Fails fast on a blank or non-absolute http(s) value instead of producing
-     * a scheme-less URL that only breaks much later, far from the actual cause.
-     *
-     * @throws IllegalStateException when the configured value is not an absolute http(s) URL
-     */
+    /** Returns {@code network.remoteUrl} without its trailing slash; throws when it is not an absolute http(s) URL. */
     public static String remoteUrl() {
         final String base = WaterMediaConfig.network.remoteUrl;
         if (base == null || base.isBlank() || !(base.startsWith("http://") || base.startsWith("https://")))

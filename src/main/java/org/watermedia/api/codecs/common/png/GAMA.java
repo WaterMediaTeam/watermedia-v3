@@ -7,8 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * gAMA - Image Gamma Chunk
- * Specifies the relationship between the image samples and the desired display output intensity
+ * gAMA (image gamma) chunk: the relationship between the image samples and the desired display output intensity.
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11gAMA">PNG Specification - gAMA</a>
  */
@@ -25,36 +24,26 @@ public record GAMA(int gamma) implements IChunk {
 
     /** Converts a generic chunk to gAMA. */
     public static GAMA convert(final PngChunk chunk) throws CodecException {
-        if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for gAMA: 0x" + Integer.toHexString(chunk.type()));
-        }
+        if (chunk.type() != SIGNATURE) throw new IllegalArgumentException("Invalid chunk type for gAMA: 0x" + Integer.toHexString(chunk.type()));
 
         final byte[] data = chunk.data();
-        if (data.length != LENGTH) {
-            throw new CodecException("gAMA data must be 4 bytes, got " + data.length);
-        }
+        if (data.length != LENGTH) throw new CodecException("gAMA data must be 4 bytes, got " + data.length);
 
         // THE FIELD IS UNSIGNED gamma * 100000: 0x80000000 READS BACK NEGATIVE AND FEEDS A NEGATIVE EXPONENT
         // TO Math.pow, WHOSE +Infinity SATURATES THE DECODER'S GAMMA LUT AND BLEEDS OVER THE ALPHA BYTE
         final int gamma = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN).getInt();
-        if (gamma <= 0 || gamma > MAX_GAMMA) {
-            throw new CodecException("Invalid gAMA value: " + Integer.toUnsignedString(gamma));
-        }
+        if (gamma <= 0 || gamma > MAX_GAMMA) throw new CodecException("Invalid gAMA value: " + Integer.toUnsignedString(gamma));
         return new GAMA(gamma);
     }
 
-    /**
-     * Returns the gamma value as a float (gamma * 100000 is stored)
-     */
+    /** Returns the gamma value as a float (the chunk stores gamma * 100000). */
     public float gammaValue() {
-        return this.gamma / 100000.0f;
+        return this.gamma / 100_000.0f;
     }
 
-    /**
-     * Returns the decoding exponent (1/gamma)
-     */
+    /** Returns the decoding exponent (1/gamma). */
     public float decodingExponent() {
-        return 100000.0f / this.gamma;
+        return 100_000.0f / this.gamma;
     }
 
     @Override

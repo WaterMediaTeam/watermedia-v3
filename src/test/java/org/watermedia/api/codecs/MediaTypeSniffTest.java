@@ -5,10 +5,10 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.ImageBytes;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -53,7 +53,7 @@ public class MediaTypeSniffTest {
         record ByteCase(String name, byte[] data, MediaType expected) {}
         for (final ByteCase c: List.of(
                 // IMAGES
-                new ByteCase("bmp", ascii("BM") , MediaType.IMAGE),
+                new ByteCase("bmp", ascii("BM"), MediaType.IMAGE),
                 new ByteCase("tiff-le", bytes(0x49, 0x49, 0x2A, 0x00), MediaType.IMAGE),
                 new ByteCase("ico", bytes(0x00, 0x00, 0x01, 0x00), MediaType.IMAGE),
                 new ByteCase("heif-mp4", ftyp("mif1"), MediaType.IMAGE),
@@ -69,7 +69,8 @@ public class MediaTypeSniffTest {
                 new ByteCase("flv", ascii("FLV"), MediaType.VIDEO),
                 new ByteCase("avi", riff("AVI "), MediaType.VIDEO),
                 new ByteCase("mpeg-ps", bytes(0x00, 0x00, 0x01, 0xBA), MediaType.VIDEO),
-                new ByteCase("ts", ts(), MediaType.VIDEO),
+                // MPEG-TS: THE 0x47 SYNC BYTE AT 0 AND AT 188
+                new ByteCase("ts", new ImageBytes().u8(0x47).fill(0, 187).u8(0x47).bytes(), MediaType.VIDEO),
                 new ByteCase("ogg-theora", ogg("theora"), MediaType.VIDEO),
                 // AUDIO
                 new ByteCase("mp3-id3", ascii("ID3"), MediaType.AUDIO),
@@ -93,52 +94,28 @@ public class MediaTypeSniffTest {
         return tests;
     }
 
+    // UTILITY
     private static MediaType sniff(final byte[] data) throws Exception {
         try (final ByteArrayInputStream in = new ByteArrayInputStream(data)) {
             return CodecsAPI.sniff(in);
         }
     }
 
-    private static byte[] ascii(final String s) {
-        return s.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    private static byte[] bytes(final int... v) {
-        final byte[] out = new byte[v.length];
-        for (int i = 0; i < v.length; i++) out[i] = (byte) v[i];
-        return out;
-    }
+    private static byte[] ascii(final String s) { return new ImageBytes().ascii(s).bytes(); }
+    private static byte[] bytes(final int... v) { return new ImageBytes().raw(v).bytes(); }
 
     // ISO BMFF: [size][ftyp][major brand]
     private static byte[] ftyp(final String brand) {
-        final byte[] out = new byte[12];
-        out[3] = 0x18;
-        System.arraycopy(ascii("ftyp"), 0, out, 4, 4);
-        System.arraycopy(ascii(brand), 0, out, 8, 4);
-        return out;
+        return new ImageBytes().be32(0x18).ascii("ftyp").ascii(brand).bytes();
     }
 
     // RIFF: ["RIFF"][size][form type]
     private static byte[] riff(final String form) {
-        final byte[] out = new byte[12];
-        System.arraycopy(ascii("RIFF"), 0, out, 0, 4);
-        System.arraycopy(ascii(form), 0, out, 8, 4);
-        return out;
+        return new ImageBytes().ascii("RIFF").le32(0).ascii(form).bytes();
     }
 
-    // OGG FIRST PAGE WITH THE CODEC ID NAME WITHIN THE PROBE WINDOW
+    // OGG FIRST PAGE OF 40 BYTES WITH THE CODEC ID NAME AT 29, WITHIN THE PROBE WINDOW
     private static byte[] ogg(final String codec) {
-        final byte[] out = new byte[40];
-        System.arraycopy(ascii("OggS"), 0, out, 0, 4);
-        System.arraycopy(ascii(codec), 0, out, 29, codec.length());
-        return out;
-    }
-
-    // MPEG-TS: 0x47 SYNC BYTE AT 0 AND AT 188
-    private static byte[] ts() {
-        final byte[] out = new byte[189];
-        out[0] = 0x47;
-        out[188] = 0x47;
-        return out;
+        return new ImageBytes().ascii("OggS").fill(0, 25).ascii(codec).fill(0, 11 - codec.length()).bytes();
     }
 }

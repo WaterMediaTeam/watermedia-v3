@@ -37,11 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies the {@link MRL} contract: readiness and the error-born handles, the cache, the
- * subscription chain, how platform sources are classified and folded into one URL per
- * {@link MediaQuality} bucket, and the IPTV expansion into one source per channel.
- */
+/** Verifies the {@link MRL} contract: readiness, cache, subscriptions, platform sources, quality buckets and IPTV expansion. */
 @DisplayName("MRL")
 public class MrlTest {
 
@@ -311,8 +307,8 @@ public class MrlTest {
             // THE WIDER RENDITION OUTRANKS A FASTER NARROW ONE, AND THE TALLER ONE STAYS IN THE 720 BUCKET (THE SMALLER
             // SIDE DECIDES IT) AND OUTRANKS THE FASTER ONE THERE
             final Source source = new Source(MediaType.VIDEO, null, null, null, List.of(
-                    new Quality(narrow, 1920, 1080, 60f), new Quality(wide, 1930, 1080, 24f),
-                    new Quality(slow, 1280, 720, 30f), new Quality(fast, 1280, 720, 60f), new Quality(tall, 1280, 760, 24f),
+                    new Quality(narrow, 1_920, 1_080, 60f), new Quality(wide, 1_930, 1_080, 24f),
+                    new Quality(slow, 1_280, 720, 30f), new Quality(fast, 1_280, 720, 60f), new Quality(tall, 1_280, 760, 24f),
                     new Quality(first, 640, 360), new Quality(second, 640, 360)), null, null);
             final MRL.Source resolved = resolve(URI.create("watertest://bucket/clip"), source).source(0);
             assertEquals(wide, resolved.qualities().get(MediaQuality.HIGH), "the widest rendition owns the bucket");
@@ -327,7 +323,7 @@ public class MrlTest {
             final URI fast = URI.create("https://example.invalid/1080p60.mp4");
             // THE SLOWER RENDITION IS LISTED FIRST SO ONLY THE FRAME RATE CAN PICK THE FASTER ONE
             final Source source = new Source(MediaType.VIDEO, null, null, null, List.of(
-                    new Quality(slow, 1920, 1080, 30f), new Quality(fast, 1920, 1080, 60f)), null, null);
+                    new Quality(slow, 1_920, 1_080, 30f), new Quality(fast, 1_920, 1_080, 60f)), null, null);
             assertEquals(fast, resolve(URI.create("watertest://bucket/fps"), source).source(0).qualities().get(MediaQuality.HIGH));
         }
 

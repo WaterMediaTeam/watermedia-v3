@@ -23,13 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Verifies that releasing a {@link TxMediaPlayer} never waits for a preparation that has no worker yet, nor for a held
- * download, whose socket read runs on a cache worker while the preparation waits interruptibly. A release that returns
- * has freed the graphics engine, which it only does once no preparation of the player is running anymore.
- */
+/** Verifies that releasing a {@link TxMediaPlayer} never waits for a queued preparation or a held download. */
 @DisplayName("TxMediaPlayer release")
 public class TxReleaseTest {
+
     private static final long RELEASE_RETURN_MS = 2_000L;
     private static final long WAIT_MS = 3_000L;
 
@@ -64,6 +61,7 @@ public class TxReleaseTest {
             player.release();
             final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
             assertTrue(elapsedMs < RELEASE_RETURN_MS, "release() must not wait for a worker that never started, it took " + elapsedMs + " ms");
+            // THE ENGINE IS FREED ONLY ONCE NO PREPARATION OF THE PLAYER IS RUNNING
             assertTrue(gfx.released());
             assertFalse(player.start());
         } finally {
