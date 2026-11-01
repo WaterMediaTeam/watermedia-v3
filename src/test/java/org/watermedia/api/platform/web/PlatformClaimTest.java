@@ -42,6 +42,10 @@ public class PlatformClaimTest {
     // THE MATURE GATE IS CHECKED OFF, SO A MATURE-ONLY HANDLER REJECTS BEFORE ANY NETWORK ACCESS
     private boolean previousMature;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeEach
     void rememberConfig() {
         this.previousMature = WaterMediaConfig.platforms.allowMatureContent;
@@ -195,6 +199,10 @@ public class PlatformClaimTest {
                 arguments(YouTubePlatform.class, "https://youtube.com")
         );
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Claims")

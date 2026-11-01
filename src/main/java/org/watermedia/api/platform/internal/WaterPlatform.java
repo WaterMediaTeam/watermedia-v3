@@ -22,9 +22,7 @@ public final class WaterPlatform implements Platform {
     public static final String GLOBAL_SERVER = "https://watermedia.srrapero720.me/";
 
     @Override
-    public String name() {
-        return NAME;
-    }
+    public String name() { return NAME; }
 
     @Override
     public Resolution resolve(final URI uri) throws PlatformException {

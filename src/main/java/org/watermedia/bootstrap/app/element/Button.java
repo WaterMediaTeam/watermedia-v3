@@ -37,6 +37,10 @@ public final class Button extends Element<Button> {
         this.label = label == null ? "" : label;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public Button label(final String value) {
         this.label = value == null ? "" : value;
         return this;
@@ -78,25 +82,6 @@ public final class Button extends Element<Button> {
         return this;
     }
 
-    @Override
-    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-        if (this.ctx == null || this.ctx.text == null) {
-            this.contentWidth = 0;
-            this.contentHeight = 0;
-            return;
-        }
-        this.contentWidth = width(this.ctx.text, this.label, this.subText, this.icon, this.subtextSpacing);
-        this.contentHeight = Math.max(this.ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON), Theme.CHIP_H);
-    }
-
-    @Override
-    protected void onDraw(final Canvas canvas) {
-        if (this.ctx == null || this.ctx.text == null) return;
-        render(canvas, this.left, this.top, this.measuredWidth, this.measuredHeight,
-                this.label, this.subText, this.icon, this.subtextSpacing,
-                this.accent, this.textColor, this.subTextColor, this.filled, this.hovered, this.enabled);
-    }
-
     /** Returns the wrap width of a button: internal padding, icon, label, spacing and subtext chip. */
     public static int width(final TextRenderer text, final String label, final String subText,
                             final String icon, final int subtextSpacing) {
@@ -104,18 +89,6 @@ public final class Button extends Element<Button> {
         final int labelW = label == null || label.isEmpty() ? 0 : text.widthBold(label, AppTheme.TEXT_BUTTON);
         final int chipW = subText == null || subText.isEmpty() ? 0 : text.width(subText, AppTheme.TEXT_SUBTITLE) + Theme.CHIP_PAD * 2;
         return LEFT_PAD + iconW + labelW + (chipW == 0 ? 0 : subtextSpacing + chipW) + RIGHT_PAD;
-    }
-
-    static void box(final Canvas canvas, final int x, final int y, final int w, final int h,
-                    final Color accent, final boolean filled, final boolean hover, final boolean enabled) {
-        // SHARED WITH IconButton: EVERY STATE DERIVES FROM accent, SO EACH BUTTON HOVERS IN ITS OWN HUE
-        if (filled) {
-            canvas.fill(x, y, w, h, hover && enabled ? accent : AppTheme.alpha(accent, 210));
-        } else {
-            canvas.fill(x, y, w, h, hover && enabled ? AppTheme.alpha(accent, 60) : AppTheme.alpha(AppTheme.BG_2, 220));
-            canvas.stroke(x, y, w, h, enabled ? accent : AppTheme.alpha(accent, 90), hover ? 1.7f : Theme.BORDER_ACTIVE);
-        }
-        if (enabled) canvas.glow(x, y, w, h, 0f, accent, hover ? 0.26f : 0.16f);
     }
 
     /** Paints a button into ({@code x,y,w,h}) with the default faint subtext chip color. */
@@ -158,5 +131,44 @@ public final class Button extends Element<Button> {
                     ? text.truncateToWidth(label, avail, AppTheme.TEXT_BUTTON, Font.BOLD) : label;
             canvas.text(draw, cx, cy - text.glyphHeightBold(AppTheme.TEXT_BUTTON) / 2f, tc, AppTheme.TEXT_BUTTON, true);
         }
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
+    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+        if (this.ctx == null || this.ctx.text == null) {
+            this.contentWidth = 0;
+            this.contentHeight = 0;
+            return;
+        }
+        this.contentWidth = width(this.ctx.text, this.label, this.subText, this.icon, this.subtextSpacing);
+        this.contentHeight = Math.max(this.ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON), Theme.CHIP_H);
+    }
+
+    @Override
+    protected void onDraw(final Canvas canvas) {
+        if (this.ctx == null || this.ctx.text == null) return;
+        render(canvas, this.left, this.top, this.measuredWidth, this.measuredHeight,
+                this.label, this.subText, this.icon, this.subtextSpacing,
+                this.accent, this.textColor, this.subTextColor, this.filled, this.hovered, this.enabled);
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    static void box(final Canvas canvas, final int x, final int y, final int w, final int h,
+                    final Color accent, final boolean filled, final boolean hover, final boolean enabled) {
+        // SHARED WITH IconButton: EVERY STATE DERIVES FROM accent, SO EACH BUTTON HOVERS IN ITS OWN HUE
+        if (filled) {
+            canvas.fill(x, y, w, h, hover && enabled ? accent : AppTheme.alpha(accent, 210));
+        } else {
+            canvas.fill(x, y, w, h, hover && enabled ? AppTheme.alpha(accent, 60) : AppTheme.alpha(AppTheme.BG_2, 220));
+            canvas.stroke(x, y, w, h, enabled ? accent : AppTheme.alpha(accent, 90), hover ? 1.7f : Theme.BORDER_ACTIVE);
+        }
+        if (enabled) canvas.glow(x, y, w, h, 0f, accent, hover ? 0.26f : 0.16f);
     }
 }

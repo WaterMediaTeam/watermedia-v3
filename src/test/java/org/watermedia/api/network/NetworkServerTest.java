@@ -71,6 +71,35 @@ public class NetworkServerTest {
     private int previousStorage;
     private int previousUpload;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+    // CHILD-JVM PROBE: A SECOND PROCESS MUST NOT TAKE OVER, NOR CLEAN, THE STORAGE A LIVE SERVER OWNS
+    public static void main(final String[] arguments) throws Exception {
+        if (arguments.length != 1 || !arguments[0].equals("storage-lock"))
+            throw new IllegalArgumentException("Unknown storage probe");
+        final Path directory = Path.of("").toAbsolutePath();
+        final var config = WaterMediaConfig.network;
+        config.serverBindAddress = "127.0.0.1";
+        config.token = TOKEN;
+        config.maxServerRequests = 2;
+        config.serverTimeout = 1_000;
+        config.maxStorageSize = 1;
+        config.maxUploadSize = 1;
+        try {
+            NetworkServer.start(0, directory);
+            throw new AssertionError("Another process acquired the live storage directory");
+        } catch (final IOException occupied) {
+            if (!occupied.getMessage().contains("storage is already in use")) throw occupied;
+        }
+        if (!Files.exists(directory.resolve("watermedia/files/.upload-Live1234/partial.bin")))
+            throw new AssertionError("The competing process deleted a live upload");
+        System.out.println("PROBE_OK storage-lock");
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @BeforeEach
     void snapshotConfig() {
         final var config = WaterMediaConfig.network;
@@ -96,29 +125,44 @@ public class NetworkServerTest {
         config.maxUploadSize = this.previousUpload;
     }
 
-    // CHILD-JVM PROBE: A SECOND PROCESS MUST NOT TAKE OVER, NOR CLEAN, THE STORAGE A LIVE SERVER OWNS
-    public static void main(final String[] arguments) throws Exception {
-        if (arguments.length != 1 || !arguments[0].equals("storage-lock"))
-            throw new IllegalArgumentException("Unknown storage probe");
-        final Path directory = Path.of("").toAbsolutePath();
-        final var config = WaterMediaConfig.network;
-        config.serverBindAddress = "127.0.0.1";
-        config.token = TOKEN;
-        config.maxServerRequests = 2;
-        config.serverTimeout = 1_000;
-        config.maxStorageSize = 1;
-        config.maxUploadSize = 1;
-        try {
-            NetworkServer.start(0, directory);
-            throw new AssertionError("Another process acquired the live storage directory");
-        } catch (final IOException occupied) {
-            if (!occupied.getMessage().contains("storage is already in use")) throw occupied;
-        }
-        if (!Files.exists(directory.resolve("watermedia/files/.upload-Live1234/partial.bin")))
-            throw new AssertionError("The competing process deleted a live upload");
-        System.out.println("PROBE_OK storage-lock");
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static int port() {
+        final InetSocketAddress address = NetworkServer.address();
+        assertNotNull(address);
+        return address.getPort();
     }
 
+    private static HttpURLConnection open(final String path, final String method) throws IOException {
+        final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:" + port() + path).toURL().openConnection();
+        connection.setConnectTimeout(2_000);
+        connection.setReadTimeout(4_000);
+        connection.setRequestMethod(method);
+        return connection;
+    }
+
+    private static HttpURLConnection upload(final String token, final String filename, final byte[] body) throws IOException {
+        final HttpURLConnection connection = open("/upload", "POST");
+        connection.setDoOutput(true);
+        connection.setRequestProperty(NetworkAPI.X_WATERMEDIA_TOKEN, token);
+        connection.setRequestProperty(NetworkAPI.X_WATERMEDIA_FILENAME, filename);
+        connection.setFixedLengthStreamingMode(body.length);
+        try (final OutputStream output = connection.getOutputStream()) { output.write(body); }
+        return connection;
+    }
+
+    private static Socket request(final String request) throws IOException {
+        final Socket socket = new Socket("127.0.0.1", port());
+        socket.setSoTimeout(4_000);
+        socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+        return socket;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Routing")
     class Routing {
@@ -255,7 +299,9 @@ public class NetworkServerTest {
     @Nested
     @DisplayName("Limits")
     class Limits {
-
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
         @BeforeEach
         void startRestricted() throws IOException {
             final var config = WaterMediaConfig.network;
@@ -586,6 +632,9 @@ public class NetworkServerTest {
             assertEquals(200, open("/", "GET").getResponseCode());
         }
 
+        // ======================================================================
+        // HELPERS
+        // ======================================================================
         private long temporaries() {
             try (final var paths = Files.list(NetworkServerTest.this.directory.resolve("watermedia/files"))) {
                 return paths.filter(path -> path.getFileName().toString().startsWith(".upload-")).count();
@@ -609,39 +658,5 @@ public class NetworkServerTest {
                 // A CONNECTION THE SERVER RESET IS DROPPED TOO
             }
         }
-    }
-
-    // UTILITY
-
-    private static int port() {
-        final InetSocketAddress address = NetworkServer.address();
-        assertNotNull(address);
-        return address.getPort();
-    }
-
-    private static HttpURLConnection open(final String path, final String method) throws IOException {
-        final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:" + port() + path).toURL().openConnection();
-        connection.setConnectTimeout(2_000);
-        connection.setReadTimeout(4_000);
-        connection.setRequestMethod(method);
-        return connection;
-    }
-
-    private static HttpURLConnection upload(final String token, final String filename, final byte[] body) throws IOException {
-        final HttpURLConnection connection = open("/upload", "POST");
-        connection.setDoOutput(true);
-        connection.setRequestProperty(NetworkAPI.X_WATERMEDIA_TOKEN, token);
-        connection.setRequestProperty(NetworkAPI.X_WATERMEDIA_FILENAME, filename);
-        connection.setFixedLengthStreamingMode(body.length);
-        try (final OutputStream output = connection.getOutputStream()) { output.write(body); }
-        return connection;
-    }
-
-    private static Socket request(final String request) throws IOException {
-        final Socket socket = new Socket("127.0.0.1", port());
-        socket.setSoTimeout(4_000);
-        socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
-        socket.getOutputStream().flush();
-        return socket;
     }
 }

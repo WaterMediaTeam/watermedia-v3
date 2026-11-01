@@ -37,6 +37,9 @@ public final class WaterMediaConfig {
 
     private WaterMediaConfig() {}
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     /** Settings of the house image codecs and the FFmpeg natives. */
     @Spec(value = "codecs", disableStatic = true)
     public static final class Codecs {
@@ -110,7 +113,7 @@ public final class WaterMediaConfig {
 
             @Spec.Field
             @Comment("Enables hardware-accelerated video decoding (NVDEC, QuickSync, D3D11VA, VAAPI...)")
-            @Comment("Disable if you experience stutter, lag or black video — software decoding is often smoother on some GPUs (notably AMD)")
+            @Comment("Disable if you experience stutter, lag or black video; software decoding is often smoother on some GPUs (notably AMD)")
             public boolean hardwareAccel = true;
 
             @Spec.Field(suffix = "packets", control = Control.SEEKBAR)
@@ -212,9 +215,6 @@ public final class WaterMediaConfig {
     /** Settings of the HTTP requests and the WaterMedia file servers. */
     @Spec(value = "network", disableStatic = true)
     public static final class Network {
-        /** Where the file storage server runs. */
-        public enum Server { OFF, DEDICATED, ALWAYS }
-
         @Spec.Field(control = Control.DROPDOWN)
         @Comment("Where the file storage server runs: OFF, DEDICATED (only on a dedicated server) or ALWAYS (also on clients)")
         @Comment("ALWAYS doesn't open the port by itself: forward it and point remoteUrl at your public IP or domain")
@@ -279,9 +279,12 @@ public final class WaterMediaConfig {
         public int maxRedirects = 10;
 
         @Spec.Field(suffix = "bytes")
-        @Comment("Hard cap (in bytes) for NetRequest text/JSON bodies — anything larger throws")
+        @Comment("Hard cap (in bytes) for NetRequest text/JSON bodies; anything larger throws")
         @NumberConditions(minInt = 1_024, math = true)
         public int maxTextBytes = 16 * 1_024 * 1_024;
+
+        /** Where the file storage server runs. */
+        public enum Server { OFF, DEDICATED, ALWAYS }
     }
 
     /** Internal bootstrap operation for the configuration facade. */

@@ -17,6 +17,10 @@ public final class CheckBox extends Element<CheckBox> {
     private Consumer<Boolean> onChange;
     private float scale = AppTheme.TEXT_BODY;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public CheckBox checked(final boolean value) {
         this.checked = value;
         return this;
@@ -43,6 +47,19 @@ public final class CheckBox extends Element<CheckBox> {
     }
 
     public boolean checked() { return this.checked; }
+
+    @Override
+    public boolean dispatchClick(final double mx, final double my) {
+        if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
+        this.checked = !this.checked;
+        this.invalidate();
+        if (this.onChange != null) this.onChange.accept(this.checked);
+        return true;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
@@ -74,14 +91,5 @@ public final class CheckBox extends Element<CheckBox> {
             canvas.text(this.label, boxX + BOX + GAP, this.top + (this.measuredHeight - th) / 2,
                     AppTheme.TEXT, this.scale, false);
         }
-    }
-
-    @Override
-    public boolean dispatchClick(final double mx, final double my) {
-        if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
-        this.checked = !this.checked;
-        this.invalidate();
-        if (this.onChange != null) this.onChange.accept(this.checked);
-        return true;
     }
 }

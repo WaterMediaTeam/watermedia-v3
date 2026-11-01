@@ -30,9 +30,9 @@ import static org.watermedia.tools.JSONTool.*;
 public final class OdyseePlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(OdyseePlatform.class.getSimpleName());
     public static final String NAME = "Odysee";
+    private static final String[] HOSTS = { "odysee.com", "www.odysee.com" };
     private static final String API = "https://api.na-backend.odysee.com/api/v1/proxy";
     private static final String LIVE_API = "https://api.odysee.live/livestream/is_live?channel_claim_id=";
-    private static final String[] HOSTS = { "odysee.com", "www.odysee.com" };
     // THE NSFW TAG LIST THE ODYSEE WEB CLIENT HIDES BEHIND ITS MATURE SWITCH (odysee-frontend ui/constants/tags.ts)
     private static final Set<String> MATURE_TAGS = Set.of("porn", "porno", "nsfw", "mature", "xxx", "sex", "creampie", "blowjob",
             "handjob", "boobs", "big boobs", "big dick", "pussy", "cumshot", "anal", "hard fucking", "ass", "fuck", "hentai");
@@ -52,6 +52,10 @@ public final class OdyseePlatform implements Platform {
         this.api = api;
         this.liveApi = liveApi;
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -143,6 +147,10 @@ public final class OdyseePlatform implements Platform {
         return new Resolution(null, new Source(type, thumbnail, metadata, headers, List.of(quality), null, null));
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     // ONE JSON-RPC CALL TO THE ODYSEE PROXY; AN error ENVELOPE OR A MISSING result FAILS THE RESOLUTION
     private JsonObject rpc(final String method, final Map<String, ?> params) throws PlatformException {
         final NetRequest request = new NetRequest(this.api + "?m=" + method).method("POST").accept(NetRequest.ACCEPT_JSON)
@@ -155,7 +163,9 @@ public final class OdyseePlatform implements Platform {
         return result;
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
 
     // lbry://[@channel#id/]name#id FROM AN odysee.com PATH, EMBED AND DOWNLOAD ROUTES INCLUDED; NULL FOR A CHANNEL,
     // A PLAYLIST OR ANY OTHER PAGE, WHICH NAME NO STREAM

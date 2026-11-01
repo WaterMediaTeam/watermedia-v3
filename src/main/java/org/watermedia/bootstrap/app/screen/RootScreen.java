@@ -6,6 +6,7 @@ import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.ParentFrame;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.screen.Screen.Keybind;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 
 import java.util.List;
@@ -52,9 +53,13 @@ public final class RootScreen {
         this.tree.attach(ctx);
     }
 
+    // ==========================================================================
+    // PUBLIC API: RENDER AND MOUNT
+    // ==========================================================================
+
     /** Updates, measures, lays out and draws the tree in logical pixels; with {@code cache} it fills the engine's layers and composites them. */
     public void render(final int logicalW, final int logicalH, final boolean cache) {
-        // BINDINGS FIRST — onUpdate HOOKS PULL LIVE STATE INTO THE TREE BEFORE IT IS MEASURED
+        // BINDINGS FIRST: onUpdate HOOKS PULL LIVE STATE INTO THE TREE BEFORE IT IS MEASURED
         this.tree.update();
         RenderSystem.setupOrtho(logicalW, logicalH);
         this.tree.measure(logicalW, logicalH);
@@ -135,7 +140,10 @@ public final class RootScreen {
         return this.captured != null;
     }
 
-    // ==== INPUT ENTRY POINTS ====
+    // ==========================================================================
+    // PUBLIC API: INPUT ENTRY POINTS
+    // ==========================================================================
+
     // A PRESS CAPTURES THE POINTER AND A REAL DRAG SUPPRESSES THE NEXT CLICK
 
     public boolean press(final double mx, final double my) {
@@ -186,6 +194,10 @@ public final class RootScreen {
     public boolean character(final int codepoint) {
         return this.tree.dispatchChar(codepoint);
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private void releaseCapture() {
         // A SLOT SWAP MUST NOT LEAVE A DETACHED ELEMENT HOLDING THE POINTER

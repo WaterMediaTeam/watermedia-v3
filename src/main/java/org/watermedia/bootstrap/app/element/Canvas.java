@@ -35,12 +35,13 @@ public final class Canvas {
     private boolean deferring;
     private int raisedAt = -1;
 
-    // A PAINTER WITH THE CLIP AND FADE ACTIVE WHERE THE TREE REACHED IT
-    private record Live(Consumer<Canvas> painter, boolean clipped, int left, int top, int right, int bottom, float alpha) {}
-
     public Canvas(final TextRenderer text) {
         this.text = text;
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** Starts a tree pass; a cached one defers the live painters to {@link #paintLive} instead of drawing them. */
     public void beginTree(final boolean cached) {
@@ -305,9 +306,20 @@ public final class Canvas {
                 this.clipStack[at + 3] - this.clipStack[at + 1], this.windowHeight);
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     private Color mul(final Color c) {
         // THE GLOBAL ALPHA MULTIPLIER; IDENTITY (NO ALLOCATION) WHEN NO FADE IS ACTIVE
         if (c == null || this.alpha >= 1f) return c;
         return new Color(c.getRed(), c.getGreen(), c.getBlue(), Math.round(c.getAlpha() * this.alpha));
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    // A PAINTER WITH THE CLIP AND FADE ACTIVE WHERE THE TREE REACHED IT
+    private record Live(Consumer<Canvas> painter, boolean clipped, int left, int top, int right, int bottom, float alpha) {}
 }

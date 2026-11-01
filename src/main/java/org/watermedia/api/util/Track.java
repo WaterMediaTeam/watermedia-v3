@@ -6,7 +6,7 @@ import org.watermedia.api.platform.Platform;
 import java.net.URI;
 
 /**
- * A secondary track attached to a media source — an alternate audio stream or a subtitle file.
+ * A secondary track attached to a media source: an alternate audio stream or a subtitle file.
  * Shared by the platform layer ({@link Platform.Source}) and {@link MRL.Source}.
  *
  * @param name display name for the track (e.g. "English"), or null when the platform gives none

@@ -151,6 +151,9 @@ public class VKEngineTest {
     private static VkPhysicalDeviceVulkan13Features vulkan13Enabled;
     private static boolean decoding, shareable, filters;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @BeforeAll
     static void open() {
         MediaBootstrap.client();
@@ -318,7 +321,7 @@ public class VKEngineTest {
             renderer = new Renderer(new VKContext.DeviceInfo(features, instanceNames, enabled, counts));
         } catch (final RuntimeException | LinkageError e) {
             close();
-            assumeTrue(false, "No usable Vulkan 1.1 device — skipping: " + e);
+            assumeTrue(false, "No usable Vulkan 1.1 device, skipping: " + e);
         } catch (final OutOfMemoryError e) {
             // LWJGL REPORTS AN EXHAUSTED THREAD STACK AS AN OOM, WHICH ABORTS THE WHOLE TEST RUN: new VkInstance LISTS EVERY
             // DEVICE EXTENSION ON THAT STACK, AND SOME DRIVERS ADVERTISE MORE THAN ITS DEFAULT 64 KiB HOLD
@@ -361,6 +364,192 @@ public class VKEngineTest {
         assertTrue(errors.isEmpty(), "Vulkan validation errors: " + errors);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // A DEVICE ON THE SUITE'S GPU THAT LENDS FFMPEG NO QUEUE: THE SUITE'S FEATURE CHAIN AND EXTENSIONS PLUS THE EXTERNAL ONES, BUT ONLY THE
+    // RENDER QUEUE, SO AN ENGINE ON IT DECODES ON A TWIN AND IMPORTS EVERY DECODED IMAGE
+    private static Renderer bare() {
+        final List<String> extensions = new ArrayList<>(renderer.deviceInfo().deviceExtensions());
+        extensions.addAll(EXTERNAL);
+        final int[] counts = new int[renderer.deviceInfo().queueCounts().length];
+        counts[family] = 1;
+        return new Renderer(new VKContext.DeviceInfo(features, renderer.deviceInfo().instanceExtensions(), extensions, counts));
+    }
+
+    // A 64x32 NV12 POOL ON deviceRef AND ITS FIRST FRAME, HOLDING A 60x30 PICTURE FILLED THE WAY FFMPEG UPLOADS SOFTWARE FRAMES INTO IT: Y 120,
+    // Cb 90, Cr 200 INSIDE THE PICTURE AND BLACK PADDING BEYOND IT, OR THE PICTURE'S COLOR AS AN ENCODER'S EDGE EXTENSION WHEN NOT black.
+    // THE CALLER UNREFERENCES THE POOL AND FREES BOTH FRAMES
+    private static AVBufferRef picture(final AVBufferRef deviceRef, final AVFrame hw, final AVFrame sw, final boolean black) {
+        final int w = 64, h = 32, visibleW = 60, visibleH = 30;
+        final AVBufferRef framesRef = av_hwframe_ctx_alloc(deviceRef);
+        final AVHWFramesContext fc = new AVHWFramesContext(framesRef.data());
+        fc.format(AV_PIX_FMT_VULKAN).sw_format(AV_PIX_FMT_NV12).width(w).height(h).initial_pool_size(2);
+        assertTrue(av_hwframe_ctx_init(framesRef) >= 0, "the device allocates NV12 pools");
+        assertTrue(av_hwframe_get_buffer(framesRef, hw, 0) >= 0, "a pool frame");
+        sw.format(AV_PIX_FMT_NV12).width(w).height(h);
+        assertTrue(av_frame_get_buffer(sw, 0) >= 0, "a software frame");
+        for (int row = 0; row < h; row++)
+            for (int col = 0; col < w; col++) {
+                final boolean inside = !black || row < visibleH && col < visibleW;
+                sw.data(0).put((long) row * sw.linesize(0) + col, (byte) (inside ? 120 : 16));
+            }
+        for (int row = 0; row < h / 2; row++)
+            for (int col = 0; col < w / 2; col++) {
+                final boolean inside = !black || row < visibleH / 2 && col < visibleW / 2;
+                sw.data(1).put((long) row * sw.linesize(1) + col * 2L, (byte) (inside ? 90 : 128));
+                sw.data(1).put((long) row * sw.linesize(1) + col * 2L + 1, (byte) (inside ? 200 : 128));
+            }
+        assertTrue(av_hwframe_transfer_data(hw, sw, 0) >= 0, "the upload into the pool frame");
+        hw.width(visibleW).height(visibleH);
+        return framesRef;
+    }
+
+    // THE ENGINE SAMPLES THE FRAME OF picture AT FULL AND HALF SIZE, READ BACK THROUGH on
+    private static void poolFrame(final Renderer on, final VKEngine engine, final AVBufferRef deviceRef) {
+        final int visibleW = 60, visibleH = 30;
+        final AVFrame hw = av_frame_alloc(), sw = av_frame_alloc();
+        final AVBufferRef framesRef = picture(deviceRef, hw, sw, true);
+        try {
+            assertTrue(engine.samples(hw), "the engine samples the pool's frames instead of bringing them down to RAM");
+
+            // THE LAST COLUMN AND ROW BLEND THEIR CHROMA WITH THE PADDING, AS AN ENCODER'S EDGE EXTENSION WOULD HIDE; EVERY
+            // OTHER PIXEL IS THE PICTURE, WHICH WITHOUT THE CROP WOULD ALREADY SAMPLE THE PADDING FROM COLUMN 56 ON
+            final int[] bt601 = YuvFrames.rgb(KR_601, KB_601, false, 8, 120, 90, 200);
+            for (final int divisor: new int[] { 1, 2 }) {
+                final int outW = visibleW / divisor, outH = visibleH / divisor;
+                assertTrue(engine.format(PixelFormat.NV12, outW, outH, 8, BT601_LIMITED));
+                // HANDED OVER AS THE PLAYER DOES, THEN READ BACK ONCE texture() PUBLISHES IT
+                final long before = engine.texture();
+                engine.upload(hw);
+                assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
+                        "the decoded frame was published within the timeout");
+                System.out.println("[VKEngineTest] decoded frame " + outW + "x" + outH + " -> " + ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute"));
+                final ByteBuffer rgba = on.readback(engine.texture(), outW, outH);
+                for (int y = 0; y < outH - 1; y++)
+                    for (int x = 0; x < outW - 1; x++)
+                        for (int c = 0; c < 3; c++) {
+                            final int shown = rgba.get((y * outW + x) * 4 + c) & 0xFF;
+                            assertTrue(Math.abs(shown - bt601[c]) <= 3, "1/" + divisor + " size: pixel " + x + "," + y + " channel " + c + " shows " + shown + " instead of " + bt601[c]);
+                        }
+            }
+            assertEquals(2L, (long) field(engine, "decodedFrames"));
+        } finally {
+            // THE ENGINE KEEPS ITS OWN REFERENCES TO THE FRAME AND ITS POOL UNTIL IT IS RELEASED
+            av_frame_free(hw);
+            av_frame_free(sw);
+            if (framesRef != null) av_buffer_unref(framesRef);
+        }
+    }
+
+    // THE EDGE-EXTENDED FRAME OF picture, TAGGED BT.709 LIMITED AND MARKED INTERLACED (WHICH MUST NOT STALL THE GRAPH), THROUGH THE DECODER'S LIBPLACEBO
+    // GRAPH: THE RGBA IT SENDS HAS THE PICTURE'S SIZE, AND THE ENGINE SHOWS IT AT FULL AND HALF SIZE WITH THE PICTURE'S BT.709 COLOR, READ BACK THROUGH on
+    private static void placeboFrame(final Renderer on, final VKEngine engine, final AVBufferRef deviceRef) {
+        final int visibleW = 60, visibleH = 30;
+        final AVFrame hw = av_frame_alloc(), sw = av_frame_alloc(), out = av_frame_alloc();
+        final AVBufferRef framesRef = picture(deviceRef, hw, sw, false);
+        Placebo placebo = null;
+        try {
+            hw.colorspace(AVCOL_SPC_BT709).color_range(AVCOL_RANGE_MPEG).color_primaries(AVCOL_PRI_BT709).color_trc(AVCOL_TRC_BT709)
+                    .flags(hw.flags() | AV_FRAME_FLAG_INTERLACED);
+            placebo = Placebo.open(hw, deviceRef, av_make_q(1, 25));
+            // ONE FRAME COMES OUT ONCE THE NEXT ONE GOES IN, THE LAST ONE ON THE FLUSH (IT NEEDS ITS DURATION); THE GRAPH TAKES EACH PUSHED REFERENCE
+            for (int pts = 0; pts < 2; pts++) {
+                final AVFrame copy = av_frame_clone(hw);
+                copy.pts(pts).duration(1);
+                assertTrue(placebo.push(copy) >= 0, "libplacebo takes the decoded frame");
+                av_frame_free(copy);
+            }
+            assertTrue(placebo.pull(out) >= 0, "libplacebo sends the first frame once the second arrives");
+            av_frame_unref(out);
+            assertTrue(placebo.push(null) >= 0, "libplacebo takes the flush");
+            assertTrue(placebo.pull(out) >= 0, "libplacebo sends the last frame on the flush");
+            assertEquals(AV_PIX_FMT_VULKAN, out.format(), "the frame stays on the GPU");
+            assertEquals(AV_PIX_FMT_RGBA, new AVHWFramesContext(out.hw_frames_ctx().data()).sw_format(), "libplacebo sends RGBA");
+            assertEquals(visibleW, out.width(), "the picture's width, without the pool's padding");
+            assertEquals(visibleH, out.height(), "the picture's height, without the pool's padding");
+            assertTrue(engine.samples(out), "the engine samples libplacebo's frames instead of bringing them down to RAM");
+
+            // LIBPLACEBO DITHERS ITS 8-BIT OUTPUT, SO EACH CHANNEL MAY SIT A CODE OR TWO OFF THE EXACT CONVERSION
+            final int[] bt709 = YuvFrames.rgb(KR_709, KB_709, false, 8, 120, 90, 200);
+            for (final int divisor: new int[] { 1, 2 }) {
+                final int outW = visibleW / divisor, outH = visibleH / divisor;
+                assertTrue(engine.format(PixelFormat.RGBA, outW, outH, 8, Colorimetry.guess(PixelFormat.RGBA, outW, outH)));
+                final long before = engine.texture();
+                engine.upload(out);
+                assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
+                        "the filtered frame was published within the timeout");
+                final ByteBuffer rgba = on.readback(engine.texture(), outW, outH);
+                for (int y = 0; y < outH; y++)
+                    for (int x = 0; x < outW; x++)
+                        for (int c = 0; c < 3; c++) {
+                            final int shown = rgba.get((y * outW + x) * 4 + c) & 0xFF;
+                            assertTrue(Math.abs(shown - bt709[c]) <= 3, "1/" + divisor + " size: pixel " + x + "," + y + " channel " + c + " shows " + shown + " instead of " + bt709[c]);
+                        }
+            }
+            assertEquals(2L, (long) field(engine, "decodedFrames"));
+        } finally {
+            // THE ENGINE KEEPS ITS OWN REFERENCES TO THE FRAME AND ITS POOL UNTIL IT IS RELEASED
+            if (placebo != null) placebo.close();
+            av_frame_free(out);
+            av_frame_free(hw);
+            av_frame_free(sw);
+            av_buffer_unref(framesRef);
+        }
+    }
+
+    // UPLOADS ONE FRAME AS A PRODUCER DOES (ALIGNED COPIES WHEN THE ENGINE CAN IMPORT THEM), WAITS FOR texture() TO PUBLISH
+    // IT AND READS THE PUBLISHED VIEW BACK AS RGBA BYTES, ROW 0 FIRST
+    private static ByteBuffer frame(final VKEngine engine, final ByteBuffer[] planes, final int[] strides) {
+        final long before = engine.texture();
+        final int align = engine.alignment();
+        final ByteBuffer[] sent = planes.clone();
+        for (int i = 0; i < planes.length && align > 0; i++) {
+            sent[i] = memAlignedAlloc(align, (planes[i].remaining() + align - 1) / align * align);
+            memCopy(planes[i], sent[i]);
+            ALIGNED.add(sent[i]);
+        }
+        engine.upload(sent, strides);
+        assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
+                "the frame was published within the timeout");
+        final long view = engine.texture();
+
+        final String route = ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute") + ", "
+                + (((Map<?, ?>) field(engine, "importCache")).isEmpty() ? "staging" : "host import");
+        final Object ctx = field(engine, "ctx");
+        System.out.println("[VKEngineTest] " + ctx + " " + engine.format() + " " + engine.width() + "x" + engine.height()
+                + " " + engine.bits() + "-bit " + engine.color + " -> " + route);
+        if (ctx == Features.FALLBACK) assertEquals("compute, staging", route, "the fallback context forces the compute shader and staging copies");
+        return renderer.readback(view, engine.width(), engine.height());
+    }
+
+    // RELEASES AN ENGINE LIKE ITS RENDERER: RETIRED OBJECTS DIE ONCE THE DEVICE IT WAS LENT IS IDLE (A FEATURES CONTEXT LENDS THE
+    // SUITE'S), AND ONLY THEN THE IMPORTED PLANES
+    private static void release(final VKEngine engine) {
+        engine.release();
+        (field(engine, "ctx") instanceof final Renderer lent ? lent : renderer).idle();
+        for (final ByteBuffer plane: ALIGNED) memAlignedFree(plane);
+        ALIGNED.clear();
+    }
+
+    // READS A PRIVATE FIELD OF THE ENGINE: ITS ROUTE AND IMPORT STATE ARE NOT PART OF THE API
+    private static Object field(final VKEngine engine, final String member) {
+        try {
+            final Field field = VKEngine.class.getDeclaredField(member);
+            field.setAccessible(true);
+            return field.get(engine);
+        } catch (final ReflectiveOperationException e) {
+            throw new AssertionError("VKEngine has no field " + member, e);
+        }
+    }
+
+    private static void check(final int result, final String op) {
+        if (result != VK_SUCCESS) throw new IllegalStateException(op + " failed (VkResult " + result + ")");
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     // THE SUITE'S DEVICE AS ITS RENDERER LENDS IT: DEVICE OFFERS EVERY FEATURE IT HAS, FALLBACK HIDES THE YCBCR SAMPLER AND HOST
     // IMPORT SO EVERY FRAME TAKES THE COMPUTE SHADER AND STAGING COPIES
     enum Features implements VKContext {
@@ -477,6 +666,9 @@ public class VKEngineTest {
             }
         }
 
+        // ======================================================================
+        // PUBLIC API
+        // ======================================================================
         @Override public VkInstance vkInstance() { return instance; }
         @Override public VkPhysicalDevice physicalDevice() { return physical; }
         @Override public VkDevice vkDevice() { return this.device; }
@@ -490,6 +682,9 @@ public class VKEngineTest {
         @Override public void retire(final Runnable destroy) { this.retired.add(destroy); }
         @Override public DeviceInfo deviceInfo() { return this.info; }
 
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
         // SAMPLES THE VIEW WITH THE READBACK PIPELINE INTO A HOST-VISIBLE BUFFER AND RETURNS ITS RGBA BYTES
         ByteBuffer readback(final long view, final int width, final int height) {
             final int bytes = width * height * 4;
@@ -1045,187 +1240,5 @@ public class VKEngineTest {
                 lone.close();
             }
         }
-    }
-
-    // UTILITY
-
-    // A DEVICE ON THE SUITE'S GPU THAT LENDS FFMPEG NO QUEUE: THE SUITE'S FEATURE CHAIN AND EXTENSIONS PLUS THE EXTERNAL ONES, BUT ONLY THE
-    // RENDER QUEUE, SO AN ENGINE ON IT DECODES ON A TWIN AND IMPORTS EVERY DECODED IMAGE
-    private static Renderer bare() {
-        final List<String> extensions = new ArrayList<>(renderer.deviceInfo().deviceExtensions());
-        extensions.addAll(EXTERNAL);
-        final int[] counts = new int[renderer.deviceInfo().queueCounts().length];
-        counts[family] = 1;
-        return new Renderer(new VKContext.DeviceInfo(features, renderer.deviceInfo().instanceExtensions(), extensions, counts));
-    }
-
-    // A 64x32 NV12 POOL ON deviceRef AND ITS FIRST FRAME, HOLDING A 60x30 PICTURE FILLED THE WAY FFMPEG UPLOADS SOFTWARE FRAMES INTO IT: Y 120,
-    // Cb 90, Cr 200 INSIDE THE PICTURE AND BLACK PADDING BEYOND IT, OR THE PICTURE'S COLOR AS AN ENCODER'S EDGE EXTENSION WHEN NOT black.
-    // THE CALLER UNREFERENCES THE POOL AND FREES BOTH FRAMES
-    private static AVBufferRef picture(final AVBufferRef deviceRef, final AVFrame hw, final AVFrame sw, final boolean black) {
-        final int w = 64, h = 32, visibleW = 60, visibleH = 30;
-        final AVBufferRef framesRef = av_hwframe_ctx_alloc(deviceRef);
-        final AVHWFramesContext fc = new AVHWFramesContext(framesRef.data());
-        fc.format(AV_PIX_FMT_VULKAN).sw_format(AV_PIX_FMT_NV12).width(w).height(h).initial_pool_size(2);
-        assertTrue(av_hwframe_ctx_init(framesRef) >= 0, "the device allocates NV12 pools");
-        assertTrue(av_hwframe_get_buffer(framesRef, hw, 0) >= 0, "a pool frame");
-        sw.format(AV_PIX_FMT_NV12).width(w).height(h);
-        assertTrue(av_frame_get_buffer(sw, 0) >= 0, "a software frame");
-        for (int row = 0; row < h; row++)
-            for (int col = 0; col < w; col++) {
-                final boolean inside = !black || row < visibleH && col < visibleW;
-                sw.data(0).put((long) row * sw.linesize(0) + col, (byte) (inside ? 120 : 16));
-            }
-        for (int row = 0; row < h / 2; row++)
-            for (int col = 0; col < w / 2; col++) {
-                final boolean inside = !black || row < visibleH / 2 && col < visibleW / 2;
-                sw.data(1).put((long) row * sw.linesize(1) + col * 2L, (byte) (inside ? 90 : 128));
-                sw.data(1).put((long) row * sw.linesize(1) + col * 2L + 1, (byte) (inside ? 200 : 128));
-            }
-        assertTrue(av_hwframe_transfer_data(hw, sw, 0) >= 0, "the upload into the pool frame");
-        hw.width(visibleW).height(visibleH);
-        return framesRef;
-    }
-
-    // THE ENGINE SAMPLES THE FRAME OF picture AT FULL AND HALF SIZE, READ BACK THROUGH on
-    private static void poolFrame(final Renderer on, final VKEngine engine, final AVBufferRef deviceRef) {
-        final int visibleW = 60, visibleH = 30;
-        final AVFrame hw = av_frame_alloc(), sw = av_frame_alloc();
-        final AVBufferRef framesRef = picture(deviceRef, hw, sw, true);
-        try {
-            assertTrue(engine.samples(hw), "the engine samples the pool's frames instead of bringing them down to RAM");
-
-            // THE LAST COLUMN AND ROW BLEND THEIR CHROMA WITH THE PADDING, AS AN ENCODER'S EDGE EXTENSION WOULD HIDE; EVERY
-            // OTHER PIXEL IS THE PICTURE, WHICH WITHOUT THE CROP WOULD ALREADY SAMPLE THE PADDING FROM COLUMN 56 ON
-            final int[] bt601 = YuvFrames.rgb(KR_601, KB_601, false, 8, 120, 90, 200);
-            for (final int divisor: new int[] { 1, 2 }) {
-                final int outW = visibleW / divisor, outH = visibleH / divisor;
-                assertTrue(engine.format(PixelFormat.NV12, outW, outH, 8, BT601_LIMITED));
-                // HANDED OVER AS THE PLAYER DOES, THEN READ BACK ONCE texture() PUBLISHES IT
-                final long before = engine.texture();
-                engine.upload(hw);
-                assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
-                        "the decoded frame was published within the timeout");
-                System.out.println("[VKEngineTest] decoded frame " + outW + "x" + outH + " -> " + ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute"));
-                final ByteBuffer rgba = on.readback(engine.texture(), outW, outH);
-                for (int y = 0; y < outH - 1; y++)
-                    for (int x = 0; x < outW - 1; x++)
-                        for (int c = 0; c < 3; c++) {
-                            final int shown = rgba.get((y * outW + x) * 4 + c) & 0xFF;
-                            assertTrue(Math.abs(shown - bt601[c]) <= 3, "1/" + divisor + " size: pixel " + x + "," + y + " channel " + c + " shows " + shown + " instead of " + bt601[c]);
-                        }
-            }
-            assertEquals(2L, (long) field(engine, "decodedFrames"));
-        } finally {
-            // THE ENGINE KEEPS ITS OWN REFERENCES TO THE FRAME AND ITS POOL UNTIL IT IS RELEASED
-            av_frame_free(hw);
-            av_frame_free(sw);
-            if (framesRef != null) av_buffer_unref(framesRef);
-        }
-    }
-
-    // THE EDGE-EXTENDED FRAME OF picture, TAGGED BT.709 LIMITED AND MARKED INTERLACED (WHICH MUST NOT STALL THE GRAPH), THROUGH THE DECODER'S LIBPLACEBO
-    // GRAPH: THE RGBA IT SENDS HAS THE PICTURE'S SIZE, AND THE ENGINE SHOWS IT AT FULL AND HALF SIZE WITH THE PICTURE'S BT.709 COLOR, READ BACK THROUGH on
-    private static void placeboFrame(final Renderer on, final VKEngine engine, final AVBufferRef deviceRef) {
-        final int visibleW = 60, visibleH = 30;
-        final AVFrame hw = av_frame_alloc(), sw = av_frame_alloc(), out = av_frame_alloc();
-        final AVBufferRef framesRef = picture(deviceRef, hw, sw, false);
-        Placebo placebo = null;
-        try {
-            hw.colorspace(AVCOL_SPC_BT709).color_range(AVCOL_RANGE_MPEG).color_primaries(AVCOL_PRI_BT709).color_trc(AVCOL_TRC_BT709)
-                    .flags(hw.flags() | AV_FRAME_FLAG_INTERLACED);
-            placebo = Placebo.open(hw, deviceRef, av_make_q(1, 25));
-            // ONE FRAME COMES OUT ONCE THE NEXT ONE GOES IN, THE LAST ONE ON THE FLUSH (IT NEEDS ITS DURATION); THE GRAPH TAKES EACH PUSHED REFERENCE
-            for (int pts = 0; pts < 2; pts++) {
-                final AVFrame copy = av_frame_clone(hw);
-                copy.pts(pts).duration(1);
-                assertTrue(placebo.push(copy) >= 0, "libplacebo takes the decoded frame");
-                av_frame_free(copy);
-            }
-            assertTrue(placebo.pull(out) >= 0, "libplacebo sends the first frame once the second arrives");
-            av_frame_unref(out);
-            assertTrue(placebo.push(null) >= 0, "libplacebo takes the flush");
-            assertTrue(placebo.pull(out) >= 0, "libplacebo sends the last frame on the flush");
-            assertEquals(AV_PIX_FMT_VULKAN, out.format(), "the frame stays on the GPU");
-            assertEquals(AV_PIX_FMT_RGBA, new AVHWFramesContext(out.hw_frames_ctx().data()).sw_format(), "libplacebo sends RGBA");
-            assertEquals(visibleW, out.width(), "the picture's width, without the pool's padding");
-            assertEquals(visibleH, out.height(), "the picture's height, without the pool's padding");
-            assertTrue(engine.samples(out), "the engine samples libplacebo's frames instead of bringing them down to RAM");
-
-            // LIBPLACEBO DITHERS ITS 8-BIT OUTPUT, SO EACH CHANNEL MAY SIT A CODE OR TWO OFF THE EXACT CONVERSION
-            final int[] bt709 = YuvFrames.rgb(KR_709, KB_709, false, 8, 120, 90, 200);
-            for (final int divisor: new int[] { 1, 2 }) {
-                final int outW = visibleW / divisor, outH = visibleH / divisor;
-                assertTrue(engine.format(PixelFormat.RGBA, outW, outH, 8, Colorimetry.guess(PixelFormat.RGBA, outW, outH)));
-                final long before = engine.texture();
-                engine.upload(out);
-                assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
-                        "the filtered frame was published within the timeout");
-                final ByteBuffer rgba = on.readback(engine.texture(), outW, outH);
-                for (int y = 0; y < outH; y++)
-                    for (int x = 0; x < outW; x++)
-                        for (int c = 0; c < 3; c++) {
-                            final int shown = rgba.get((y * outW + x) * 4 + c) & 0xFF;
-                            assertTrue(Math.abs(shown - bt709[c]) <= 3, "1/" + divisor + " size: pixel " + x + "," + y + " channel " + c + " shows " + shown + " instead of " + bt709[c]);
-                        }
-            }
-            assertEquals(2L, (long) field(engine, "decodedFrames"));
-        } finally {
-            // THE ENGINE KEEPS ITS OWN REFERENCES TO THE FRAME AND ITS POOL UNTIL IT IS RELEASED
-            if (placebo != null) placebo.close();
-            av_frame_free(out);
-            av_frame_free(hw);
-            av_frame_free(sw);
-            av_buffer_unref(framesRef);
-        }
-    }
-
-    // UPLOADS ONE FRAME AS A PRODUCER DOES (ALIGNED COPIES WHEN THE ENGINE CAN IMPORT THEM), WAITS FOR texture() TO PUBLISH
-    // IT AND READS THE PUBLISHED VIEW BACK AS RGBA BYTES, ROW 0 FIRST
-    private static ByteBuffer frame(final VKEngine engine, final ByteBuffer[] planes, final int[] strides) {
-        final long before = engine.texture();
-        final int align = engine.alignment();
-        final ByteBuffer[] sent = planes.clone();
-        for (int i = 0; i < planes.length && align > 0; i++) {
-            sent[i] = memAlignedAlloc(align, (planes[i].remaining() + align - 1) / align * align);
-            memCopy(planes[i], sent[i]);
-            ALIGNED.add(sent[i]);
-        }
-        engine.upload(sent, strides);
-        assertTrue(PlayerWait.awaitCondition(() -> engine.texture() != before, TimeUnit.NANOSECONDS.toMillis(FRAME_TIMEOUT_NS)),
-                "the frame was published within the timeout");
-        final long view = engine.texture();
-
-        final String route = ((int) field(engine, "ycbcrFmt") != 0 ? "YCbCr sampler" : "compute") + ", "
-                + (((Map<?, ?>) field(engine, "importCache")).isEmpty() ? "staging" : "host import");
-        final Object ctx = field(engine, "ctx");
-        System.out.println("[VKEngineTest] " + ctx + " " + engine.format() + " " + engine.width() + "x" + engine.height()
-                + " " + engine.bits() + "-bit " + engine.color + " -> " + route);
-        if (ctx == Features.FALLBACK) assertEquals("compute, staging", route, "the fallback context forces the compute shader and staging copies");
-        return renderer.readback(view, engine.width(), engine.height());
-    }
-
-    // RELEASES AN ENGINE LIKE ITS RENDERER: RETIRED OBJECTS DIE ONCE THE DEVICE IT WAS LENT IS IDLE (A FEATURES CONTEXT LENDS THE
-    // SUITE'S), AND ONLY THEN THE IMPORTED PLANES
-    private static void release(final VKEngine engine) {
-        engine.release();
-        (field(engine, "ctx") instanceof final Renderer lent ? lent : renderer).idle();
-        for (final ByteBuffer plane: ALIGNED) memAlignedFree(plane);
-        ALIGNED.clear();
-    }
-
-    // READS A PRIVATE FIELD OF THE ENGINE: ITS ROUTE AND IMPORT STATE ARE NOT PART OF THE API
-    private static Object field(final VKEngine engine, final String member) {
-        try {
-            final Field field = VKEngine.class.getDeclaredField(member);
-            field.setAccessible(true);
-            return field.get(engine);
-        } catch (final ReflectiveOperationException e) {
-            throw new AssertionError("VKEngine has no field " + member, e);
-        }
-    }
-
-    private static void check(final int result, final String op) {
-        if (result != VK_SUCCESS) throw new IllegalStateException(op + " failed (VkResult " + result + ")");
     }
 }

@@ -22,7 +22,7 @@ public class MasterClockTest {
     private static final long ADVANCE_MS = 20L; // WALL-CLOCK TIME THAT LETS PLAYING TIME DIVERGE FROM ZERO BEFORE A READ
 
     // ==========================================================================
-    // STATE MACHINE TESTS
+    // NESTED TYPES: STATE MACHINE TESTS
     // ==========================================================================
 
     @Nested
@@ -153,7 +153,7 @@ public class MasterClockTest {
     }
 
     // ==========================================================================
-    // SEEK LIFECYCLE TESTS
+    // NESTED TYPES: SEEK LIFECYCLE TESTS
     // ==========================================================================
 
     @Nested
@@ -204,7 +204,7 @@ public class MasterClockTest {
             assertFalse(clock.requestSeek(1L, true), "WAITING");
             clock.start();
             assertTrue(clock.transition(Status.ENDED));
-            assertFalse(clock.requestSeek(1L, true), "ENDED has no pipeline — the player restarts instead");
+            assertFalse(clock.requestSeek(1L, true), "ENDED has no pipeline: the player restarts instead");
             assertEquals(Status.ENDED, clock.status());
         }
 
@@ -226,7 +226,7 @@ public class MasterClockTest {
     }
 
     // ==========================================================================
-    // SPEED / TIME LINEARITY TESTS
+    // NESTED TYPES: SPEED AND TIME LINEARITY TESTS
     // ==========================================================================
 
     @Nested

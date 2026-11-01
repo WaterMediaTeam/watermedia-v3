@@ -24,6 +24,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class DTubePlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(DTubePlatform.class.getSimpleName());
     public static final String NAME = "D.tube";
+    private static final String[] HOSTS = { "d.tube", "www.d.tube" };
     private static final String ORIGIN = "https://d.tube";
     private static final Pattern VIDEO_URL = Pattern.compile("video_url:\\s*\"([^\"]+)\"");
     private static final Pattern THUMBNAIL_URL = Pattern.compile("thumbnail_url:\\s*\"([^\"]+)\"");
@@ -32,9 +33,12 @@ public final class DTubePlatform implements Platform {
     private static final Pattern DURATION = Pattern.compile("duration:\\s*(\\d+)");
     private static final Pattern CREATED_AT = Pattern.compile("created_at:\\s*\"([^\"]+)\"");
     private static final Pattern USERNAME = Pattern.compile("username:\\s*\"([^\"]+)\"");
-    private static final String[] HOSTS = { "d.tube", "www.d.tube" };
     // THE CDN LINKS ARE SIGNED WITH A LIFETIME D.tube DOES NOT PUBLISH
     private static final Duration TTL = Duration.ofMinutes(30);
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -85,6 +89,10 @@ public final class DTubePlatform implements Platform {
             throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
 
     private static String extract(final String html, final Pattern pattern) {
         final Matcher m = pattern.matcher(html);

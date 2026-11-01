@@ -20,12 +20,6 @@ public class ListRow extends Group<ListRow> {
     public static final int CENTER = Integer.MIN_VALUE;
     private static final Color SEPARATOR = AppTheme.alpha(AppTheme.STROKE_BRIGHT, 90);
 
-    /** Paints a custom part of the row, such as a thumbnail or a tag, into the row's box. */
-    @FunctionalInterface
-    public interface Mark {
-        void paint(Canvas canvas, ListRow row, int x, int y, int w, int h);
-    }
-
     // FRAME BY STATE; A null COLOR IS NOT PAINTED
     private Color fill;
     private Color hoverFill;
@@ -80,8 +74,9 @@ public class ListRow extends Group<ListRow> {
     private int separatorX = -1;
     private boolean separator = true;
 
-    // A CHILD AND WHERE IT SITS: x FROM THE LEFT EDGE, OR FROM THE RIGHT ONE WHEN NEGATIVE
-    private record Placement(Element<?> child, int x, int y) {}
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** Sets the fill at rest, while hovered and while selected; a null one falls back to the rest fill or to none. */
     public ListRow fill(final Color normal, final Color hovered, final Color selected) {
@@ -237,6 +232,10 @@ public class ListRow extends Group<ListRow> {
         return this.titleEnd;
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @Override
     protected void onUpdate() {
         if (this.binder != null) this.binder.accept(this);
@@ -293,6 +292,10 @@ public class ListRow extends Group<ListRow> {
         }
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     private void paintTexts(final Canvas canvas, final boolean sel, final int x, final int y, final int w, final int h) {
         // TITLE (WITH ITS PREFIX), SUBTITLE AND DETAIL; THE TITLE AND SUBTITLE SHARE ONE WIDTH BUDGET
         final int maxW = Math.max(this.titleMin, w - this.titleRight - this.textX);
@@ -332,4 +335,17 @@ public class ListRow extends Group<ListRow> {
             }
         }
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    /** Paints a custom part of the row, such as a thumbnail or a tag, into the row's box. */
+    @FunctionalInterface
+    public interface Mark {
+        void paint(Canvas canvas, ListRow row, int x, int y, int w, int h);
+    }
+
+    // A CHILD AND WHERE IT SITS: x FROM THE LEFT EDGE, OR FROM THE RIGHT ONE WHEN NEGATIVE
+    private record Placement(Element<?> child, int x, int y) {}
 }

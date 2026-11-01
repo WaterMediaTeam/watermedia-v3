@@ -17,6 +17,9 @@ final class BitReader {
         this.buf = buffer.slice().order(ByteOrder.LITTLE_ENDIAN);
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // PEEKS UP TO 24 BITS WITHOUT CONSUMING THEM; NEAR EOF THE MISSING HIGH BITS READ AS ZERO
     int peek(final int bits) throws CodecException {
         if (bits == 0) return 0;
@@ -61,6 +64,9 @@ final class BitReader {
         return "bytes=" + this.buf.remaining() + ",bitsAvail=" + this.bitsAvail + ",bitBuf=0x" + Long.toHexString(this.bitBuf);
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     // TOPS THE ACCUMULATOR UP TO AT LEAST bits WHEN THE SOURCE ALLOWS: 32-BIT REFILLS FIRST, THEN BYTE BY BYTE NEAR EOF.
     // RETURNS THE BITS NOW AVAILABLE, WHICH MAY BE FEWER THAN REQUESTED AT EOF
     private int ensureBits(final int bits) {

@@ -28,7 +28,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 /**
  * Platform API. Owns the {@link Platform} registry and exposes a way to
- * fetch a URI's raw media data — direct links, dimensions, metadata — without
+ * fetch a URI's raw media data (direct links, dimensions, metadata) without
  * going through {@link MRL}.
  * <p>
  * Platforms return {@link Platform.Resolution} (their own structure); {@link MRL} and other
@@ -54,7 +54,7 @@ public final class PlatformAPI {
     static final CopyOnWriteArrayList<Platform> CUSTOM = new CopyOnWriteArrayList<>();
     static final CopyOnWriteArrayList<Platform> BUILTIN = new CopyOnWriteArrayList<>();
 
-    // ==== SEARCH STATE — GUARDED BY SEARCH_LOCK ====
+    // SEARCH STATE, GUARDED BY SEARCH_LOCK
     private static final Object SEARCH_LOCK = new Object();
     private static final ArrayDeque<String> HISTORY = new ArrayDeque<>(); // RECENT QUERIES, NEWEST FIRST
     // QUERY -> ITS SEARCH, SERVED AS THE SAME READ-ONLY LIST WHILE IT FILLS AND AFTER. ACCESS-ORDER LRU, FLUSHED
@@ -100,6 +100,10 @@ public final class PlatformAPI {
     }
 
     private PlatformAPI() {}
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** Searches every registered platform for {@code query} with the configured limit; shorthand for {@link #search(String, int, boolean)}. */
     public static List<PlatformResult> search(final String query) {
@@ -265,7 +269,10 @@ public final class PlatformAPI {
         return List.of(probeOrder());
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
+
     // INTERRUPTS THE PROBES IN FLIGHT AND DROPS THEIR PARTIAL LIST FROM THE CACHE; A FINISHED SEARCH ONLY RELEASES ITS TASKS
     private static void discardSearch() {
         for (final Future<?> probe: searchProbes) probe.cancel(true);
@@ -311,6 +318,10 @@ public final class PlatformAPI {
         for (int i = 0; i < builtin.length; i++) order[custom.length + i] = builtin[builtin.length - 1 - i];
         return order;
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     // A CACHED SEARCH: THE PER-PLATFORM LIMIT IT WAS ASKED WITH AND THE READ-ONLY VIEW OF THE LIST ITS PROBES FILL
     private record Search(int limit, List<PlatformResult> hits) {}

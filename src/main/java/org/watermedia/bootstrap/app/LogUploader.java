@@ -67,30 +67,13 @@ public final class LogUploader {
     // WAKES THE RENDER LOOP AFTER A WORKER STAGE CHANGES WHAT THE DIALOG SHOWS
     private final Runnable repaint;
 
-    public record SuspectMod(String id, String name, String slug, String url) {}
-
-    /** One log file of the dialog: where it lives, whether it can go up and how its upload went. */
-    public static final class FileEntry {
-        public final String name;
-        public final Path path;
-        public volatile String sizeLabel = "-";
-        public volatile String state = "PENDING";
-        public volatile String url = "";
-        public volatile int progress;
-        public volatile boolean present;
-        public volatile boolean valid;
-        public volatile boolean uploaded;
-
-        public FileEntry(final String name, final Path path) {
-            this.name = name;
-            this.path = path;
-        }
-    }
-
     LogUploader(final Runnable repaint) {
         this.repaint = repaint;
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // RUNS THE DIALOG'S NEXT ACTION ON A WORKER: OPEN AND SCAN, UPLOAD THE LOGS, BUILD THE REPORT OR OPEN THE PICKED
     // REPOSITORY; A STAGE STILL WORKING JUST KEEPS THE DIALOG OPEN
     void step() {
@@ -132,7 +115,9 @@ public final class LogUploader {
         }
     }
 
-    // ==== WORKER STAGES ====
+    // ==========================================================================
+    // WORKER STAGES
+    // ==========================================================================
     // HEAVY FILE READS AND NETWORK CALLS MUST NOT BLOCK THE RENDER LOOP
 
     private void scan() {
@@ -281,7 +266,7 @@ public final class LogUploader {
                 this.status = "ERROR";
             }
 
-            // DO NOT OPEN THE BROWSER AUTOMATICALLY — THE USER CHOOSES WHICH ISSUE TRACKER TO SUBMIT TO.
+            // DO NOT OPEN THE BROWSER AUTOMATICALLY: THE USER CHOOSES WHICH ISSUE TRACKER TO SUBMIT TO
             this.done = !this.error;
         } finally {
             this.working = false;
@@ -347,8 +332,9 @@ public final class LogUploader {
         }
     }
 
-    // ==== STATE ====
-
+    // ==========================================================================
+    // STATE
+    // ==========================================================================
     private void status(final String status) {
         this.status = status;
         this.repaint.run();
@@ -371,8 +357,9 @@ public final class LogUploader {
         return null;
     }
 
-    // ==== UTILITY ====
-
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static boolean isUploadable(final FileEntry entry) {
         return entry.present && entry.valid && !entry.uploaded && !"FAILED".equals(entry.state) && !"READ ERROR".equals(entry.state);
     }
@@ -414,6 +401,29 @@ public final class LogUploader {
                     })).orElse(null);
         } catch (final Exception e) {
             return null;
+        }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    public record SuspectMod(String id, String name, String slug, String url) {}
+
+    /** One log file of the dialog: where it lives, whether it can go up and how its upload went. */
+    public static final class FileEntry {
+        public final String name;
+        public final Path path;
+        public volatile String sizeLabel = "-";
+        public volatile String state = "PENDING";
+        public volatile String url = "";
+        public volatile int progress;
+        public volatile boolean present;
+        public volatile boolean valid;
+        public volatile boolean uploaded;
+
+        public FileEntry(final String name, final Path path) {
+            this.name = name;
+            this.path = path;
         }
     }
 }

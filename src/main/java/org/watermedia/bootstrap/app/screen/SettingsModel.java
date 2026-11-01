@@ -22,7 +22,83 @@ import java.util.function.Supplier;
 final class SettingsModel {
     private SettingsModel() {}
 
-    // ==== SPECS AND SECTIONS ====
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    // A ROOT NODE NAMED AFTER THE SPEC (HIDDEN WITHOUT DIRECT FIELDS), THEN EVERY GROUP IN DFS ORDER WITH ONE
+    // INDENT PER LEVEL; EACH NODE LISTS ONLY ITS DIRECT FIELDS
+    static void collectSections(final ConfigSpec configSpec, final SettingSpec spec) {
+        final String specName = titleCase(configSpec.name());
+        final SettingSection home = new SettingSection(specName, groupDetail(configSpec, "root settings"), specName, 0);
+        final Collection<IConfigField<?, ?>> fields = configSpec.getFields();
+        for (final IConfigField<?, ?> field: fields) {
+            if (!(field instanceof ConfigGroup)) home.settings.add(new ConfigSetting(field, field.name(), spec.stops.get(field.name())));
+        }
+        if (!home.settings.isEmpty()) spec.sections.add(home);
+        for (final IConfigField<?, ?> field: fields) {
+            if (field instanceof final ConfigGroup child) collectGroup(child, 0, "", "", spec);
+        }
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static void collectGroup(final ConfigGroup group, final int depth, final String parentKey,
+                                     final String parentPath, final SettingSpec spec) {
+        final String key = parentKey.isEmpty() ? group.name() : parentKey + "." + group.name();
+        final String path = parentPath.isEmpty() ? group.name() : parentPath + " / " + group.name();
+        final SettingSection section = new SettingSection(titleCase(group.name()), groupDetail(group, key), path, depth);
+        final Collection<IConfigField<?, ?>> fields = group.getFields();
+        for (final IConfigField<?, ?> field: fields) {
+            if (field instanceof ConfigGroup) continue;
+            final String fieldKey = key + "." + field.name();
+            section.settings.add(new ConfigSetting(field, fieldKey, spec.stops.get(fieldKey)));
+        }
+        // THE NODE STAYS EVEN WITH NO DIRECT FIELDS: IT IS THE TREE PATH TO ITS CHILD GROUPS
+        spec.sections.add(section);
+        for (final IConfigField<?, ?> field: fields) {
+            if (field instanceof final ConfigGroup child) collectGroup(child, depth + 1, key, path, spec);
+        }
+    }
+
+    // TURNS AN IDENTIFIER INTO A DISPLAY NAME: _ AND - BECOME SPACES, camelCase SPLITS INTO CAPITALIZED
+    // WORDS ("pngUseBKGDChunk" -> "Png Use BKGD Chunk")
+    static String titleCase(final String value) {
+        if (value == null || value.isBlank()) return "Settings";
+        final String spaced = value.replace('_', ' ').replace('-', ' ');
+        final StringBuilder out = new StringBuilder(spaced.length() + 4);
+        boolean upper = true;
+        for (int i = 0; i < spaced.length(); i++) {
+            final char c = spaced.charAt(i);
+            if (Character.isWhitespace(c)) {
+                upper = true;
+                out.append(c);
+                continue;
+            }
+            if (i > 0 && Character.isUpperCase(c)) {
+                final char prev = spaced.charAt(i - 1);
+                final boolean nextLower = i + 1 < spaced.length() && Character.isLowerCase(spaced.charAt(i + 1));
+                // BREAK ON lower->UPPER AND ON THE LAST CAPITAL OF AN ACRONYM RUN ("BKGDChunk" -> "BKGD Chunk")
+                if (Character.isLowerCase(prev) || Character.isDigit(prev) || (Character.isUpperCase(prev) && nextLower)) out.append(' ');
+            }
+            out.append(upper ? Character.toUpperCase(c) : c);
+            upper = false;
+        }
+        return out.toString();
+    }
+
+    private static String groupDetail(final ConfigGroup group, final String fallback) {
+        for (final String comment: group.comments()) {
+            if (comment != null && !comment.isBlank()) return comment.trim();
+        }
+        return fallback;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES: SPECS AND SECTIONS
+    // ==========================================================================
 
     enum SaveState {
         READY, SAVING, SAVED, FAILED_ONCE, RESAVING, FAILED_TWICE
@@ -46,14 +122,14 @@ final class SettingsModel {
         final String subtitle;
         // null WHEN WATERCONFIG DID NOT EXPOSE THE SPEC: THE TAB SHOWS A PLACEHOLDER AND NEVER SAVES
         final ConfigSpec configSpec;
-        // RUNS AFTER EVERY MUTATION OF THIS SPEC — THE APP SPEC PUSHES ITS VALUES INTO THE LIVE APP
+        // RUNS AFTER EVERY MUTATION OF THIS SPEC: THE APP SPEC PUSHES ITS VALUES INTO THE LIVE APP
         // STATE HERE (AppConfig.apply) SO EDITS TAKE EFFECT IMMEDIATELY; null WHEN NOTHING TO APPLY
         final Runnable applier;
-        // THE SCREEN-OWNED SAVE MACHINE OF THIS SPEC SLOT — SHARED ACROSS REBUILDS (SEE saves)
+        // THE SCREEN-OWNED SAVE MACHINE OF THIS SPEC SLOT, SHARED ACROSS REBUILDS (SEE saves)
         final SaveMachine save;
         // PIXEL-ICON NAME FOR THE TAB, OR null FOR THE APP TEXTURE ICON OF WATERMEDIA'S OWN SPECS
         final String iconName;
-        // FLAT DFS-ORDERED SECTION TREE — depth EXPRESSES NESTING, PGUP/PGDN WALKS THIS LIST IN ORDER
+        // FLAT DFS-ORDERED SECTION TREE: depth EXPRESSES NESTING, PGUP/PGDN WALKS THIS LIST IN ORDER
         final List<SettingSection> sections = new ArrayList<>();
         // DISCRETE VALUES OF NUMBER FIELDS, BY DOTTED FIELD KEY; WATERCONFIG ONLY KNOWS THEIR BOUNDS
         final Map<String, Stops> stops;
@@ -78,7 +154,7 @@ final class SettingsModel {
         final String detail;
         // HEADER SUBTITLE PATH ("audio" OR "group1 / group2"); THE HOME NODE CARRIES THE SPEC NAME
         final String path;
-        // TREE NESTING LEVEL (0 = TOP) — THE SECTION COLUMN INDENTS BY THIS
+        // TREE NESTING LEVEL (0 = TOP); THE SECTION COLUMN INDENTS BY THIS
         final int depth;
         final List<Setting> settings = new ArrayList<>();
 
@@ -90,40 +166,9 @@ final class SettingsModel {
         }
     }
 
-    // A ROOT NODE NAMED AFTER THE SPEC (HIDDEN WITHOUT DIRECT FIELDS), THEN EVERY GROUP IN DFS ORDER WITH ONE
-    // INDENT PER LEVEL; EACH NODE LISTS ONLY ITS DIRECT FIELDS
-    static void collectSections(final ConfigSpec configSpec, final SettingSpec spec) {
-        final String specName = titleCase(configSpec.name());
-        final SettingSection home = new SettingSection(specName, groupDetail(configSpec, "root settings"), specName, 0);
-        final Collection<IConfigField<?, ?>> fields = configSpec.getFields();
-        for (final IConfigField<?, ?> field: fields) {
-            if (!(field instanceof ConfigGroup)) home.settings.add(new ConfigSetting(field, field.name(), spec.stops.get(field.name())));
-        }
-        if (!home.settings.isEmpty()) spec.sections.add(home);
-        for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof final ConfigGroup child) collectGroup(child, 0, "", "", spec);
-        }
-    }
-
-    private static void collectGroup(final ConfigGroup group, final int depth, final String parentKey,
-                                     final String parentPath, final SettingSpec spec) {
-        final String key = parentKey.isEmpty() ? group.name() : parentKey + "." + group.name();
-        final String path = parentPath.isEmpty() ? group.name() : parentPath + " / " + group.name();
-        final SettingSection section = new SettingSection(titleCase(group.name()), groupDetail(group, key), path, depth);
-        final Collection<IConfigField<?, ?>> fields = group.getFields();
-        for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof ConfigGroup) continue;
-            final String fieldKey = key + "." + field.name();
-            section.settings.add(new ConfigSetting(field, fieldKey, spec.stops.get(fieldKey)));
-        }
-        // THE NODE STAYS EVEN WITH NO DIRECT FIELDS — IT IS THE TREE PATH TO ITS CHILD GROUPS
-        spec.sections.add(section);
-        for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof final ConfigGroup child) collectGroup(child, depth + 1, key, path, spec);
-        }
-    }
-
-    // ==== SETTINGS ====
+    // ==========================================================================
+    // NESTED TYPES: SETTINGS
+    // ==========================================================================
 
     abstract static class Setting {
         protected final String label;
@@ -136,7 +181,7 @@ final class SettingsModel {
             this.label = label;
             this.key = key;
             this.type = type;
-            // BLANK STAYS BLANK — A SETTING WITHOUT A DESCRIPTION SIMPLY SHOWS NO TOOLTIP
+            // BLANK STAYS BLANK: A SETTING WITHOUT A DESCRIPTION SIMPLY SHOWS NO TOOLTIP
             this.note = note == null || note.isBlank() ? "" : note.trim();
             this.mutable = mutable;
         }
@@ -213,6 +258,10 @@ final class SettingsModel {
             this.maxValue = numberLimit(field, "maxValueString");
             this.stops = stops;
         }
+
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
 
         @Override
         String valueLabel() {
@@ -357,8 +406,9 @@ final class SettingsModel {
                 return this.number(values[(int) Math.round(MathUtil.clamp(pct, 0d, 1d) * (values.length - 1))]);
             }
             // ONLY REPORT A CHANGE (AND ARM THE DRAG-SAVE / CHIME) WHEN THE STORED VALUE ACTUALLY MOVES,
-            // MIRRORING number() — A SEEK TICK LANDING ON THE SAME VALUE MUST NOT TRIGGER A POINTLESS SAVE
-            final Object next = this.valueForPercent(pct);
+            // MIRRORING number(): A SEEK TICK LANDING ON THE SAME VALUE MUST NOT TRIGGER A POINTLESS SAVE
+            final double raw = this.minValue + (this.maxValue - this.minValue) * MathUtil.clamp(pct, 0d, 1d);
+            final Object next = this.isInteger() ? this.numberOf(Math.round(raw)) : this.numberOf(raw);
             if (((Number) next).doubleValue() == ((Number) this.field.get()).doubleValue()) return false;
             this.setValue(next);
             return true;
@@ -442,6 +492,10 @@ final class SettingsModel {
             return AppTheme.NEON_LIGHT;
         }
 
+        // ======================================================================
+        // HELPERS
+        // ======================================================================
+
         private Object parse(final String raw) {
             final String value = raw == null ? "" : raw.trim();
             if (this.isBoolean()) {
@@ -492,12 +546,6 @@ final class SettingsModel {
             return span <= 10_000d;
         }
 
-        private Object valueForPercent(final double pct) {
-            final double raw = this.minValue + (this.maxValue - this.minValue) * MathUtil.clamp(pct, 0d, 1d);
-            if (this.isInteger()) return this.numberOf(Math.round(raw));
-            return this.numberOf(raw);
-        }
-
         private Object clampNumber(final Object value) {
             if (!(value instanceof final Number number)) return value;
             double next = number.doubleValue();
@@ -544,6 +592,10 @@ final class SettingsModel {
                     || this.valueType == Float.class || this.valueType == float.class
                     || this.valueType == Double.class || this.valueType == double.class;
         }
+
+        // ======================================================================
+        // UTILITY
+        // ======================================================================
 
         private static boolean fieldMutable(final IConfigField<?, ?> field) {
             final Control control = safeControl(field);
@@ -611,40 +663,5 @@ final class SettingsModel {
             }
             return out.toString();
         }
-    }
-
-    // ==== UTILITY ====
-
-    // TURNS AN IDENTIFIER INTO A DISPLAY NAME: _ AND - BECOME SPACES, camelCase SPLITS INTO CAPITALIZED
-    // WORDS ("pngUseBKGDChunk" -> "Png Use BKGD Chunk")
-    static String titleCase(final String value) {
-        if (value == null || value.isBlank()) return "Settings";
-        final String spaced = value.replace('_', ' ').replace('-', ' ');
-        final StringBuilder out = new StringBuilder(spaced.length() + 4);
-        boolean upper = true;
-        for (int i = 0; i < spaced.length(); i++) {
-            final char c = spaced.charAt(i);
-            if (Character.isWhitespace(c)) {
-                upper = true;
-                out.append(c);
-                continue;
-            }
-            if (i > 0 && Character.isUpperCase(c)) {
-                final char prev = spaced.charAt(i - 1);
-                final boolean nextLower = i + 1 < spaced.length() && Character.isLowerCase(spaced.charAt(i + 1));
-                // BREAK ON lower->UPPER AND ON THE LAST CAPITAL OF AN ACRONYM RUN ("BKGDChunk" -> "BKGD Chunk")
-                if (Character.isLowerCase(prev) || Character.isDigit(prev) || (Character.isUpperCase(prev) && nextLower)) out.append(' ');
-            }
-            out.append(upper ? Character.toUpperCase(c) : c);
-            upper = false;
-        }
-        return out.toString();
-    }
-
-    private static String groupDetail(final ConfigGroup group, final String fallback) {
-        for (final String comment: group.comments()) {
-            if (comment != null && !comment.isBlank()) return comment.trim();
-        }
-        return fallback;
     }
 }

@@ -21,6 +21,30 @@ import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
 @DisplayName("Spinner")
 public class SpinnerTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static void settle(final ListView<String> list) {
+        list.update();
+        list.measure(200, 80);
+        list.layout(0, 0);
+    }
+
+    // A CLICK ON THE VALUE, BETWEEN THE 24 PX STEP BOXES, OPENS THE TYPED EDIT
+    private static Spinner editing(final Spinner spinner) {
+        spinner.size(200, 30);
+        spinner.measure(200, 30);
+        spinner.layout(0, 0);
+        spinner.dispatchClick(100, 15);
+        assertTrue(spinner.textInputActive());
+        return spinner;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("Typed edit")
     class TypedEdit {
@@ -97,23 +121,5 @@ public class SpinnerTest {
             assertFalse(spinner.dispatchKey(GLFW_KEY_ESCAPE, GLFW_RELEASE));
             assertFalse(spinner.dispatchChar('1'));
         }
-    }
-
-    // UTILITY
-
-    private static void settle(final ListView<String> list) {
-        list.update();
-        list.measure(200, 80);
-        list.layout(0, 0);
-    }
-
-    // A CLICK ON THE VALUE, BETWEEN THE 24 PX STEP BOXES, OPENS THE TYPED EDIT
-    private static Spinner editing(final Spinner spinner) {
-        spinner.size(200, 30);
-        spinner.measure(200, 30);
-        spinner.layout(0, 0);
-        spinner.dispatchClick(100, 15);
-        assertTrue(spinner.textInputActive());
-        return spinner;
     }
 }

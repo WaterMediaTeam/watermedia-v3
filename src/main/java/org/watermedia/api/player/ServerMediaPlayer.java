@@ -26,10 +26,10 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class ServerMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(ServerMediaPlayer.class.getSimpleName());
-    // DURATION REPORTS DIVERGING BEYOND THIS GAP GET LOGGED — LIKELY A BROKEN SOURCE VARIANT
+    // DURATION REPORTS DIVERGING BEYOND THIS GAP GET LOGGED: LIKELY A BROKEN SOURCE VARIANT
     private static final long DURATION_DIVERGENCE_MS = 500;
 
-    // TIME TRACKING — MUTATORS ARE synchronized (CALLER THREAD vs SHARED TICKER), READS STAY VOLATILE
+    // TIME TRACKING: MUTATORS ARE synchronized (CALLER THREAD vs SHARED TICKER), READS STAY VOLATILE
     // LOCK-FREE. time() MAY PAIR accumulatedMs/segmentStartNanos ACROSS A CONCURRENT REBASE: THE GLITCH
     // IS SUB-TICK (<50ms), TRANSIENT AND ACCEPTED.
     private volatile long duration;
@@ -41,12 +41,16 @@ public final class ServerMediaPlayer extends MediaPlayer {
     // MUTATION COUNTER (AtomicInteger: ++ ON volatile ISN'T ATOMIC AND repeat() BUMPS UNLOCKED), SEEDED FROM
     // THE CLOCK SO A REPLACEMENT CLOCK NEVER REPEATS THE VALUES A HOST REMEMBERS FROM ITS PREDECESSOR
     private final AtomicInteger revision = new AtomicInteger((int) System.currentTimeMillis());
-    private boolean divergentWarned; // A DIVERGENT DURATION IS LOGGED ONCE PER PLAYER — GUARDED BY THIS
+    private boolean divergentWarned; // A DIVERGENT DURATION IS LOGGED ONCE PER PLAYER, GUARDED BY THIS
 
     ServerMediaPlayer() {
         super();
         this.arm();
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /**
      * Synchronizes the total media duration a client reported.
@@ -64,7 +68,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             return;
         }
         this.duration = durationMs;
-        // THE TIMELINE JUST BECAME KNOWN — A RUNNING SESSION STARTS COUNTING FROM THIS INSTANT,
+        // THE TIMELINE JUST BECAME KNOWN: A RUNNING SESSION STARTS COUNTING FROM THIS INSTANT,
         // SINCE THE CLOCK WAS HELD WHILE IT HAD NOTHING TO MEASURE AGAINST (SEE computeTime)
         if (this.status == Status.PLAYING && !this.live) this.segmentStartNanos = System.nanoTime();
         this.revision.incrementAndGet();
@@ -99,36 +103,6 @@ public final class ServerMediaPlayer extends MediaPlayer {
     /** Captures the current state as an immutable snapshot, consistent under concurrent mutations. */
     public synchronized PlayerState snapshot() {
         return new PlayerState(this.revision.get(), this.status, this.time(), this.duration, this.speed(), this.repeat(), this.live);
-    }
-
-    @Override
-    void tick() {
-        // A CLOCK FED SNAPSHOTS MIRRORS THAT SESSION AND HAS NO MEDIA TO LEARN THE TIMELINE FROM, SO IT ADOPTS THE SESSION'S
-        final PlayerState session = this.authority();
-        if (session != null) {
-            if (this.duration <= 0) this.syncDuration(session.duration());
-            if (this.live != session.live()) this.live(session.live());
-        }
-        super.tick();
-        this.update();
-    }
-
-    // THE MONITOR release() TAKES KEEPS A RELEASED CLOCK STOPPED
-    @Override
-    boolean launch(final boolean paused, final long seekMs) {
-        synchronized (this) {
-            if (this.released) return false;
-            this.exception = null;
-            final Status prev = this.status;
-            this.accumulatedMs = Math.max(0L, seekMs);
-            this.segmentStartNanos = System.nanoTime();
-            this.status = paused ? Status.PAUSED : Status.PLAYING;
-            this.revision.incrementAndGet();
-            this.ticking(true);
-            this.queueStatus(prev, this.status);
-        }
-        this.deliverStatus();
-        return true;
     }
 
     // EVERY CONTROL QUEUES ITS TRANSITION UNDER THE LOCK, IN WRITE ORDER, AND THE LISTENER HEARS IT AFTER THE LOCK, SO NO
@@ -294,6 +268,44 @@ public final class ServerMediaPlayer extends MediaPlayer {
         super.release();
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
+    void tick() {
+        // A CLOCK FED SNAPSHOTS MIRRORS THAT SESSION AND HAS NO MEDIA TO LEARN THE TIMELINE FROM, SO IT ADOPTS THE SESSION'S
+        final PlayerState session = this.authority();
+        if (session != null) {
+            if (this.duration <= 0) this.syncDuration(session.duration());
+            if (this.live != session.live()) this.live(session.live());
+        }
+        super.tick();
+        this.update();
+    }
+
+    // THE MONITOR release() TAKES KEEPS A RELEASED CLOCK STOPPED
+    @Override
+    boolean launch(final boolean paused, final long seekMs) {
+        synchronized (this) {
+            if (this.released) return false;
+            this.exception = null;
+            final Status prev = this.status;
+            this.accumulatedMs = Math.max(0L, seekMs);
+            this.segmentStartNanos = System.nanoTime();
+            this.status = paused ? Status.PAUSED : Status.PLAYING;
+            this.revision.incrementAndGet();
+            this.ticking(true);
+            this.queueStatus(prev, this.status);
+        }
+        this.deliverStatus();
+        return true;
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     // POSITION OF THE RUNNING SEGMENT AT THE GIVEN RATE. THE RATE IS EXPLICIT BECAUSE A SPEED CHANGE
     // MUST CLOSE THE SEGMENT AT THE OUTGOING VALUE BEFORE THE NEW ONE APPLIES
     private long computeTime(final float rate) {
@@ -312,7 +324,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
         synchronized (this) {
             if (this.status != Status.PLAYING) return;
 
-            // A LIVE TIMELINE HAS NO END — NEVER WRAP NOR END IT, EVEN WITH A DURATION LATCHED
+            // A LIVE TIMELINE HAS NO END: NEVER WRAP NOR END IT, EVEN WITH A DURATION LATCHED
             final long d = this.duration;
             if (d <= 0 || this.live) return;
             final long now = this.computeTime(this.speed());
@@ -329,7 +341,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 // CLOCK BY UP TO ONE TICK (50ms) PER LOOP, DESYNCING EVERY CLIENT THAT TRUSTS IT
                 this.accumulatedMs = now % d;
                 this.segmentStartNanos = System.nanoTime();
-                // THE WRAP REBASES THE TIMELINE — BUMP SO THE HOST RESENDS WHERE CLIENTS DRIFT MOST
+                // THE WRAP REBASES THE TIMELINE: BUMP SO THE HOST RESENDS WHERE CLIENTS DRIFT MOST
                 this.revision.incrementAndGet();
             }
         }

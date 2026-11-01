@@ -43,7 +43,7 @@ public final class GifReader extends ImageReader {
 
     // SECURITY CAPS
     // A FRAME COSTS A FULL-CANVAS COMPOSITE AND COPY REGARDLESS OF ITS DESCRIPTOR SIZE, YET IS ONLY
-    // 12 FILE BYTES. BOUNDED PER PASS — reset() STARTS A NEW PASS SO LOOPING PLAYBACK IS UNAFFECTED
+    // 12 FILE BYTES. BOUNDED PER PASS: reset() STARTS A NEW PASS, SO LOOPING PLAYBACK IS UNAFFECTED
     private static final int MAX_FRAMES = 4_096;
     // COMMENTS AND APPLICATION EXTENSIONS LIVE AS LONG AS THE READER: RECORDS PAST EITHER CAP ARE SKIPPED
     private static final int MAX_METADATA_RECORDS = 1_024;
@@ -124,10 +124,17 @@ public final class GifReader extends ImageReader {
         this.directOutInts = this.directOut.asIntBuffer();
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     @Override public int width() { return this.lsd.width(); }
     @Override public int height() { return this.lsd.height(); }
-    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return this.scan; }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
 
     @Override
     protected boolean hasMore() throws CodecException {
@@ -243,7 +250,7 @@ public final class GifReader extends ImageReader {
         final int idWidth = id.width();
         final int idHeight = id.height();
 
-        // FAST PATH: IMAGE DESCRIPTOR COVERS THE WHOLE CANVAS EXACTLY — NO PER-PIXEL CLIPPING
+        // FAST PATH: THE IMAGE DESCRIPTOR COVERS THE WHOLE CANVAS EXACTLY, SO NO PIXEL NEEDS CLIPPING
         if (!id.interlacedFlag() && idLeft == 0 && idTop == 0 && idWidth == canvasWidth && idHeight == canvasHeight) {
             if (transparentIndex < 0) {
                 for (int i = 0; i < pixelCount; i++) {
@@ -289,43 +296,6 @@ public final class GifReader extends ImageReader {
         }
     }
 
-    private static int blitRow(final byte[] indexes, final int start, final int idWidth,
-                               final int idLeft, final int canvasY,
-                               final int[] canvas, final int canvasWidth,
-                               final int clipXStart, final int clipXEnd,
-                               final int clipYStart, final int clipYEnd,
-                               final boolean rowFullyVisible,
-                               final int[] colors, final int colorLen,
-                               final int transparentIndex) {
-        if (canvasY < clipYStart || canvasY >= clipYEnd) return start + idWidth;
-        int srcIdx = start;
-        final int rowOff = canvasY * canvasWidth;
-        if (rowFullyVisible) {
-            if (transparentIndex < 0) {
-                for (int x = 0; x < idWidth; x++) {
-                    final int ci = indexes[srcIdx++] & 0xFF;
-                    if (ci < colorLen) canvas[rowOff + idLeft + x] = colors[ci];
-                }
-            } else {
-                for (int x = 0; x < idWidth; x++) {
-                    final int ci = indexes[srcIdx++] & 0xFF;
-                    if (ci == transparentIndex) continue;
-                    if (ci < colorLen) canvas[rowOff + idLeft + x] = colors[ci];
-                }
-            }
-            return srcIdx;
-        }
-        // PARTIAL HORIZONTAL CLIP: SKIP LEADING/TRAILING PIXELS THAT FALL OUTSIDE THE CANVAS
-        for (int x = 0; x < idWidth; x++) {
-            final int canvasX = idLeft + x;
-            if (canvasX < clipXStart || canvasX >= clipXEnd) { srcIdx++; continue; }
-            final int ci = indexes[srcIdx++] & 0xFF;
-            if (ci == transparentIndex) continue;
-            if (ci < colorLen) canvas[rowOff + canvasX] = colors[ci];
-        }
-        return srcIdx;
-    }
-
     private byte[] decompress(final int lzwMinCodeSize, final byte[] data,
                               final int dataLength, final int expectedSize) throws CodecException {
         final int clearCode = 1 << lzwMinCodeSize;
@@ -356,7 +326,7 @@ public final class GifReader extends ImageReader {
 
         outer:
         while (pixelsLeft > 0) {
-            // DRAIN THE PENDING STACK FIRST — THIS IS THE MOST COMMON HOT PATH
+            // DRAIN THE PENDING STACK FIRST, THE MOST COMMON HOT PATH
             while (top > 0) {
                 output[pi++] = pixelStack[--top];
                 if (--pixelsLeft == 0) break outer;
@@ -382,7 +352,7 @@ public final class GifReader extends ImageReader {
             }
             if (oldCode == -1) {
                 // THE FIRST CODE AFTER A CLEAR MUST BE A LITERAL. code == available (clearCode + 2) PASSES THE
-                // BOUNDS CHECK ABOVE AND WOULD READ A DICTIONARY SLOT THIS FRAME NEVER DEFINED — THE TABLE IS
+                // BOUNDS CHECK ABOVE AND WOULD READ A DICTIONARY SLOT THIS FRAME NEVER DEFINED; THE TABLE IS
                 // LONG-LIVED, SO THAT SLOT STILL HOLDS THE PREVIOUS FRAME'S DATA. REJECT INSTEAD OF LEAKING IT
                 if (code >= clearCode) throw new CodecException("LZW first code references undefined entry: " + code);
                 pixelStack[top++] = suffix[code];
@@ -528,6 +498,45 @@ public final class GifReader extends ImageReader {
     private static long delayOf(final int centiseconds) {
         final long ms = (long) centiseconds * DELAY_UNIT_MS;
         return ms <= DELAY_UNIT_MS ? BROWSER_DELAY_MS : ms;
+    }
+
+    // PAINTS ONE DESCRIPTOR ROW ONTO THE CANVAS AND RETURNS THE INDEX OF THE NEXT ROW; A ROW OUTSIDE THE CLIP IS
+    // ONLY SKIPPED AND A TRANSPARENT INDEX LEAVES THE CANVAS PIXEL UNTOUCHED
+    private static int blitRow(final byte[] indexes, final int start, final int idWidth,
+                               final int idLeft, final int canvasY,
+                               final int[] canvas, final int canvasWidth,
+                               final int clipXStart, final int clipXEnd,
+                               final int clipYStart, final int clipYEnd,
+                               final boolean rowFullyVisible,
+                               final int[] colors, final int colorLen,
+                               final int transparentIndex) {
+        if (canvasY < clipYStart || canvasY >= clipYEnd) return start + idWidth;
+        int srcIdx = start;
+        final int rowOff = canvasY * canvasWidth;
+        if (rowFullyVisible) {
+            if (transparentIndex < 0) {
+                for (int x = 0; x < idWidth; x++) {
+                    final int ci = indexes[srcIdx++] & 0xFF;
+                    if (ci < colorLen) canvas[rowOff + idLeft + x] = colors[ci];
+                }
+            } else {
+                for (int x = 0; x < idWidth; x++) {
+                    final int ci = indexes[srcIdx++] & 0xFF;
+                    if (ci == transparentIndex) continue;
+                    if (ci < colorLen) canvas[rowOff + idLeft + x] = colors[ci];
+                }
+            }
+            return srcIdx;
+        }
+        // PARTIAL HORIZONTAL CLIP: SKIP LEADING/TRAILING PIXELS THAT FALL OUTSIDE THE CANVAS
+        for (int x = 0; x < idWidth; x++) {
+            final int canvasX = idLeft + x;
+            if (canvasX < clipXStart || canvasX >= clipXEnd) { srcIdx++; continue; }
+            final int ci = indexes[srcIdx++] & 0xFF;
+            if (ci == transparentIndex) continue;
+            if (ci < colorLen) canvas[rowOff + canvasX] = colors[ci];
+        }
+        return srcIdx;
     }
 
     // WALKS THE SUB-BLOCK CHAIN AT THE BUFFER POSITION PAST ITS TERMINATOR AND RETURNS ITS PAYLOAD SIZE, OR -1

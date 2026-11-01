@@ -30,6 +30,10 @@ public class CanvasLiveTest {
     private Canvas canvas;
     private List<String> calls;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeEach
     void setup() {
         this.backend = new RecordingBackend();
@@ -42,6 +46,18 @@ public class CanvasLiveTest {
     void teardown() {
         RecordingBackend.uninstall();
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
+    private Consumer<Canvas> painter(final String name) {
+        return c -> this.calls.add(name);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Passes")
@@ -148,11 +164,5 @@ public class CanvasLiveTest {
             assertEquals(1, backend.clips.size(), "the clip ends with the painter");
             assertEquals(clears + 1, backend.clipClears);
         }
-    }
-
-    // UTILITY
-
-    private Consumer<Canvas> painter(final String name) {
-        return c -> this.calls.add(name);
     }
 }

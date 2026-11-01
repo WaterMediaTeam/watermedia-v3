@@ -28,6 +28,46 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("PNG chunk contract")
 public class ChunkContractTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static PngChunk assertContract(final IChunk value, final int type) throws IOException {
+        final byte[] data = value.toBytes();
+        final PngChunk chunk = value.toChunk();
+        assertEquals(type, chunk.type());
+        assertEquals(data.length, chunk.length());
+        assertArrayEquals(data, chunk.data());
+        assertFalse(chunk.corrupted());
+
+        final PngChunk decoded = PngChunk.read(envelope(chunk));
+        assertEquals(chunk.length(), decoded.length());
+        assertEquals(chunk.type(), decoded.type());
+        assertArrayEquals(chunk.data(), decoded.data());
+        assertEquals(chunk.crc(), decoded.crc());
+        return chunk;
+    }
+
+    private static ByteBuffer envelope(final IChunk value) {
+        return envelope(value.toChunk());
+    }
+
+    private static ByteBuffer envelope(final int type, final byte[] data) {
+        return envelope(PngChunk.create(type, data));
+    }
+
+    private static ByteBuffer envelope(final PngChunk chunk) {
+        final ByteBuffer buffer = ByteBuffer.allocate(chunk.length() + 12);
+        chunk.write(buffer);
+        return buffer.flip();
+    }
+
+    private static byte[] latin1(final String text) {
+        return text.getBytes(StandardCharsets.ISO_8859_1);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Serialization")
     class Serialization {
@@ -274,40 +314,5 @@ public class ChunkContractTest {
             // PngReader GATES THE CRC THROUGH failOnCorruptedData, SO THE TYPED PARSER MUST NOT DECIDE IT
             assertEquals(text, TEXT.read(flipped));
         }
-    }
-
-    // UTILITY
-    private static PngChunk assertContract(final IChunk value, final int type) throws IOException {
-        final byte[] data = value.toBytes();
-        final PngChunk chunk = value.toChunk();
-        assertEquals(type, chunk.type());
-        assertEquals(data.length, chunk.length());
-        assertArrayEquals(data, chunk.data());
-        assertFalse(chunk.corrupted());
-
-        final PngChunk decoded = PngChunk.read(envelope(chunk));
-        assertEquals(chunk.length(), decoded.length());
-        assertEquals(chunk.type(), decoded.type());
-        assertArrayEquals(chunk.data(), decoded.data());
-        assertEquals(chunk.crc(), decoded.crc());
-        return chunk;
-    }
-
-    private static ByteBuffer envelope(final IChunk value) {
-        return envelope(value.toChunk());
-    }
-
-    private static ByteBuffer envelope(final int type, final byte[] data) {
-        return envelope(PngChunk.create(type, data));
-    }
-
-    private static ByteBuffer envelope(final PngChunk chunk) {
-        final ByteBuffer buffer = ByteBuffer.allocate(chunk.length() + 12);
-        chunk.write(buffer);
-        return buffer.flip();
-    }
-
-    private static byte[] latin1(final String text) {
-        return text.getBytes(StandardCharsets.ISO_8859_1);
     }
 }

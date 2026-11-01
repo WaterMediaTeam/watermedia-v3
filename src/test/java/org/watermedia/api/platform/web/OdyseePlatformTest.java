@@ -104,6 +104,10 @@ public class OdyseePlatformTest {
     private OdyseePlatform platform;
     private boolean previousMature;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeEach
     void start() {
         this.previousMature = WaterMediaConfig.platforms.allowMatureContent;
@@ -117,6 +121,79 @@ public class OdyseePlatformTest {
         WaterMediaConfig.platforms.allowMatureContent = this.previousMature;
         this.http.close();
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
+    // THE STAND-IN: /proxy ANSWERS resolve AND get LIKE api.na-backend.odysee.com, /live LIKE api.odysee.live, /content THE HLS MASTER
+    private void serve(final HttpExchange exchange) throws IOException {
+        final String path = exchange.getRequestURI().getPath();
+        final String query = exchange.getRequestURI().getQuery();
+        if (path.equals("/proxy")) {
+            final JsonObject body = JSONTool.parse(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8), JsonObject.class);
+            final String method = str(body, "method");
+            final JsonObject params = obj(body, "params");
+            if ("resolve".equals(method)) {
+                final String uri = params.getAsJsonArray("urls").get(0).getAsString();
+                this.calls.add("resolve " + uri);
+                final String claim = CLAIMS.getOrDefault(uri, "{\"error\": {\"name\": \"NOT_FOUND\", \"text\": \"Could not find claim at \\\"" + uri + "\\\".\"}}");
+                LocalHttp.respond(exchange, "application/json; charset=utf-8", ("{\"jsonrpc\": \"2.0\", \"result\": {\"" + uri + "\": " + claim + "}, \"id\": 1}").getBytes(StandardCharsets.UTF_8), 0);
+                return;
+            }
+            if ("get".equals(method)) {
+                final String uri = str(params, "uri");
+                this.calls.add("get " + uri);
+                // ONLY A CLAIM WITH A FILE STREAMS; THE REAL PROXY ANSWERS THE SAME ERROR FOR REPOSTS AND LIVE CLAIMS.
+                // A PERMANENT URL (lbry://name#<claim id>) NAMES THE FILE OF THE CLAIM IT ENDS WITH
+                final JsonObject claim = JSONTool.parse(CLAIMS.getOrDefault(uri, "{}"), JsonObject.class);
+                final String claimId = str(claim, "claim_id") != null ? str(claim, "claim_id") : uri.substring(uri.lastIndexOf('#') + 1);
+                final String answer = obj(claim, "value", "source") == null && !uri.startsWith("lbry://name#")
+                        ? "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32603, \"message\": \"stream doesn't have source data\"}, \"id\": 0}"
+                        : "{\"jsonrpc\": \"2.0\", \"result\": {\"streaming_url\": \"" + this.http.uri("/v6/streams/" + claimId + "/b8e5ee.mp4") + "\"}, \"id\": 1}";
+                LocalHttp.respond(exchange, "application/json; charset=utf-8", answer.getBytes(StandardCharsets.UTF_8), 0);
+                return;
+            }
+            LocalHttp.respond(exchange, "application/json; charset=utf-8", "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32601, \"message\": \"Method not found\"}, \"id\": 0}".getBytes(StandardCharsets.UTF_8), 0);
+            return;
+        }
+        if (path.equals("/live")) {
+            final String channel = query.substring("channel_claim_id=".length());
+            this.calls.add("live " + channel);
+            final boolean live = LIVE_CHANNEL.equals(channel);
+            final String data = live
+                    ? "{\"Live\": true, \"Start\": \"2026-10-24T12:13:39Z\", \"VideoURL\": \"" + this.http.uri("/content/" + channel + "/master.m3u8") + "\", \"ViewerCount\": 93,"
+                    + " \"ActiveClaim\": {\"ClaimID\": \"d826937ad9bf3b7991eada5034c4612389583bc1\", \"Protected\": false}}"
+                    : "{\"Live\": false, \"Start\": \"\", \"VideoURL\": \"\", \"ActiveClaim\": null}";
+            LocalHttp.respond(exchange, "application/json; charset=utf-8", ("{\"success\": true, \"error\": null, \"data\": " + data + "}").getBytes(StandardCharsets.UTF_8), 0);
+            return;
+        }
+        if (path.endsWith("/master.m3u8")) {
+            this.calls.add("master");
+            final String master = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=30\n1080.m3u8\n"
+                    + "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1280x720,FRAME-RATE=30\n720.m3u8\n";
+            LocalHttp.respond(exchange, "application/x-mpegURL", master.getBytes(StandardCharsets.UTF_8), 0);
+            return;
+        }
+        exchange.sendResponseHeaders(404, -1);
+        exchange.close();
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // ONE PROXY CLAIM AS THE REAL resolve ANSWERS IT: THE value BODY GIVEN PLUS ITS IDS, URLS AND SIGNING CHANNEL
+    private static String claim(final String claimId, final String valueType, final String value, final String channelId, final String channelName, final String channelTitle) {
+        final String channel = channelId == null ? "" : ", \"signing_channel\": {\"claim_id\": \"" + channelId + "\", \"name\": \"" + channelName + "\", \"value\": {"
+                + (channelTitle == null ? "" : "\"title\": \"" + channelTitle + "\"") + "}}";
+        return "{\"claim_id\": \"" + claimId + "\", \"permanent_url\": \"lbry://name#" + claimId + "\", \"value_type\": \"" + valueType + "\", \"timestamp\": 1700000000,"
+                + " \"value\": {" + value + "}" + channel + "}";
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Claim URIs")
@@ -299,68 +376,5 @@ public class OdyseePlatformTest {
             assertTrue(collection.getMessage().contains("is a collection, not a stream"), collection.getMessage());
             assertFalse(OdyseePlatformTest.this.calls.stream().anyMatch(c -> c.startsWith("get ")), "Nothing unplayable reaches get");
         }
-    }
-
-    // UTILITY
-
-    // ONE PROXY CLAIM AS THE REAL resolve ANSWERS IT: THE value BODY GIVEN PLUS ITS IDS, URLS AND SIGNING CHANNEL
-    private static String claim(final String claimId, final String valueType, final String value, final String channelId, final String channelName, final String channelTitle) {
-        final String channel = channelId == null ? "" : ", \"signing_channel\": {\"claim_id\": \"" + channelId + "\", \"name\": \"" + channelName + "\", \"value\": {"
-                + (channelTitle == null ? "" : "\"title\": \"" + channelTitle + "\"") + "}}";
-        return "{\"claim_id\": \"" + claimId + "\", \"permanent_url\": \"lbry://name#" + claimId + "\", \"value_type\": \"" + valueType + "\", \"timestamp\": 1700000000,"
-                + " \"value\": {" + value + "}" + channel + "}";
-    }
-
-    // THE STAND-IN: /proxy ANSWERS resolve AND get LIKE api.na-backend.odysee.com, /live LIKE api.odysee.live, /content THE HLS MASTER
-    private void serve(final HttpExchange exchange) throws IOException {
-        final String path = exchange.getRequestURI().getPath();
-        final String query = exchange.getRequestURI().getQuery();
-        if (path.equals("/proxy")) {
-            final JsonObject body = JSONTool.parse(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8), JsonObject.class);
-            final String method = str(body, "method");
-            final JsonObject params = obj(body, "params");
-            if ("resolve".equals(method)) {
-                final String uri = params.getAsJsonArray("urls").get(0).getAsString();
-                this.calls.add("resolve " + uri);
-                final String claim = CLAIMS.getOrDefault(uri, "{\"error\": {\"name\": \"NOT_FOUND\", \"text\": \"Could not find claim at \\\"" + uri + "\\\".\"}}");
-                LocalHttp.respond(exchange, "application/json; charset=utf-8", ("{\"jsonrpc\": \"2.0\", \"result\": {\"" + uri + "\": " + claim + "}, \"id\": 1}").getBytes(StandardCharsets.UTF_8), 0);
-                return;
-            }
-            if ("get".equals(method)) {
-                final String uri = str(params, "uri");
-                this.calls.add("get " + uri);
-                // ONLY A CLAIM WITH A FILE STREAMS; THE REAL PROXY ANSWERS THE SAME ERROR FOR REPOSTS AND LIVE CLAIMS.
-                // A PERMANENT URL (lbry://name#<claim id>) NAMES THE FILE OF THE CLAIM IT ENDS WITH
-                final JsonObject claim = JSONTool.parse(CLAIMS.getOrDefault(uri, "{}"), JsonObject.class);
-                final String claimId = str(claim, "claim_id") != null ? str(claim, "claim_id") : uri.substring(uri.lastIndexOf('#') + 1);
-                final String answer = obj(claim, "value", "source") == null && !uri.startsWith("lbry://name#")
-                        ? "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32603, \"message\": \"stream doesn't have source data\"}, \"id\": 0}"
-                        : "{\"jsonrpc\": \"2.0\", \"result\": {\"streaming_url\": \"" + this.http.uri("/v6/streams/" + claimId + "/b8e5ee.mp4") + "\"}, \"id\": 1}";
-                LocalHttp.respond(exchange, "application/json; charset=utf-8", answer.getBytes(StandardCharsets.UTF_8), 0);
-                return;
-            }
-            LocalHttp.respond(exchange, "application/json; charset=utf-8", "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32601, \"message\": \"Method not found\"}, \"id\": 0}".getBytes(StandardCharsets.UTF_8), 0);
-            return;
-        }
-        if (path.equals("/live")) {
-            final String channel = query.substring("channel_claim_id=".length());
-            this.calls.add("live " + channel);
-            final boolean live = LIVE_CHANNEL.equals(channel);
-            final String data = live
-                    ? "{\"Live\": true, \"Start\": \"2026-10-24T12:13:39Z\", \"VideoURL\": \"" + this.http.uri("/content/" + channel + "/master.m3u8") + "\", \"ViewerCount\": 93,"
-                    + " \"ActiveClaim\": {\"ClaimID\": \"d826937ad9bf3b7991eada5034c4612389583bc1\", \"Protected\": false}}"
-                    : "{\"Live\": false, \"Start\": \"\", \"VideoURL\": \"\", \"ActiveClaim\": null}";
-            LocalHttp.respond(exchange, "application/json; charset=utf-8", ("{\"success\": true, \"error\": null, \"data\": " + data + "}").getBytes(StandardCharsets.UTF_8), 0);
-            return;
-        }
-        if (path.endsWith("/master.m3u8")) {
-            this.calls.add("master");
-            final String master = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=30\n1080.m3u8\n"
-                    + "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1280x720,FRAME-RATE=30\n720.m3u8\n";
-            LocalHttp.respond(exchange, "application/x-mpegURL", master.getBytes(StandardCharsets.UTF_8), 0);
-            return;
-        }
-        exchange.sendResponseHeaders(404, -1);
-        exchange.close();
     }
 }

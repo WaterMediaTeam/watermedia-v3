@@ -15,7 +15,7 @@ import java.util.NoSuchElementException;
  *
  * <p>An {@code ImageReader} is constructed by {@link CodecsAPI#reader(ByteBuffer)} once the
  * format has been identified from the leading magic bytes. The {@code ByteBuffer} passed to a
- * concrete subclass is positioned <strong>past the format header</strong> — the reader assumes
+ * concrete subclass is positioned <strong>past the format header</strong>: the reader assumes
  * the format is correct and starts parsing the body directly. Headers are never re-validated.
  *
  * <p>The reader pulls from the underlying buffer only the bytes it needs to produce the next
@@ -64,6 +64,9 @@ public abstract class ImageReader implements Closeable {
         this.requestedFormat = requestedFormat;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Format short name (e.g. {@code "PNG"}, {@code "GIF"}). */
     public String name() {
         // FORMAT NAMES ARE UPPERCASE ("PNG", "WEBP") WHATEVER THE CLASS CASING IS
@@ -76,13 +79,11 @@ public abstract class ImageReader implements Closeable {
 
     /** Image width in pixels. Available immediately after construction. */
     public abstract int width();
-
     /** Image height in pixels. Available immediately after construction. */
     public abstract int height();
 
     /** Width of the frame returned by the latest {@link #next()}, after filters; {@link #width()} before the first. */
     public int frameWidth() { return this.frame == null ? this.width() : this.frameWidth; }
-
     /** Height of the frame returned by the latest {@link #next()}, after filters; {@link #height()} before the first. */
     public int frameHeight() { return this.frame == null ? this.height() : this.frameHeight; }
 
@@ -97,9 +98,6 @@ public abstract class ImageReader implements Closeable {
         return this.requestedFormat != null ? this.requestedFormat : this.decodedFormat();
     }
 
-    // LAYOUT OF THE BUFFER decode() RETURNS; A READER THAT HONOURS requestedFormat ITSELF REPORTS IT HERE
-    protected abstract PixelFormat decodedFormat();
-
     /**
      * Pre-generated animation summary computed during construction. Animated formats walk the
      * container chunk structure (without decoding pixel data) to populate this; static formats
@@ -109,16 +107,12 @@ public abstract class ImageReader implements Closeable {
 
     /** Total plays of an animation: {@link ImageData#REPEAT_FOREVER} (0) to loop forever, otherwise the count; a static image reports 1. */
     public int repeat() { return this.scan().repeat(); }
-
     /** Total frame count; one for a static image. */
     public int frameCount() { return this.scan().frameCount(); }
-
     /** Total playback duration in milliseconds. Static images return {@code 0}. */
     public long duration() { return this.scan().duration(); }
-
     /** Per-frame delays in milliseconds, as a copy the caller owns. Static images return a single {@code 0}. */
     public long[] delays() { return this.scan().delays(); }
-
     /** Delay in milliseconds of the frame the latest {@link #next()} returned; {@code 0} before the first frame. */
     public long delay() { return this.delayMs; }
 
@@ -201,11 +195,6 @@ public abstract class ImageReader implements Closeable {
         return true;
     }
 
-    // REPOSITIONS AT THE FIRST FRAME AND CLEARS THE INTER-FRAME STATE; FALSE WHEN THE READER CANNOT REWIND
-    protected boolean rewind() {
-        return false;
-    }
-
     /**
      * Returns whether another decoded frame can be produced. Implementations may validate and
      * skip non-frame container records while answering this.
@@ -215,9 +204,6 @@ public abstract class ImageReader implements Closeable {
         this.checkOpen();
         return this.hasMore();
     }
-
-    // ANSWERS hasNext(): MAY VALIDATE AND SKIP NON-FRAME CONTAINER RECORDS ON THE WAY TO THE NEXT FRAME
-    protected abstract boolean hasMore() throws IOException;
 
     /**
      * Decodes the next frame, converts it to {@link #pixelFormat()} when a layout was requested and
@@ -250,9 +236,6 @@ public abstract class ImageReader implements Closeable {
         return this.frame = f.buffer();
     }
 
-    /** Decodes the next frame (the base class verified one remains) into a reused direct buffer in {@link #decodedFormat()}, positioned at zero. */
-    protected abstract ByteBuffer decode() throws IOException;
-
     @Override
     public final void close() {
         // THE TRANSITION IS ATOMIC SO TWO CLOSERS NEVER BOTH REACH dispose(); A next() IN FLIGHT FAILS AS A STATE ERROR
@@ -265,9 +248,29 @@ public abstract class ImageReader implements Closeable {
         this.dispose();
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    // LAYOUT OF THE BUFFER decode() RETURNS; A READER THAT HONOURS requestedFormat ITSELF REPORTS IT HERE
+    protected abstract PixelFormat decodedFormat();
+
+    // REPOSITIONS AT THE FIRST FRAME AND CLEARS THE INTER-FRAME STATE; FALSE WHEN THE READER CANNOT REWIND
+    protected boolean rewind() {
+        return false;
+    }
+
+    // ANSWERS hasNext(): MAY VALIDATE AND SKIP NON-FRAME CONTAINER RECORDS ON THE WAY TO THE NEXT FRAME
+    protected abstract boolean hasMore() throws IOException;
+
+    /** Decodes the next frame (the base class verified one remains) into a reused direct buffer in {@link #decodedFormat()}, positioned at zero. */
+    protected abstract ByteBuffer decode() throws IOException;
+
     // RELEASES WHAT THE READER HOLDS BEYOND ITS BUFFERS; RUNS ONCE, ON THE CLOSING THREAD
     protected void dispose() {}
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private void checkOpen() {
         if (this.closed) throw new IllegalStateException(this.name() + " reader is closed");
     }

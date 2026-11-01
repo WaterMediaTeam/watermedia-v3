@@ -51,18 +51,7 @@ public final class NetRequest implements AutoCloseable {
     // A TRICKLING SERVER CAN KEEP EVERY READ UNDER THE SOCKET TIMEOUT, SO A TEXT BODY GETS THIS MANY READ TIMEOUTS IN TOTAL
     private static final int TEXT_DEADLINE_READ_TIMEOUTS = 4;
 
-    /** User-Agent presets: {@link #WATERMEDIA} identifies WaterMedia, {@link #GENERIC} mimics a desktop browser for servers that filter other clients. */
-    public enum UserAgent {
-        WATERMEDIA(WaterMedia.USER_AGENT),
-        GENERIC(WaterMedia.BROWSER_AGENT);
-
-        private final String value;
-        UserAgent(final String value) { this.value = value; }
-        /** Returns the {@code User-Agent} header value of this preset. */
-        public String value() { return this.value; }
-    }
-
-    // ==== REQUEST ====
+    // REQUEST
     private final URI uri;
     private final HttpHeaders headers = new HttpHeaders();
     private String method = "GET";
@@ -75,7 +64,7 @@ public final class NetRequest implements AutoCloseable {
     private long maxBytes = -1L;
     private long deadlineMs;
 
-    // ==== RESPONSE ====
+    // RESPONSE
     // FILLED BY send(); THE RESPONSE ACCESSORS THROW UNTIL THEN
     private URLConnection connection;
     private URI location;
@@ -97,8 +86,9 @@ public final class NetRequest implements AutoCloseable {
         this(URI.create(uri));
     }
 
-    // ==== CONFIGURATION ====
-
+    // ==========================================================================
+    // PUBLIC API: CONFIGURATION
+    // ==========================================================================
     /** Sets the HTTP method, uppercased; the connection validates it on {@link #send()}. */
     public NetRequest method(final String method) { this.method = method.toUpperCase(Locale.ROOT); return this; }
     /** Replaces the {@code Content-Type} header. */
@@ -144,8 +134,9 @@ public final class NetRequest implements AutoCloseable {
         return this;
     }
 
-    // ==== SEND ====
-
+    // ==========================================================================
+    // PUBLIC API: SEND
+    // ==========================================================================
     /** Opens the connection, writes the body and follows redirects by hand, failing on a hop outside http(s) or past {@link #maxRedirects}; the response accessors then answer for the final hop. */
     public NetRequest send() throws IOException {
         if (this.connection != null) throw new IllegalStateException("The request was already sent");
@@ -206,8 +197,9 @@ public final class NetRequest implements AutoCloseable {
         }
     }
 
-    // ==== RESPONSE ====
-
+    // ==========================================================================
+    // PUBLIC API: RESPONSE
+    // ==========================================================================
     /** The URI the response came from, after any followed redirects; the request's own URI before {@link #send()}. */
     public URI uri() { return this.location != null ? this.location : this.uri; }
 
@@ -307,8 +299,9 @@ public final class NetRequest implements AutoCloseable {
         catch (final IOException ignored) {}
     }
 
-    // ==== STATIC HELPERS ====
-
+    // ==========================================================================
+    // PUBLIC API: STATIC HELPERS
+    // ==========================================================================
     /** Splits the raw query into an unmodifiable map decoded once: a malformed pair stays raw, a repeated key keeps its last value, a bare key maps to "". */
     public static Map<String, String> query(final URI uri) {
         final String query = uri == null ? null : uri.getRawQuery();
@@ -337,7 +330,9 @@ public final class NetRequest implements AutoCloseable {
         return guessed != null ? guessed : MIMETYPE_OCTET_STREAM;
     }
 
-    // UTILITY
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // THE HEADERS THAT GO ON THE WIRE TO target: THE DERIVED REFERER, AND NO CREDENTIALS OUTSIDE THE REQUEST'S OWN ORIGIN
     HttpHeaders headersFor(final URI target) {
         final HttpHeaders out = new HttpHeaders(this.headers);
@@ -355,6 +350,9 @@ public final class NetRequest implements AutoCloseable {
         return out;
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private URLConnection open(final URI target, final String method, final byte[] body) throws IOException {
         final URLConnection conn = target.toURL().openConnection();
         conn.setConnectTimeout(this.connectTimeout);
@@ -389,11 +387,28 @@ public final class NetRequest implements AutoCloseable {
         return connection;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // CREDENTIALS AND BODIES BELONG TO AN ORIGIN: SCHEME, HOST AND EFFECTIVE PORT MUST ALL MATCH
     private static boolean sameOrigin(final URI origin, final URI target) {
         final int originPort = origin.getPort() != -1 ? origin.getPort() : ("https".equalsIgnoreCase(origin.getScheme()) ? 443 : 80);
         final int targetPort = target.getPort() != -1 ? target.getPort() : ("https".equalsIgnoreCase(target.getScheme()) ? 443 : 80);
         return origin.getScheme() != null && origin.getScheme().equalsIgnoreCase(target.getScheme())
                 && origin.getHost() != null && origin.getHost().equalsIgnoreCase(target.getHost()) && originPort == targetPort;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /** User-Agent presets: {@link #WATERMEDIA} identifies WaterMedia, {@link #GENERIC} mimics a desktop browser for servers that filter other clients. */
+    public enum UserAgent {
+        WATERMEDIA(WaterMedia.USER_AGENT),
+        GENERIC(WaterMedia.BROWSER_AGENT);
+
+        private final String value;
+        UserAgent(final String value) { this.value = value; }
+        /** Returns the {@code User-Agent} header value of this preset. */
+        public String value() { return this.value; }
     }
 }

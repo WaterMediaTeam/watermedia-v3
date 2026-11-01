@@ -29,6 +29,9 @@ public final class CacheCleaner {
         this.repaint = repaint;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Counts the files and bytes in the media cache, as {@code {files, bytes}}. */
     public static long[] scan() throws IOException {
         final long[] stats = new long[2];
@@ -46,6 +49,9 @@ public final class CacheCleaner {
         return stats;
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // RUNS THE DIALOG'S NEXT ACTION ON A WORKER: OPEN AND SCAN, WIPE THE CACHE, OR CLOSE AND RECOUNT FOR THE NEXT OPEN;
     // A STAGE STILL WORKING JUST KEEPS THE DIALOG OPEN
     void step() {
@@ -78,6 +84,9 @@ public final class CacheCleaner {
         }
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private void count() {
         try {
             this.stage = 1;

@@ -34,13 +34,16 @@ import java.util.regex.Pattern;
 final class SystemInfo {
     private SystemInfo() {}
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // MARKDOWN LIST OF THE PROBLEMS DETECTED ON THIS MACHINE, OR A "None detected" LINE
     static String alerts() {
         final List<String> alerts = new ArrayList<>();
         final String nvidia = nvidiaThreadedOptimizationAlert();
         if (nvidia != null) alerts.add(nvidia);
         if (CodecsAPI.ffmpegError())
-            alerts.add("FFmpeg failed to load — media playback is unavailable. See the attached logs for the native load error.");
+            alerts.add("FFmpeg failed to load: media playback is unavailable. See the attached logs for the native load error.");
         if (alerts.isEmpty()) return "- None detected\n";
         final StringBuilder sb = new StringBuilder();
         for (final String a: alerts) sb.append("- ").append(a).append('\n');
@@ -70,8 +73,9 @@ final class SystemInfo {
                 "- User Dir: " + System.getProperty("user.dir") + "\n";
     }
 
-    // ==== WATERMEDIA AND FFMPEG ====
-
+    // ==========================================================================
+    // WATERMEDIA AND FFMPEG
+    // ==========================================================================
     // BINARIES ARE OPTIONAL FOR THE APP: WITHOUT THEM THE REPORT SAYS SO INSTEAD OF FAILING ON THE MISSING CLASS
     private static String binariesVersion() {
         try { return IOTool.jarVersion(WaterMediaBinaries.class); }
@@ -148,7 +152,7 @@ final class SystemInfo {
     }
 
     private static String detectedExtensions() {
-        // ENUMERATE THE BOOTSTRAP EXTENSION SPI PROVIDERS BY CLASS — provider.type() DOES NOT INSTANTIATE THEM
+        // ENUMERATE THE BOOTSTRAP EXTENSION SPI PROVIDERS BY CLASS; provider.type() DOES NOT INSTANTIATE THEM
         try {
             final StringBuilder sb = new StringBuilder();
             for (final var provider: ServiceLoader.load(AppBootstrap.Extension.class).stream().toList()) {
@@ -161,8 +165,9 @@ final class SystemInfo {
         }
     }
 
-    // ==== MACHINE ====
-
+    // ==========================================================================
+    // MACHINE
+    // ==========================================================================
     private static String nvidiaThreadedOptimizationAlert() {
         // NVIDIA "Threaded Optimization" CRASHES OR STUTTERS LWJGL APPS AND HAS NO JAVA API; THE GL WORKER THREADS
         // IT SPAWNS INSIDE nvoglv64.dll GIVE IT AWAY. WINDOWS + OPENGL + NVIDIA ONLY
@@ -181,7 +186,7 @@ final class SystemInfo {
             final int workers = DataTool.parseInt(out, -1);
             if (workers > 0)
                 return "NVIDIA \"Threaded Optimization\" appears ENABLED (" + workers + " GL worker thread(s) inside nvoglv64.dll). "
-                        + "It is a known cause of OpenGL crashes/stutter with LWJGL — turn it Off in "
+                        + "It is a known cause of OpenGL crashes/stutter with LWJGL; turn it Off in "
                         + "NVIDIA Control Panel > Manage 3D Settings > Threaded Optimization.";
         } catch (final Throwable ignored) {}
         return null;
@@ -190,7 +195,7 @@ final class SystemInfo {
     private static String osInfo() {
         final String base = System.getProperty("os.name") + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")";
         if (!"windows".equals(IOTool.os())) return base;
-        // os.version ON WINDOWS IS ONLY "10.0" — THE REAL BUILD NUMBER COMES FROM "cmd /c ver"; MATCH THE DOTTED
+        // os.version ON WINDOWS IS ONLY "10.0": THE REAL BUILD NUMBER COMES FROM "cmd /c ver"; MATCH THE DOTTED
         // VERSION ITSELF, NOT THE WORD "Version" (cmd IS LOCALIZED, e.g. "Versión")
         final String out = runCommand(2_500, "cmd", "/c", "ver");
         if (out == null) return base;
@@ -260,8 +265,9 @@ final class SystemInfo {
         return "unknown";
     }
 
-    // ==== UTILITY ====
-
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static String runCommand(final long timeoutMs, final String... command) {
         Process p = null;
         try {

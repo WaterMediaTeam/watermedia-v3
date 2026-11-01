@@ -25,6 +25,9 @@ public final class ClickSound {
     public boolean enabled = true;
     private int source = -1;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Opens the default OpenAL device and loads the tick; without audio the app keeps running silent. */
     public void open() {
         try {
@@ -47,6 +50,9 @@ public final class ClickSound {
         }
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private void load() {
         try (final InputStream in = IOTool.jarOpenFile("assets/watermedia/sounds/duck.ogg")) {
             final byte[] soundBytes = in.readAllBytes();

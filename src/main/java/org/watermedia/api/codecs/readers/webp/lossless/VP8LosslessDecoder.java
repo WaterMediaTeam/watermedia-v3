@@ -29,6 +29,9 @@ public final class VP8LosslessDecoder {
 
     private VP8LosslessDecoder() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Decodes VP8L image data that starts past the 5-byte header and inverse transforms it into {@code width * height} packed ARGB pixels. */
     public static int[] decode(final ByteBuffer data, final int width, final int height) throws CodecException {
         LOGGER.trace(IT, "Starting decode: {}x{}", width, height);
@@ -40,7 +43,7 @@ public final class VP8LosslessDecoder {
         int seenTransforms = 0;
 
         while (reader.readBool()) {
-            final Transform.Type type = Transform.typeof(reader.read(2));
+            final Transform.Type type = Transform.Type.VALUES[reader.read(2)];
             // RFC 9649: EACH TRANSFORM TYPE MAY APPEAR AT MOST ONCE; UNCHECKED REPEATS WOULD LET
             // A TINY FILE QUEUE THOUSANDS OF FULL-IMAGE INVERSE PASSES (CPU DOS)
             final int typeBit = 1 << type.ordinal();
@@ -129,6 +132,9 @@ public final class VP8LosslessDecoder {
         return pixels;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static Transform readTransform(final BitReader reader, final Transform.Type type, final int width, final int height) throws CodecException {
         return switch (type) {
             case PREDICTOR, COLOR -> {
@@ -250,5 +256,36 @@ public final class VP8LosslessDecoder {
         }
 
         return pixels;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    // THE FIVE PREFIX CODES OF ONE VP8L META GROUP
+    record HuffmanGroup(
+            HuffmanTable green,    // GREEN + LENGTH + COLOR CACHE
+            HuffmanTable red,
+            HuffmanTable blue,
+            HuffmanTable alpha,
+            HuffmanTable dist      // DISTANCE
+    ) {}
+
+    // width IS THE IMAGE WIDTH WHEN THE TRANSFORM WAS READ (libwebp xsize_): COLOR INDEXING PACKS SEVERAL
+    // INDEXES PER PIXEL, SO EVERY TRANSFORM READ AFTER IT, AND ITS OWN INVERSE INPUT, USE THE PACKED WIDTH
+    private record Transform(
+            Type type,
+            int width,         // WIDTH THE INVERSE OPERATES ON
+            int bits,          // BLOCK SIZE BITS FOR PREDICTOR/COLOR, PIXEL PACKING BITS FOR COLOR_INDEXING
+            int[] data         // PREDICTOR MODES, COLOR TRANSFORM ELEMENTS, OR COLOR TABLE
+    ) {
+        // ORDINALS ARE THE TWO-BIT WEBP TRANSFORM CODES: NEVER REORDER
+        enum Type {
+            PREDICTOR,       // 0
+            COLOR,           // 1
+            SUBTRACT_GREEN,  // 2
+            COLOR_INDEXING;  // 3
+
+            private static final Type[] VALUES = values();
+        }
     }
 }

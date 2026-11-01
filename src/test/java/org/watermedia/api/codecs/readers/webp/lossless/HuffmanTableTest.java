@@ -24,6 +24,16 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 @DisplayName("HuffmanTable")
 public class HuffmanTableTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static BitReader reader(final int... bytes) {
+        return new BitReader(ByteBuffer.wrap(new ImageBytes().raw(bytes).bytes()).order(ByteOrder.LITTLE_ENDIAN));
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Simple tables")
     class Simple {
@@ -107,10 +117,5 @@ public class HuffmanTableTest {
             // COLLIDE IN THE LOOKUP TABLE, SO build() MUST REJECT IT INSTEAD OF DECODING TO GARBAGE
             assertThrows(CodecException.class, () -> HuffmanTable.build(new int[] { 1, 1, 1, 0, 0, 0, 0, 0 }, 8), "Over-subscribed code lengths must throw");
         }
-    }
-
-    // UTILITY
-    private static BitReader reader(final int... bytes) {
-        return new BitReader(ByteBuffer.wrap(new ImageBytes().raw(bytes).bytes()).order(ByteOrder.LITTLE_ENDIAN));
     }
 }

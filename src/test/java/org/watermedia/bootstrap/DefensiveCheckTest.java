@@ -23,7 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Verifies the TLauncher check passes a clean JVM, binds only launcher-owned names and reports leftovers without blocking. */
 @DisplayName("DefensiveCheck")
 public class DefensiveCheckTest {
-
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("found")
     class Found {

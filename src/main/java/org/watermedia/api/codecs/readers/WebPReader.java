@@ -12,7 +12,6 @@ import org.watermedia.api.codecs.common.Limits;
 import org.watermedia.api.codecs.common.Tiff;
 import org.watermedia.api.codecs.common.Xmp;
 import org.watermedia.api.codecs.readers.webp.AlphaDecoder;
-import org.watermedia.api.codecs.readers.webp.FourCC;
 import org.watermedia.api.codecs.readers.webp.lossless.VP8LosslessDecoder;
 import org.watermedia.api.codecs.readers.webp.lossy.VP8LossyDecoder;
 import org.watermedia.api.util.PixelFormat;
@@ -60,6 +59,7 @@ public final class WebPReader extends ImageReader {
     private final int orientation;
     private final int bodyStart;           // FIRST CHUNK AFTER THE HEADER CHUNK; reset() REPLAYS ANIMATIONS FROM HERE
     private final ImageData.Scan scan;
+    private final boolean[] repairWarned = new boolean[1]; // VP8 PARTITION REPAIRS ARE LOGGED ONCE PER READER
 
     // STILLS: THE BITSTREAM AND OPTIONAL ALPH CHUNKS, SLICED FROM THE SOURCE
     private ByteBuffer bitstream;
@@ -74,7 +74,6 @@ public final class WebPReader extends ImageReader {
     private ByteBuffer pendingFrame;       // BODY OF THE ANMF CHUNK hasMore() LOCATED
     private int frames;                    // FRAMES YIELDED IN THE CURRENT PASS
     private ByteBuffer oriented;           // EXIF-REMAPPED DELIVERY TARGET, ALLOCATED ON THE FIRST FRAME WHEN THE TAG IS NOT 1
-    private final boolean[] repairWarned = new boolean[1]; // VP8 PARTITION REPAIRS ARE LOGGED ONCE PER READER
 
     public WebPReader(final ByteBuffer data) throws IOException { this(data, null); }
 
@@ -145,10 +144,17 @@ public final class WebPReader extends ImageReader {
                 this.scan.frameCount(), this.orientation);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     @Override public int width() { return this.orientation >= 5 ? this.canvasHeight : this.canvasWidth; }
     @Override public int height() { return this.orientation >= 5 ? this.canvasWidth : this.canvasHeight; }
-    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return this.scan; }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
 
     @Override
     protected boolean hasMore() throws IOException {
@@ -339,8 +345,6 @@ public final class WebPReader extends ImageReader {
     // ==========================================================================
     // UTILITY
     // ==========================================================================
-    private record Chunk(int fourCC, int at, int size) {}
-
     // READS THE CHUNK HEADER AT THE POSITION AND MOVES PAST THE BODY AND ITS PAD BYTE, WHICH THE LAST CHUNK MAY
     // OMIT; A BODY RUNNING PAST THE BUFFER (THE RIFF SIZE BOUNDS IT) IS TRUNCATION
     private static Chunk chunk(final ByteBuffer in) throws CodecException {
@@ -373,5 +377,36 @@ public final class WebPReader extends ImageReader {
         final int bh = ((bits >> 14) & 0x3FFF) + 1;
         if (bw != w || bh != h) throw new CodecException("VP8L bitstream is " + bw + "x" + bh + ", container declares " + w + "x" + h);
         return bitstream.slice(VP8L_HEADER_BYTES, bitstream.limit() - VP8L_HEADER_BYTES);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    // A RIFF CHUNK: ITS IDENTIFIER AND WHERE ITS BODY LIES IN THE SOURCE
+    private record Chunk(int fourCC, int at, int size) {}
+
+    // RIFF CHUNK IDENTIFIERS AS LITTLE-ENDIAN INTS, PLUS THEIR ASCII SPELLING
+    static final class FourCC {
+        static final int VP8 = 0x20385056; // 'VP8 '
+        static final int VP8L = 0x4C385056; // 'VP8L'
+        static final int VP8X = 0x58385056; // 'VP8X'
+        static final int ANIM = 0x4D494E41; // 'ANIM'
+        static final int ANMF = 0x464D4E41; // 'ANMF'
+        static final int ALPH = 0x48504C41; // 'ALPH'
+        static final int ICCP = 0x50434349; // 'ICCP'
+        static final int EXIF = 0x46495845; // 'EXIF'
+        static final int XMP = 0x20504D58; // 'XMP '
+
+        private FourCC() {}
+
+        // DECODES THE FOUR LITTLE-ENDIAN ASCII BYTES OF A CHUNK IDENTIFIER
+        static String fourCCString(final int fourCC) {
+            return new String(new char[] {
+                    (char) (fourCC & 0xFF),
+                    (char) ((fourCC >> 8) & 0xFF),
+                    (char) ((fourCC >> 16) & 0xFF),
+                    (char) ((fourCC >> 24) & 0xFF)
+            });
+        }
     }
 }

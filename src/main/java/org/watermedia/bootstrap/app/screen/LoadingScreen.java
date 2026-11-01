@@ -39,6 +39,21 @@ public final class LoadingScreen extends Screen {
         super(text, ctx);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
+    // NO keybinds() OVERRIDE: BOOT HAS NO CANCEL PATH, SO THE SPLASH ADVERTISES NO SHORTCUTS
+
+    @Override
+    public boolean continuous() {
+        return true;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @Override
     protected Element<?> build() {
         return new CenterFrame().add(Parent.column()
@@ -50,21 +65,18 @@ public final class LoadingScreen extends Screen {
                 .add(new ModuleBar().gravity(Gravity.CENTER)));
     }
 
-    @Override
-    public boolean continuous() {
-        return true;
-    }
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
 
-    // NO keybinds() OVERRIDE: BOOT HAS NO CANCEL PATH, SO THE SPLASH ADVERTISES NO SHORTCUTS
-
-    // ASPECT-FIT INTO A BOX — ZERO WHEN THE SOURCE OR THE BOX IS INVALID (MISSING/LATE-LOADED TEXTURE)
+    // ASPECT-FIT INTO A BOX, ZERO WHEN THE SOURCE OR THE BOX IS INVALID (MISSING/LATE-LOADED TEXTURE)
     private static Fit fit(final int srcW, final int srcH, final int maxW, final int maxH) {
         if (srcW <= 0 || srcH <= 0 || maxW <= 0 || maxH <= 0) return new Fit(0, 0);
         final float scale = Math.min((float) maxW / srcW, (float) maxH / srcH);
         return new Fit(Math.max(1, Math.round(srcW * scale)), Math.max(1, Math.round(srcH * scale)));
     }
 
-    // GLOW SPRITE BEHIND AN IMAGE — THE GLOW TEXTURE IS THE SOURCE PLUS BLUR PADDING, SO IT IS SCALED BY
+    // GLOW SPRITE BEHIND AN IMAGE: THE GLOW TEXTURE IS THE SOURCE PLUS BLUR PADDING, SO IT IS SCALED BY
     // THE IMAGE'S OWN SCALE AND OVERDRAWS EVENLY AROUND IT
     private static void drawGlow(final Canvas canvas, final int glowId, final int glowW, final int glowH,
                                  final int srcW, final int srcH, final int x, final int y, final int w, final int h) {
@@ -74,6 +86,10 @@ public final class LoadingScreen extends Screen {
         canvas.image(glowId, x - (glowW - srcW) * 0.5f * sx, y - (glowH - srcH) * 0.5f * sy,
                 glowW * sx, glowH * sy, null);
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     private record Fit(int w, int h) {}
 
@@ -123,7 +139,7 @@ public final class LoadingScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            // TEXTURE IDS READ PER DRAW — THEY CAN FINISH LOADING AFTER THE FIRST FRAMES
+            // TEXTURE IDS READ PER DRAW: THEY CAN FINISH LOADING AFTER THE FIRST FRAMES
             final Assets a = this.ctx.assets;
             drawGlow(canvas, a.bannerGlowId, a.bannerGlowWidth, a.bannerGlowHeight,
                     a.bannerWidth, a.bannerHeight, this.left, this.top, this.imgW, this.imgH);

@@ -18,6 +18,10 @@ public final class Icon extends Element<Icon> {
         this.icon = icon == null ? "" : icon;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public Icon icon(final String value) {
         this.icon = value == null ? "" : value;
         return this;
@@ -32,6 +36,10 @@ public final class Icon extends Element<Icon> {
         this.color = value;
         return this;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {

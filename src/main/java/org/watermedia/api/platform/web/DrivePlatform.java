@@ -9,7 +9,6 @@ import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -28,14 +27,18 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class DrivePlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(DrivePlatform.class.getSimpleName());
     public static final String NAME = "Google Drive";
+    private static final String[] HOSTS = { "drive.google.com" };
     private static final String DOWNLOAD_URL = "https://drive.usercontent.google.com/download?id=%s&export=download&authuser=0&acknowledgeAbuse=true";
     private static final String API_URL = "https://www.googleapis.com/drive/v3/files/%s?alt=media&acknowledgeAbuse=true&key=%s";
     private static final String LUCK = new String(Base64.getDecoder().decode(new String(Base64.getDecoder().decode("UVVsNllWTjVRVTVpVFhkWGQyWnhiSE5QWWtoVlEwODFjbUZ6TjBGcmNXaE5UWEphUVZWWg=="), StandardCharsets.UTF_8)), StandardCharsets.UTF_8);
     private static final Pattern HTML_PATTERN = Pattern.compile("<input[^>]*name=\"([^\"]+)\"[^>]*value=\"([^\"]+)\"", Pattern.DOTALL | Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
-    private static final String[] HOSTS = { "drive.google.com" };
     private static final String FILE_PREFIX = "/file/d/";
     // A CONFIRMED DOWNLOAD URL CARRIES SESSION TOKENS (uuid, at) WHOSE LIFETIME GOOGLE DOES NOT PUBLISH
     private static final Duration CONFIRMED_TTL = Duration.ofMinutes(30);
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -57,7 +60,7 @@ public final class DrivePlatform implements Platform {
             // THE DRIVE API SERVES THE BYTES DIRECTLY; THE USERCONTENT DOWNLOAD IS THE FALLBACK
             final URI apiUri = URI.create(String.format(API_URL, fileId, LUCK));
             try (final NetRequest req = new NetRequest(apiUri).send()) {
-                if (req.statusCode() == HttpURLConnection.HTTP_OK) {
+                if (req.statusCode() == 200) {
                     final MediaType type = MediaType.of(req.contentType());
                     LOGGER.debug(IT, "Google Drive resolved fileId '{}' via API (content-type {})", fileId, req.contentType());
                     final var entry = new Source(type, null, null,
@@ -78,6 +81,10 @@ public final class DrivePlatform implements Platform {
             throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private Resolution download(final String fileId, final URI original) throws IOException {
         String url = String.format(DOWNLOAD_URL, fileId);
@@ -101,7 +108,7 @@ public final class DrivePlatform implements Platform {
                 final StringBuilder sb = new StringBuilder(url)
                         .append("&uuid=").append(uuid)
                         .append("&confirm=").append(form.getOrDefault("confirm", "t"));
-                final String at = form.get("at"); // OPTIONAL ANTI-FORGERY TOKEN — OMIT WHEN ABSENT TO AVOID "at=null"
+                final String at = form.get("at"); // OPTIONAL ANTI-FORGERY TOKEN, OMITTED WHEN ABSENT TO AVOID "at=null"
                 if (at != null) sb.append("&at=").append(at);
                 url = sb.toString();
                 LOGGER.debug(IT, "Google Drive bypassed confirmation form for fileId '{}' (uuid present, at {})", fileId, at != null ? "present" : "absent");

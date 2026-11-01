@@ -35,6 +35,9 @@ public final class NetworkAPI {
 
     private NetworkAPI() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Uploads every file to the remote WaterMedia server, one status each; all of them are checked before the first upload starts. */
     public static UploadStatus[] upload(final File... files) {
         if (files == null) throw new IllegalArgumentException("Files cannot be null");
@@ -66,6 +69,14 @@ public final class NetworkAPI {
         if (base == null || base.isBlank() || !(base.startsWith("http://") || base.startsWith("https://")))
             throw new IllegalStateException("network.remoteUrl is not an absolute http(s) URL: " + base);
         return base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // THE FILE SERVER RUNS EVERYWHERE UNDER ALWAYS AND ONLY ON HOSTS WITHOUT A CLIENT UNDER DEDICATED
+    static boolean serverEnabled(final boolean client, final WaterMediaConfig.Network.Server server) {
+        return server == WaterMediaConfig.Network.Server.ALWAYS || (!client && server == WaterMediaConfig.Network.Server.DEDICATED);
     }
 
     private static void upload(final File file, final UploadStatus status) {
@@ -148,6 +159,9 @@ public final class NetworkAPI {
         }
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     /** Tracks a file upload to the remote WaterMedia server; every accessor is thread-safe and can be polled from any thread. */
     public static final class UploadStatus {
         private final long totalBytes;
@@ -207,11 +221,6 @@ public final class NetworkAPI {
             this.error = error;
             this.failed = true;
         }
-    }
-
-    // THE FILE SERVER RUNS EVERYWHERE UNDER ALWAYS AND ONLY ON HOSTS WITHOUT A CLIENT UNDER DEDICATED
-    static boolean serverEnabled(final boolean client, final WaterMediaConfig.Network.Server server) {
-        return server == WaterMediaConfig.Network.Server.ALWAYS || (!client && server == WaterMediaConfig.Network.Server.DEDICATED);
     }
 
     /** Internal module: the upload workers and, when configured, the local file server. */

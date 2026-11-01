@@ -39,7 +39,33 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("NetRequest")
 public class NetRequestTest {
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // SERVES /start AS A 302 REDIRECT TO location
+    private static LocalHttp redirect(final String location) {
+        return LocalHttp.start("/start", ex -> {
+            ex.getResponseHeaders().set("Location", location);
+            ex.sendResponseHeaders(302, -1);
+            ex.close();
+        });
+    }
 
+    // SERVES /echo WITH THE VALUE OF THE REQUEST HEADER name AS ITS BODY, SO ASSERTIONS COVER WHAT WENT ON THE WIRE
+    private static LocalHttp echo(final String name) {
+        return LocalHttp.start("/echo", ex -> LocalHttp.respond(ex, "text/plain",
+                String.valueOf(ex.getRequestHeaders().getFirst(name)).getBytes(StandardCharsets.UTF_8), 0));
+    }
+
+    private static String text(final NetRequest request) throws IOException {
+        try (final NetRequest req = request.send()) {
+            return req.text();
+        }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Query")
     class QueryTests {
@@ -113,7 +139,9 @@ public class NetRequestTest {
     @Nested
     @DisplayName("Redirects")
     class RedirectTests {
-
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
         @Test
         @DisplayName("A cross-port redirect strips credentials on the wire")
         void crossPortRedirectRemovesCredentialsOnWire() throws IOException {
@@ -421,28 +449,6 @@ public class NetRequestTest {
             } finally {
                 handlers.shutdownNow();
             }
-        }
-    }
-
-    // UTILITY
-    // SERVES /start AS A 302 REDIRECT TO location
-    private static LocalHttp redirect(final String location) {
-        return LocalHttp.start("/start", ex -> {
-            ex.getResponseHeaders().set("Location", location);
-            ex.sendResponseHeaders(302, -1);
-            ex.close();
-        });
-    }
-
-    // SERVES /echo WITH THE VALUE OF THE REQUEST HEADER name AS ITS BODY, SO ASSERTIONS COVER WHAT WENT ON THE WIRE
-    private static LocalHttp echo(final String name) {
-        return LocalHttp.start("/echo", ex -> LocalHttp.respond(ex, "text/plain",
-                String.valueOf(ex.getRequestHeaders().getFirst(name)).getBytes(StandardCharsets.UTF_8), 0));
-    }
-
-    private static String text(final NetRequest request) throws IOException {
-        try (final NetRequest req = request.send()) {
-            return req.text();
         }
     }
 }

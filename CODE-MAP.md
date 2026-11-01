@@ -3,6 +3,7 @@
 Reference map of this repository for agents. Read it before every task and keep it current: when a task changes
 behavior, API, layout or rules, update the matching section (never leave it describing the old code).
 Mapped on 2026-10-30 against version `3.0.0` (`RELEASE`); counts (files, latches, throw sites) are as of that date.
+Homologation wave of 2026-11-01 (dividers, member order, nested single-owner types, no dashes) folded in.
 Symbol names are exact; line numbers are omitted on purpose.
 Legend: ⚠ gotcha or hard rule, ↪ reuse pointer ("to do X use Y").
 
@@ -99,8 +100,15 @@ The generic version of these rules lives in AGENTS.md → "Code pattern"; this i
 - Digit underscores in numeric literals and unit suffixes in constants (`_MS`, `_NS`, `_BYTES`, `_SIZE`).
 - Class order: `private static final Marker IT = MarkerManager.getMarker(X.class.getSimpleName())`, constants grouped
   under uppercase section comments, static state, fields, constructor, public API, protected hooks, private helpers and
-  a trailing `// UTILITY` section. Long classes are split with `// ====` banner sections (examples: `FFDecoder`,
-  `GLEngine`, `VKEngine`, `TxMediaPlayer`, `MediaPlayer`).
+  a trailing `// UTILITY` section.
+  - Section dividers (owner rule, 2026-11-01): one look everywhere, the three-line box of 81 columns
+    (`// ====...====` / `// TITLE` / `// ====...====`, four-space indent). Every class but a tiny single-section one
+    (under ~80 lines) is split by visibility in this order: header without a box (`IT`, constants, static state, fields,
+    constructors), `PUBLIC API`, `INTERNAL API` (protected and package-private), `HELPERS` (private), `UTILITY`
+    (static helpers), `NESTED TYPES` (always last). Long classes keep topic boxes (`DEMUX THREAD`, `MODE 1: STATIC
+    IMAGE`, `PUBLIC API: CONTROL`) ordered inside that sequence instead of a `HELPERS` box. No one-line
+    `// ==== X ====` banners and no plain `// UTILITY` comments remain. ⚠ No em or en dashes anywhere in the sources,
+    comments and log messages included (0 left on 2026-11-01).
   - A marker is shared across a package only for decoder families: `VP8LosslessDecoder.IT` (used by
     `HuffmanDecoder`) and `VP8LossyDecoder.IT` (used by `VP8BoolDecoder`).
   - Lifecycle hooks are nested `public static final class Module extends WaterMediaModule` (`WaterMediaConfig`,
@@ -152,7 +160,7 @@ Package map (`src/main/java/org/watermedia`):
   `AudioCodec`, `BcReader`, `ReaderFilter`, `DownscaleFilter`, `CodecException`, `UnsupportedFormatException`;
   `common/` (`Canvas`, `Limits`, `Tiff`, `Xmp`, `dds/DdsHeader`, `png/*` 25 chunk records + `PngChunk`, `IChunk`,
   `ColorType`, `Zlib`; `gif/*` 4 block records + `IChunk`);
-  `readers/` (`PngReader`, `GifReader`, `JpegReader`, `WebPReader`, `NetpbmReader`, `netpbm/*`, `svg/*`, `webp/*`);
+  `readers/` (`PngReader`, `GifReader`, `JpegReader`, `WebPReader`, `NetpbmReader`, `svg/*`, `webp/*`);
   `decoders/` (`FFDecoder`, `FrameQueue`, `PacketQueue`, `Placebo`); `encoders/` (`AnimationEncoder`, `PngEncoder`,
   `GifEncoder`, `FFEncoder`).
 - `api/player`: `PlayerAPI`, `MediaPlayer`, `FFMediaPlayer`, `TxMediaPlayer`, `ServerMediaPlayer`, `MRL`,
@@ -405,8 +413,9 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   browser rule `≤10 ms → 100 ms`. Errors are all `CodecException`.
 - `NetpbmReader(ByteBuffer, version[, PixelFormat])`: P1..P6 plain/binary bitmap, grey and colour (maxval ≤ 65535 scaled
   to 8 bits) and P7 PAM tuple types `BLACKANDWHITE[_ALPHA]`, `GRAYSCALE[_ALPHA]`, `RGB[_ALPHA]` (others →
-  `UnsupportedFormatException`); header caps 4 KiB plain / 64 KiB PAM; one image, no metadata. `NetpbmHeader.parse`
-  (record) and `NetpbmType` (magic order, never reorder).
+  `UnsupportedFormatException`); header caps 4 KiB plain / 64 KiB PAM; one image, no metadata. Nested
+  `NetpbmReader.Header.read` (record) and `NetpbmReader.Type` (magic order, never reorder); the `readers/netpbm`
+  package is gone.
 - `JpegReader`: baseline (SOF0), extended sequential (SOF1, 8-bit) and progressive (SOF2) Huffman, 1 or 3 components;
   lossless/hierarchical/arithmetic/12-bit/CMYK → `UnsupportedFormatException`. Whole image decoded in the constructor:
   marker loop with segment-bounded reads, `EntropyReader` (bit buffer, `FF 00` unstuffing, restart markers),
@@ -416,13 +425,15 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   `MAX_FRAME_BYTES=512 MiB` working set computed before allocation, duplicate SOF rejected, `MAX_COMMENTS=64`,
   `MAX_ICC_BYTES=8 MiB`. Metadata: EXIF (orientation applied to pixels with `DataTool.orient`; `METAKEY_ORIENTATION`
   keeps the original value ⚠ do not rotate again), XMP, ICC (assembled from APP2 slices, not applied), comments.
-- `WebPReader`: RIFF chunks `VP8 ` (key frames only), `VP8L`, `VP8X` (+`ANIM`/`ANMF`, `ALPH`, `ICCP`, `EXIF`, `XMP`);
+- `WebPReader`: RIFF chunks `VP8 ` (key frames only), `VP8L`, `VP8X` (+`ANIM`/`ANMF`, `ALPH`, `ICCP`, `EXIF`, `XMP`;
+  ids in the nested `WebPReader.FourCC`);
   `Limits.fits` before allocation, `MAX_FRAMES=4_096` per pass, `MAX_METADATA_BYTES=8 MiB`. Animation: per `ANMF`
   decode, blend (`DataTool.blendOver`) or copy into the canvas, `Canvas.write`, dispose-to-transparent after writing;
   ⚠ `ANIM` background colour is never applied and `rewind()` starts transparent. EXIF orientation applied via
   `DataTool.orient` (VP8X only). `webp/lossless/VP8LosslessDecoder.decode(data, w, h)` (transforms PREDICTOR/COLOR/
-  SUBTRACT_GREEN/COLOR_INDEXING each at most once, colour cache 1..11 bits, meta prefix image, `HuffmanDecoder`/
-  `HuffmanTable` LSB-first with 7-bit lookup, `LZ77` distance map, gates `MAX_GROUPS=4_096`, `MIN_GROUP_BITS=20`,
+  SUBTRACT_GREEN/COLOR_INDEXING each at most once, as the nested `VP8LosslessDecoder.Transform`; colour cache 1..11
+  bits, meta prefix image, `HuffmanDecoder`/`HuffmanTable` LSB-first with 7-bit lookup building the nested
+  `VP8LosslessDecoder.HuffmanGroup`, `LZ77` distance map, gates `MAX_GROUPS=4_096`, `MIN_GROUP_BITS=20`,
   `MAX_FILL_PIXELS=1<<24`, `MAX_COPY_LENGTH=4_096`); `webp/lossy/VP8LossyDecoder.decode[ToBgra]` (RFC 6386 key frames:
   segmentation, `VP8BoolDecoder` with `MAX_PAD_BYTES=16` EOF latch, token partitions, intra prediction, IDCT/WHT, loop
   filter, `DataTool.yuvToBgra`; `codecs.vp8.brokenTokens` tolerates bad partition sizes); `AlphaDecoder.decode/applyAlpha`
@@ -433,8 +444,10 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   → average solid colour, `MAX_DEPTH=512`), shapes `rect`/`circle`/`ellipse`/`line`/`polygon`/`polyline`/`path`
   (`PathParser` full `d` grammar, arcs → cubics), `RenderState` inheritance (fill, stroke, opacity, fill-rule,
   visibility, `currentColor`), `SvgColor.parse` (hex, rgb(a), hsl(a), named), `Path.flatten` (`MAX_SEGMENTS=500_000`,
-  `MAX_POINTS=500_000`), `SvgRasterizer` (scanline, 4 vertical sub-samples, analytic horizontal coverage, non-zero or
-  even-odd, round joins/caps only, `MAX_EDGES=200_000`, `MAX_CROSSINGS=6_000_000`). Output size capped by
+  `MAX_POINTS=500_000`), `SvgRasterizer` (`fill`/`stroke` entry points flatten a `Path` with the device transform, then
+  scanline, 4 vertical sub-samples, analytic horizontal coverage, non-zero or even-odd, round joins/caps only,
+  `MAX_EDGES=200_000`, `MAX_CROSSINGS=6_000_000`; the per-pixel colour source is the nested `SvgPaint.Sampler`). Output
+  size capped by
   `codecs.svg.maxSize` (default 512, never upscaled). ⚠ No `text`, `use`, `clipPath`, `mask`, `filter`, `pattern`,
   `image`, CSS classes, dashes or radial gradients.
 
@@ -781,7 +794,8 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   `follow(URI)` (short links), `hls(playlist, headers)` (best-effort ladder via `M3UTool.qualities`),
   `qualities(playlist, variants)` (drops audio-only; fallback `Quality(playlist,0,0)`).
 - Handlers (`public final class XPlatform implements Platform`, `NAME`, `IT`, hosts via `DataTool.equalsAnyIgnoreCase`
-  or dot-boundary suffixes, Gson-bound private records; durations in seconds converted to ms unless noted):
+  or dot-boundary suffixes through `WebRequests.hostMatches(host, suffixes...)`, Gson-bound private records last;
+  durations in seconds converted to ms unless noted):
   `YtDlpPlatform` (sealed base, hosts soundcloud/snd.sc/facebook/fb.watch/instagram; runs `yt-dlp -J` out of
   process, `PROCESS_TIMEOUT_SECONDS=120`, playlists skip bad items, age limit gate, expiry `DataTool.expiry` else 4 h /
   live 30 min) → `YouTubePlatform` (youtube.com/youtu.be, `--no-playlist` for video ids, bot-check retry with a
@@ -892,7 +906,8 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   attach fails) → `TextRenderer` → `Assets.load` → `initShell()` (`RootScreen`, global error/exit dialogs) →
   `LoadingScreen` frames while thread `WaterMediaApp-Init` runs `WaterMedia.start("WaterMediaApp", null, cwd, true)` →
   `catalog.load()`, `initScreens()` (`home`, `mrl`, `regions`, `player`, `multimedia`, `settings`), extension SPI →
-  `mainLoop()` (frame plan `FramePlan {IDLE, DIRECT, CACHE, COMPOSITE}`, `FrameLimiter` paced to the monitor refresh,
+  `mainLoop()` (nested `WaterMediaApp.FramePlan {IDLE, DIRECT, CACHE, COMPOSITE}` and `WaterMediaApp.FrameLimiter`
+  paced to the monitor refresh,
   `glfwWaitEventsTimeout` when idle, `GlowPulse` thread every 250 ms, `AppConfig.poll`) → `cleanup()` ends with
   `System.exit(0)`. Hot swap GL↔VK (`requestEngineSwap` → `performEngineSwap` at the top of the loop) releases every
   player, disposes text/assets, destroys the window and rebuilds everything on the new backend.
@@ -907,7 +922,7 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   GitHub issue body with `SystemInfo.alerts()/summary()`), `SystemInfo`, `CacheCleaner` (`WaterMedia.tmp()/cache`),
   `ClickSound` (own OpenAL device, `duck.ogg`), `MediaSession` (selected group/MRL/source/quality/player,
   `releasePlayer()` async), `MediaCatalog` (`assets/watermedia/catalog/uris.json`, `iptv.json`; `debug` entries only when
-  DEBUG logging), `ErrorState`, `ScreenManager` (`register`, `navigate(name)` without a stack, mounting over an `under()` screen through
+  DEBUG logging), nested `AppContext.ErrorState`, `ScreenManager` (`register`, `navigate(name)` without a stack, mounting over an `under()` screen through
   `RootScreen.mountUnder`, `releaseMediaAll`).
 
 ### 12.2 Render stack (`app/render`)
@@ -921,7 +936,8 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   glow/shadow when the backend's `supportsSoftRect()` is true, two offscreen layers for the cached tree (`LAYER_BASE`, `LAYER_TOP`),
   `bindMediaTexture(long)` sentinel for 64-bit handles.
 - `RenderBackend` interface (`init`, `cleanup`, `clear`, `viewport`, `createTexture`, `deleteTexture`, `bindTexture`,
-  `useProjection`, `draw(DrawMode, float[], count, textured)`, `lineWidth`, `clip`, `clearClip`, optional
+  `useProjection`, `draw(DrawMode, float[], count, textured)`, `lineWidth`, `clip`, `clearClip`, optional; its nested
+  `RenderBackend.DrawMode` and `RenderBackend.TextureHandle` are the shared vocabulary of the backends and `RenderEngine`,
   `softRect`, `beginFrame/present`, layers, `bindMediaTexture`, `deviceName/Version`). `OpenGLRenderBackend` (GL 3.2
   core, `opengl/ui.*` + `sdf.*` shaders, stream VBO, FBO layers, `-Dwatermedia.gldebug`). `VulkanRenderBackend`
   (also the `VKContext`: instance 1.1..1.4, device scored by discrete GPU and host import, queue plan lending FFmpeg
@@ -954,7 +970,8 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
 
 ### 12.4 Screens (`app/screen`)
 - `Screen extends Group<Screen>`: lazy `build()`, `overlay()` for dialogs (`showDialog/hideDialog`), hooks `onEnter`,
-  `onExit`, `keybinds()` (⚠ return constant lists), `continuous()` (⚠ true repaints every frame), `under()`,
+  `onExit`, `keybinds()` (⚠ return constant lists of the nested `Screen.Keybind(key, label)`), `continuous()` (⚠ true
+  repaints every frame), `under()`,
   `releaseMedia()`; screens that override `dispatchKey` call `super` first and act on `GLFW_RELEASE`. `RootScreen` hosts `Background`,
   `TitleBar`, the center slot, `KeybindsBar`, global dialogs; renders/composites the tree and routes input.
 - `HomeScreen` (`enum Action {OPEN_MULTIMEDIA, UPLOAD_LOGS, CLEANUP, SETTINGS, REGION_SELECTOR, MRL_SELECTOR, PLAYER,

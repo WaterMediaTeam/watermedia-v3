@@ -13,6 +13,10 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
 
     protected final List<Element<?>> children = new ArrayList<>();
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public T add(final Element<?> child) {
         if (child != null) {
             child.parent = this;
@@ -47,11 +51,6 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
         // HIDDEN CHILDREN UPDATE TOO, SO A HIDDEN VIEW CAN BIND ITS OWN VISIBILITY; THE INDEXED LOOP LETS AN
         // onUpdate APPEND CHILDREN WITHOUT A ConcurrentModificationException
         for (int i = 0; i < this.children.size(); i++) this.children.get(i).update();
-    }
-
-    @Override
-    protected void onDraw(final Canvas canvas) {
-        for (final Element<?> child: this.children) child.draw(canvas);
     }
 
     @Override
@@ -135,5 +134,14 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
     public boolean dispatchChar(final int codepoint) {
         for (int i = this.children.size() - 1; i >= 0; i--) if (this.children.get(i).dispatchChar(codepoint)) return true;
         return false;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
+    protected void onDraw(final Canvas canvas) {
+        for (final Element<?> child: this.children) child.draw(canvas);
     }
 }

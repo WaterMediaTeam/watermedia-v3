@@ -19,10 +19,14 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class StreamablePlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(StreamablePlatform.class.getSimpleName());
     public static final String NAME = "Streamable";
+    private static final String[] HOSTS = { "streamable.com", "www.streamable.com" };
     private static final String API_URL = "https://api.streamable.com/videos/";
     // STREAMABLE STATUS CODES: 0=UPLOADING, 1=PROCESSING, 2=READY, 3=ERROR
     private static final int STATUS_READY = 2;
-    private static final String[] HOSTS = { "streamable.com", "www.streamable.com" };
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -69,6 +73,10 @@ public final class StreamablePlatform implements Platform {
                 null, null);
         return new Resolution(null, entry);
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     private record VideoData(String title, int status, int percent, String message, @SerializedName("thumbnail_url") String thumbnail, VideoFiles files) {}
     private record VideoFiles(VideoFile original, VideoFile mp4, @SerializedName("mp4-mobile") VideoFile mp4Small) {}

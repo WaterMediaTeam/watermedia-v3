@@ -68,6 +68,9 @@ public final class PngEncoder extends AnimationEncoder {
         this.staging = new byte[BLOCK_BYTES];
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @Override
     void picture(final ByteBuffer frame, final long durationUs, final int index) {
         final int width = this.video.width();
@@ -199,6 +202,9 @@ public final class PngEncoder extends AnimationEncoder {
         this.pictures.clear();
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     // CUTS THE PENDING DEFLATE OUTPUT INTO BLOCK_BYTES BLOCKS, ONE IDAT OR fdAT PAYLOAD EACH; last ALSO FLUSHES THE STREAM END
     private void drain(final Deflater deflater, final List<byte[]> blocks, final boolean last) {
         while (last ? !deflater.finished() : !deflater.needsInput()) {
@@ -216,6 +222,9 @@ public final class PngEncoder extends AnimationEncoder {
         this.out.write(scratch.array(), 0, scratch.position());
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     // ONE ENCODED FRAME: ITS fcTL AND THE COMPRESSED BLOCKS OF ITS REGION
     private record Picture(FCTL control, List<byte[]> blocks) {}
 }

@@ -70,6 +70,9 @@ public final class AppContext implements Executor {
     // GLOBAL EXIT-CONFIRM DIALOG, RAISED BY THE TITLEBAR CLOSE AND THE EXIT ACTION
     public volatile boolean exitConfirm;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Returns the window width in logical pixels, the coordinate space of the element tree. */
     public int logicalWidth() {
         return Math.round(this.windowWidth / this.uiScale);
@@ -151,5 +154,34 @@ public final class AppContext implements Executor {
     /** Clears the error dialog and runs its close callback. */
     public void clearError() {
         this.error.clear();
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    // STATE OF THE GLOBAL ERROR DIALOG
+    static final class ErrorState {
+        // show() MAY RUN ON A WORKER WHILE syncShell() POLLS has() EVERY FRAME ON THE RENDER THREAD
+        public volatile String title;
+        public volatile String message;
+        public volatile Runnable onClose;
+
+        public void show(final String title, final String message, final Runnable onClose) {
+            this.title = title;
+            this.onClose = onClose;
+            this.message = message; // WRITTEN LAST: has() GATES ON message, SO title/onClose PUBLISH FIRST
+        }
+
+        public boolean has() {
+            return this.message != null;
+        }
+
+        public void clear() {
+            final Runnable callback = this.onClose;
+            this.title = null;
+            this.message = null;
+            this.onClose = null;
+            if (callback != null) callback.run();
+        }
     }
 }

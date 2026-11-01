@@ -47,14 +47,17 @@ public class GLEngineTest {
     private static boolean initialized;
     private static long window = NULL;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @BeforeAll
     static void context() {
-        assumeTrue(!GraphicsEnvironment.isHeadless(), "No display — skipping the OpenGL uploads");
+        assumeTrue(!GraphicsEnvironment.isHeadless(), "No display, skipping the OpenGL uploads");
         MediaBootstrap.client();
         // MACOS REFUSES GLFW OUTSIDE THE MAIN THREAD WITH AN EXCEPTION, WHICH ALSO MEANS "NO CONTEXT HERE"
         try { initialized = glfwInit(); }
         catch (final IllegalStateException offMainThread) { initialized = false; }
-        assumeTrue(initialized, "GLFW could not initialize — skipping");
+        assumeTrue(initialized, "GLFW could not initialize, skipping");
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -62,7 +65,7 @@ public class GLEngineTest {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
         window = glfwCreateWindow(16, 16, "GLEngineTest", NULL, NULL);
-        assumeTrue(window != NULL, "No OpenGL 3.2 core context — skipping");
+        assumeTrue(window != NULL, "No OpenGL 3.2 core context, skipping");
         glfwMakeContextCurrent(window);
         GL.createCapabilities();
     }
@@ -76,6 +79,95 @@ public class GLEngineTest {
         if (initialized) glfwTerminate();
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // READS A PRIVATE FIELD OF AN ENGINE OR ITS KIT: THE RING AND THE SHARED PROGRAMS ARE NOT PART OF THE API
+    private static Object field(final Object owner, final String member) {
+        try {
+            final Field field = owner.getClass().getDeclaredField(member);
+            field.setAccessible(true);
+            return field.get(owner);
+        } catch (final ReflectiveOperationException e) {
+            throw new AssertionError(owner.getClass().getSimpleName() + " has no field " + member, e);
+        }
+    }
+
+    // WHETHER THE CONTEXT CAN BACK THE ENGINE'S PERSISTENT-MAPPED PRODUCER RING
+    private static boolean ringCapable() {
+        final GLCapabilities caps = GL.getCapabilities();
+        return caps.GL_ARB_buffer_storage || caps.OpenGL44;
+    }
+
+    // RUNS EVERY TASK THE ENGINE QUEUED FOR THE RENDER THREAD, INCLUDING THE ONES QUEUED WHILE PUMPING
+    private static void pump(final Queue<Runnable> tasks) {
+        for (Runnable task = tasks.poll(); task != null; task = tasks.poll()) task.run();
+    }
+
+    // 8-BIT LIMITED-RANGE GRAY AS ANY MATRIX SHOWS IT (NEUTRAL CHROMA)
+    private static int gray(final int luma) {
+        return YuvFrames.rgb(BT601[0], BT601[1], false, 8, luma, 128, 128)[0];
+    }
+
+    // AN OPAQUE RGBA EXPECTATION FOR A CONVERTED rgb COLOR
+    private static int[] opaque(final int[] rgb) {
+        return new int[] { rgb[0], rgb[1], rgb[2], 255 };
+    }
+
+    // A 2x2 BGRA FRAME WHOSE EVERY BYTE IS shade
+    private static ByteBuffer bgra(final int shade) {
+        return YuvFrames.plane(0, 8, 2, (row, col) -> shade);
+    }
+
+    // A 2x2 YUV444P FRAME OF ONE UNIFORM YCbCr SAMPLE
+    private static ByteBuffer[] uniform(final int y, final int cb, final int cr) {
+        return new ByteBuffer[] {
+                YuvFrames.plane(0, 2, 2, (row, col) -> y),
+                YuvFrames.plane(0, 2, 2, (row, col) -> cb),
+                YuvFrames.plane(0, 2, 2, (row, col) -> cr) };
+    }
+
+    // A 2x2 10-BIT YUV420P GRAY: LUMA code, NEUTRAL CHROMA
+    private static ByteBuffer[] gray10(final int code) {
+        return new ByteBuffer[] {
+                YuvFrames.plane16(2, 2, (row, col) -> code),
+                YuvFrames.plane16(1, 1, (row, col) -> 512),
+                YuvFrames.plane16(1, 1, (row, col) -> 512) };
+    }
+
+    // LINEAR FILTERING OF A ROW OF TEXELS AT A TEXEL COORDINATE, CLAMPED TO THE EDGES LIKE GL_CLAMP_TO_EDGE
+    private static double bilinear(final int[] texels, final double at) {
+        final double t = Math.max(0.0, Math.min(texels.length - 1.0, at - 0.5));
+        final int first = (int) Math.floor(t);
+        final int second = Math.min(first + 1, texels.length - 1);
+        return texels[first] + (texels[second] - texels[first]) * (t - first);
+    }
+
+    // CONVERTS ONE TIGHT FRAME ON A FRESH ENGINE (null COLOR = THE UNTAGGED GUESS) AND READS ITS RGBA BACK
+    private static ByteBuffer convert(final PixelFormat format, final int width, final int height, final int bits,
+                                      final Colorimetry color, final ByteBuffer[] planes) {
+        final GLEngine engine = PlayerAPI.glEngine(null, null);
+        try {
+            assertTrue(color == null ? engine.format(format, width, height, bits) : engine.format(format, width, height, bits, color));
+            engine.upload(planes, new int[planes.length]);
+            return pixels(engine, width, height);
+        } finally {
+            engine.release();
+        }
+    }
+
+    // READS THE ENGINE'S RGBA TEXTURE BACK, ROW 0 FIRST
+    private static ByteBuffer pixels(final GLEngine engine, final int width, final int height) {
+        final ByteBuffer out = BufferUtils.createByteBuffer(width * height * 4);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, (int) engine.texture());
+        GL11.glGetTexImage(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, out);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        return out;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Plane layouts")
     class Layouts {
@@ -357,90 +449,5 @@ public class GLEngineTest {
                 third.release();
             }
         }
-    }
-
-    // UTILITY
-
-    // READS A PRIVATE FIELD OF AN ENGINE OR ITS KIT: THE RING AND THE SHARED PROGRAMS ARE NOT PART OF THE API
-    private static Object field(final Object owner, final String member) {
-        try {
-            final Field field = owner.getClass().getDeclaredField(member);
-            field.setAccessible(true);
-            return field.get(owner);
-        } catch (final ReflectiveOperationException e) {
-            throw new AssertionError(owner.getClass().getSimpleName() + " has no field " + member, e);
-        }
-    }
-
-    // WHETHER THE CONTEXT CAN BACK THE ENGINE'S PERSISTENT-MAPPED PRODUCER RING
-    private static boolean ringCapable() {
-        final GLCapabilities caps = GL.getCapabilities();
-        return caps.GL_ARB_buffer_storage || caps.OpenGL44;
-    }
-
-    // RUNS EVERY TASK THE ENGINE QUEUED FOR THE RENDER THREAD, INCLUDING THE ONES QUEUED WHILE PUMPING
-    private static void pump(final Queue<Runnable> tasks) {
-        for (Runnable task = tasks.poll(); task != null; task = tasks.poll()) task.run();
-    }
-
-    // 8-BIT LIMITED-RANGE GRAY AS ANY MATRIX SHOWS IT (NEUTRAL CHROMA)
-    private static int gray(final int luma) {
-        return YuvFrames.rgb(BT601[0], BT601[1], false, 8, luma, 128, 128)[0];
-    }
-
-    // AN OPAQUE RGBA EXPECTATION FOR A CONVERTED rgb COLOR
-    private static int[] opaque(final int[] rgb) {
-        return new int[] { rgb[0], rgb[1], rgb[2], 255 };
-    }
-
-    // A 2x2 BGRA FRAME WHOSE EVERY BYTE IS shade
-    private static ByteBuffer bgra(final int shade) {
-        return YuvFrames.plane(0, 8, 2, (row, col) -> shade);
-    }
-
-    // A 2x2 YUV444P FRAME OF ONE UNIFORM YCbCr SAMPLE
-    private static ByteBuffer[] uniform(final int y, final int cb, final int cr) {
-        return new ByteBuffer[] {
-                YuvFrames.plane(0, 2, 2, (row, col) -> y),
-                YuvFrames.plane(0, 2, 2, (row, col) -> cb),
-                YuvFrames.plane(0, 2, 2, (row, col) -> cr) };
-    }
-
-    // A 2x2 10-BIT YUV420P GRAY: LUMA code, NEUTRAL CHROMA
-    private static ByteBuffer[] gray10(final int code) {
-        return new ByteBuffer[] {
-                YuvFrames.plane16(2, 2, (row, col) -> code),
-                YuvFrames.plane16(1, 1, (row, col) -> 512),
-                YuvFrames.plane16(1, 1, (row, col) -> 512) };
-    }
-
-    // LINEAR FILTERING OF A ROW OF TEXELS AT A TEXEL COORDINATE, CLAMPED TO THE EDGES LIKE GL_CLAMP_TO_EDGE
-    private static double bilinear(final int[] texels, final double at) {
-        final double t = Math.max(0.0, Math.min(texels.length - 1.0, at - 0.5));
-        final int first = (int) Math.floor(t);
-        final int second = Math.min(first + 1, texels.length - 1);
-        return texels[first] + (texels[second] - texels[first]) * (t - first);
-    }
-
-    // CONVERTS ONE TIGHT FRAME ON A FRESH ENGINE (null COLOR = THE UNTAGGED GUESS) AND READS ITS RGBA BACK
-    private static ByteBuffer convert(final PixelFormat format, final int width, final int height, final int bits,
-                                      final Colorimetry color, final ByteBuffer[] planes) {
-        final GLEngine engine = PlayerAPI.glEngine(null, null);
-        try {
-            assertTrue(color == null ? engine.format(format, width, height, bits) : engine.format(format, width, height, bits, color));
-            engine.upload(planes, new int[planes.length]);
-            return pixels(engine, width, height);
-        } finally {
-            engine.release();
-        }
-    }
-
-    // READS THE ENGINE'S RGBA TEXTURE BACK, ROW 0 FIRST
-    private static ByteBuffer pixels(final GLEngine engine, final int width, final int height) {
-        final ByteBuffer out = BufferUtils.createByteBuffer(width * height * 4);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, (int) engine.texture());
-        GL11.glGetTexImage(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, out);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
-        return out;
     }
 }

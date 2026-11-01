@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.watermedia.bootstrap.app.WaterMediaApp.FramePlan;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 

@@ -61,6 +61,9 @@ public class AppConfig {
     private static boolean late;
     private static Boolean crtBeforeLoad;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Returns the registered spec, or {@code null} when registration failed. */
     public static ConfigSpec spec() {
         return spec;
@@ -146,6 +149,9 @@ public class AppConfig {
         return factor == 0f ? "Auto" : "x" + factor;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static boolean settled(final ConfigSpec s) {
         return s == null || s.isLoaded() || s.status() == ConfigSpec.Status.FAILED;
     }

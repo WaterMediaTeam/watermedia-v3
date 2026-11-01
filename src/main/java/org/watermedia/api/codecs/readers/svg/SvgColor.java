@@ -11,7 +11,7 @@ import java.util.Map;
  * negative {@link #INVALID} cannot collide with a colour: every 32-bit pattern is a legal ARGB value.
  */
 final class SvgColor {
-    // SENTINEL RETURNED FOR AN UNPARSEABLE COLOUR TOKEN — NEGATIVE, SO IT CANNOT COLLIDE WITH ANY
+    // SENTINEL RETURNED FOR AN UNPARSEABLE COLOUR TOKEN: NEGATIVE, SO IT CANNOT COLLIDE WITH ANY
     // PACKED ARGB VALUE (e.g. rgba(0,0,1,0) == 0x00000001 IS A REAL, FULLY TRANSPARENT COLOUR)
     static final long INVALID = -1L;
 
@@ -65,12 +65,11 @@ final class SvgColor {
 
     private SvgColor() {}
 
-    static int argb(final int a, final int r, final int g, final int b) {
-        return (a << 24) | (r << 16) | (g << 8) | b;
-    }
-
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // PARSES A COLOUR; RETURNS currentColor FOR "currentColor", INVALID WHEN UNRECOGNISED.
-    // VALID RESULTS ARE UNSIGNED 32-BIT ARGB — CALLERS CHECK AGAINST INVALID THEN CAST TO int
+    // VALID RESULTS ARE UNSIGNED 32-BIT ARGB: CALLERS CHECK AGAINST INVALID THEN CAST TO int
     static long parse(final String raw, final int currentColor) {
         if (raw == null) return INVALID;
         final String s = raw.trim();
@@ -88,6 +87,9 @@ final class SvgColor {
         return named != null ? named & 0xFFFFFFFFL : INVALID;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static long parseHex(final String s) {
         final String h = s.substring(1);
         try {
@@ -118,7 +120,7 @@ final class SvgColor {
     private static long parseRgb(final String s) {
         final int open = s.indexOf('('), close = s.indexOf(')');
         // close > open, NOT MERELY "BOTH PRESENT": "rgb)(" WOULD MAKE substring THROW WITH begin > end,
-        // AND AN UNPARSEABLE COLOUR MUST SIMPLY BE INVALID — CALLERS ALREADY HANDLE THAT
+        // AND AN UNPARSEABLE COLOUR MUST SIMPLY BE INVALID, WHICH CALLERS ALREADY HANDLE
         if (open < 0 || close <= open) return INVALID;
         final String[] parts = s.substring(open + 1, close).trim().split("[,\\s/]+");
         if (parts.length < 3) return INVALID;
@@ -145,7 +147,7 @@ final class SvgColor {
             final double sat = pct(parts[1]);
             final double lig = pct(parts[2]);
             final int a = parts.length >= 4 ? alpha(parts[3]) : 255;
-            // MASK TO UNSIGNED — A SIGN-EXTENDED NEGATIVE int (e.g. OPAQUE WHITE == -1) WOULD COLLIDE WITH INVALID
+            // MASK TO UNSIGNED: A SIGN-EXTENDED NEGATIVE int (e.g. OPAQUE WHITE == -1) WOULD COLLIDE WITH INVALID
             return hslToArgb(h, sat, lig, a) & 0xFFFFFFFFL;
         } catch (final NumberFormatException e) {
             return INVALID;
@@ -197,5 +199,9 @@ final class SvgColor {
         if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
         if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
         throw new NumberFormatException("bad hex: " + ch);
+    }
+
+    private static int argb(final int a, final int r, final int g, final int b) {
+        return (a << 24) | (r << 16) | (g << 8) | b;
     }
 }

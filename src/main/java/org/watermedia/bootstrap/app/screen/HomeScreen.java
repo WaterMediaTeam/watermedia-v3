@@ -48,14 +48,6 @@ import static org.lwjgl.glfw.GLFW.*;
 public class HomeScreen extends Screen {
     private static final Marker IT = MarkerManager.getMarker(HomeScreen.class.getSimpleName());
 
-    public enum Action {
-        OPEN_MULTIMEDIA, UPLOAD_LOGS, CLEANUP,
-        SETTINGS,
-        REGION_SELECTOR,
-        MRL_SELECTOR, PLAYER,
-        EXIT, BACK
-    }
-
     private static final int UPLOAD_ROW_H = 52;
     private static final int UPLOAD_ROW_DETAIL_H = 58;
     private static final int UPLOAD_PANEL_PAD = 14;
@@ -84,9 +76,6 @@ public class HomeScreen extends Screen {
     private static final List<Keybind> KEYS_MENU = List.of(
             new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Exit"));
 
-    private record MenuEntry(String label, String meta, Action action, int groupIndex) {}
-    private record RepoTarget(String name, String slug, String url, Color accent) {}
-
     private final Consumer<Action> navigator;
     private final List<MenuEntry> actions = new ArrayList<>();
     private final List<MenuEntry> mediaTests = new ArrayList<>();
@@ -99,7 +88,7 @@ public class HomeScreen extends Screen {
     private int visibleMediaCount;
     private int selectedEntertainment;
 
-    // RETAINED TREE — BUILT ONCE, BOUND TO LIVE STATE EVERY FRAME IN onUpdate
+    // RETAINED TREE: BUILT ONCE, BOUND TO LIVE STATE EVERY FRAME IN onUpdate
     private HomeBody grid;
     private Dialog uploadDialog;
     private Dialog cleanupDialog;
@@ -127,6 +116,10 @@ public class HomeScreen extends Screen {
         this.navigator = navigator;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     @Override
     public void onEnter() {
         this.rebuildMenu();
@@ -134,41 +127,49 @@ public class HomeScreen extends Screen {
         this.refreshCacheSize();
     }
 
-    private void rebuildMenu() {
-        this.actions.clear();
-        this.mediaTests.clear();
-        this.entertainment.clear();
-
-        this.actions.add(new MenuEntry("Play media", "ENTER", Action.OPEN_MULTIMEDIA, -1));
-        this.actions.add(new MenuEntry("Upload Logs", LogUploader.WORKDIR_IS_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
-        this.actions.add(new MenuEntry("Cleanup cache", this.cacheLabel, Action.CLEANUP, -1));
-        if (WaterMedia.LOGGER.isDebugEnabled()) this.actions.add(new MenuEntry("Settings", "S", Action.SETTINGS, -1));
-        this.actions.add(new MenuEntry("Exit", "ESC", Action.EXIT, -1));
-
-        if (this.ctx.catalog.uriGroups != null) {
-            for (int i = 0; i < this.ctx.catalog.uriGroups.length; i++) {
-                final MediaCatalog.URIGroup group = this.ctx.catalog.uriGroups[i];
-                this.mediaTests.add(new MenuEntry(group.name(), group.uris().length + " samples", null, i));
+    @Override
+    public boolean dispatchKey(final int key, final int action) {
+        // THE TREE GOES FIRST: A VISIBLE DIALOG IS MODAL AND SWALLOWS EVERYTHING (ESC/ENTER/ARROWS)
+        if (super.dispatchKey(key, action)) return true;
+        if (action != GLFW_RELEASE) return false;
+        switch (key) {
+            case GLFW_KEY_UP -> this.moveSelection(-1);
+            case GLFW_KEY_DOWN -> this.moveSelection(1);
+            case GLFW_KEY_LEFT -> this.switchPanel(0);
+            case GLFW_KEY_RIGHT -> this.switchPanel(this.mediaTests.isEmpty() && !this.entertainment.isEmpty() ? 2 : 1);
+            case GLFW_KEY_U, GLFW_KEY_S -> {
+                // RESOLVE BY ACTION, NOT A HARDCODED SLOT: A MENU REORDER MUST NOT RETARGET A SHORTCUT AT ANOTHER ENTRY
+                final int idx = this.actionIndex(key == GLFW_KEY_U ? Action.UPLOAD_LOGS : Action.SETTINGS);
+                if (idx >= 0) {
+                    this.selectedPanel = 0;
+                    this.selectedAction = idx;
+                    this.confirmSelection();
+                }
+            }
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.confirmSelection();
+            case GLFW_KEY_ESCAPE -> this.navigator.accept(Action.EXIT);
+            default -> {
+                return false;
             }
         }
-        if (!this.ctx.catalog.customTests.isEmpty()) {
-            final String label = "CUSTOM (" + this.ctx.catalog.customTests.size() + ")";
-            this.mediaTests.add(new MenuEntry(label, "custom", null, -2));
-        }
-        if (this.ctx.catalog.iptvChannels.length > 0) this.entertainment.add(new MenuEntry("Television", "", Action.REGION_SELECTOR, -1));
-
-        // THE KEYBOARD SELECTION MUST NEVER POINT AT A TILE THE FRESH LISTS DROPPED
-        this.selectedAction = MathUtil.clamp(this.selectedAction, 0, this.actions.size() - 1);
-        this.selectedMedia = MathUtil.clamp(this.selectedMedia, 0, Math.max(0, this.mediaTests.size() - 1));
-        this.selectedEntertainment = MathUtil.clamp(this.selectedEntertainment, 0, Math.max(0, this.entertainment.size() - 1));
-        if (this.selectedPanel == 1 && this.mediaTests.isEmpty()) this.selectedPanel = 0;
-        if (this.selectedPanel == 2 && this.entertainment.isEmpty()) this.selectedPanel = 0;
-
-        // REBUILD THE TILE ELEMENTS SO THEY MATCH THE CURRENT MENU ENTRIES
-        if (this.grid != null) this.grid.sync();
+        return true;
     }
 
-    // ==== TREE CONSTRUCTION ====
+    @Override
+    public List<Keybind> keybinds() {
+        if (this.ctx.upload.visible) return this.ctx.upload.stage >= 3 ? KEYS_UPLOAD_REPORT : KEYS_UPLOAD;
+        if (this.ctx.cleanup.visible) return KEYS_CLEANUP;
+        return KEYS_MENU;
+    }
+
+    @Override
+    public boolean continuous() {
+        return this.ctx.backendsLoading || this.ctx.upload.working || this.ctx.cleanup.working;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected Element<?> build() {
@@ -187,6 +188,81 @@ public class HomeScreen extends Screen {
         return column;
     }
 
+    @Override
+    protected void onUpdate() {
+        // FRAME BINDING: PULLS ctx.upload AND ctx.cleanup INTO THE RETAINED DIALOGS
+        if (this.uploadDialog == null) return; // TREE NOT BUILT YET
+
+        final var up = this.ctx.upload;
+        final boolean report = up.stage >= 3;
+        if (this.uploadDialog.visible() != up.visible || this.cleanupDialog.visible() != this.ctx.cleanup.visible) this.invalidate();
+
+        this.uploadDialog.visible(up.visible)
+                .title(up.done ? "SUCCESS" : "UPLOAD LOG FILES")
+                .accent(up.done ? AppTheme.GREEN : AppTheme.CYAN)
+                .panelWidth(Math.min(report ? 900 : 890, this.ctx.logicalWidth() - 48));
+        this.filesPanel.visible(!report);
+        this.reportPane.visible(report);
+
+        if (up.visible && !report) {
+            final int rowH = up.stage >= 2 ? UPLOAD_ROW_DETAIL_H : UPLOAD_ROW_H;
+            this.fileList.rowHeight(rowH);
+            final List<LogUploader.FileEntry> rows = this.visibleUploadFiles();
+            // ROWS ARE REBUILT ONLY WHEN MEMBERSHIP CHANGES; ROW CONTENT BINDS ITSELF EVERY FRAME
+            if (!rows.equals(this.uploadRows)) {
+                this.uploadRows = rows;
+                this.fileList.items(rows);
+            }
+            // AN EMPTY SCAN KEEPS ONE BLANK ROW OF PANEL HEIGHT
+            this.fileList.height(rows.isEmpty() ? rowH : WRAP_CONTENT);
+        }
+
+        if (up.visible && report) {
+            final List<RepoTarget> targets = this.uploadRepoTargets();
+            if (!targets.equals(this.repoTargets)) {
+                this.repoTargets = targets;
+                this.repoList.items(targets.subList(1, targets.size()));
+            }
+            final boolean mods = targets.size() > 1;
+            this.repoList.visible(mods);
+            this.noMods.visible(!mods);
+        } else if (!this.repoTargets.isEmpty()) {
+            // OUTSIDE THE REPORT STAGE THE REPO PICKER STATE IS DORMANT, RESET SO IT STARTS FRESH
+            this.repoTargets = List.of();
+            this.repoSelected = 0;
+            this.repoList.items(List.of()).selection(-1);
+        }
+
+        this.uploadCancel.label(up.done ? "CLOSE" : "CANCEL");
+        final boolean upEnabled = this.uploadPrimaryEnabled();
+        final String upLabel = up.stage <= 1 ? "UPLOAD TO MCLO.GS" : up.stage == 2 ? "GENERATE REPORT"
+                : "OPEN " + this.selectedRepo().name().toUpperCase(Locale.ROOT);
+        final Color upColor = !upEnabled ? AppTheme.TEXT_FAINT : up.done || up.uploadsDone ? AppTheme.GREEN : AppTheme.CYAN;
+        this.uploadPrimary.label(upLabel)
+                .icon(upLabel.startsWith("UPLOAD") ? "upload" : upLabel.startsWith("OPEN") ? "link" : upLabel.startsWith("GENERATE") ? "check" : "")
+                .accent(upColor).textColor(upColor)
+                .enabled(upEnabled);
+
+        final var cl = this.ctx.cleanup;
+        this.cleanupDialog.visible(cl.visible)
+                .title(cl.done ? "CACHE CLEANED" : "CLEAN CACHE")
+                .accent(cl.error ? AppTheme.RED : cl.done ? AppTheme.GREEN : AppTheme.CYAN)
+                .panelWidth(Math.min(740, this.ctx.logicalWidth() - 48));
+        // ONCE THE CLEAN RAN THE PRIMARY ALREADY SAYS CLOSE: HIDE CANCEL SO THE FOOTER NEVER SHOWS TWO CLOSE BUTTONS
+        this.cleanupCancel.visible(cl.stage <= 1);
+        final boolean clEnabled = this.cleanupPrimaryEnabled();
+        final String clLabel = cl.stage <= 1 ? "CLEAN CACHE" : "CLOSE";
+        final Color clColor = !clEnabled ? AppTheme.TEXT_FAINT : cl.done ? AppTheme.GREEN : AppTheme.CYAN;
+        this.cleanupPrimary.label(clLabel)
+                .icon(clLabel.startsWith("CLEAN") ? "broom" : "x")
+                .accent(clColor).textColor(clColor)
+                .enabled(clEnabled);
+    }
+
+    // ==========================================================================
+    // TREE CONSTRUCTION
+    // ==========================================================================
+
     private Dialog buildUploadDialog() {
         final Stepper strip = new Stepper("SCAN", "UPLOAD", "ISSUE")
                 .complete(step -> this.ctx.upload.stage > step || this.ctx.upload.done || (step == 2 && this.ctx.upload.uploadsDone))
@@ -204,7 +280,7 @@ public class HomeScreen extends Screen {
                 .border(AppTheme.STROKE_BRIGHT, 1f)
                 .width(MAX_PARENT);
 
-        // STAGE 3 — REPORT PANE: CLIPBOARD STRIP, WATERMEDIA HERO, SUSPECTED-MOD LIST WITH SUBMIT BUTTONS
+        // STAGE 3 REPORT PANE: CLIPBOARD STRIP, WATERMEDIA HERO, SUSPECTED-MOD LIST WITH SUBMIT BUTTONS
         this.repoList = new ListView<RepoTarget>()
                 .rowFactory((repo, i) -> new RepoCard(repo, i + 1))
                 .rowHeight(REPO_ROW_H)
@@ -213,7 +289,7 @@ public class HomeScreen extends Screen {
                 .hoverColor(null)
                 .scrollbarWidth(4);
         this.repoList.size(MAX_PARENT, REPO_LIST_H).margin(new Spacing(6, 0, 0, 0));
-        this.noMods = new Text("No known suspect mods detected in this instance — submit to WaterMedia above.")
+        this.noMods = new Text("No known suspect mods detected in this instance; submit to WaterMedia above.")
                 .color(AppTheme.TEXT_FAINT);
         this.noMods.width(MAX_PARENT).margin(new Spacing(10, 0, 0, 0)).visible(false);
         this.reportPane = new ReportPane();
@@ -293,122 +369,43 @@ public class HomeScreen extends Screen {
                 .actions(this.cleanupCancel, this.cleanupPrimary);
     }
 
-    // ==== FRAME BINDING ====
-    // PULLS ctx.upload / ctx.cleanup INTO THE RETAINED DIALOGS
+    // ==========================================================================
+    // MENU BEHAVIOR
+    // ==========================================================================
 
-    @Override
-    protected void onUpdate() {
-        if (this.uploadDialog == null) return; // TREE NOT BUILT YET
+    private void rebuildMenu() {
+        this.actions.clear();
+        this.mediaTests.clear();
+        this.entertainment.clear();
 
-        final var up = this.ctx.upload;
-        final boolean report = up.stage >= 3;
-        if (this.uploadDialog.visible() != up.visible || this.cleanupDialog.visible() != this.ctx.cleanup.visible) this.invalidate();
+        this.actions.add(new MenuEntry("Play media", "ENTER", Action.OPEN_MULTIMEDIA, -1));
+        this.actions.add(new MenuEntry("Upload Logs", LogUploader.WORKDIR_IS_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
+        this.actions.add(new MenuEntry("Cleanup cache", this.cacheLabel, Action.CLEANUP, -1));
+        if (WaterMedia.LOGGER.isDebugEnabled()) this.actions.add(new MenuEntry("Settings", "S", Action.SETTINGS, -1));
+        this.actions.add(new MenuEntry("Exit", "ESC", Action.EXIT, -1));
 
-        this.uploadDialog.visible(up.visible)
-                .title(up.done ? "SUCCESS" : "UPLOAD LOG FILES")
-                .accent(up.done ? AppTheme.GREEN : AppTheme.CYAN)
-                .panelWidth(Math.min(report ? 900 : 890, this.ctx.logicalWidth() - 48));
-        this.filesPanel.visible(!report);
-        this.reportPane.visible(report);
-
-        if (up.visible && !report) {
-            final int rowH = up.stage >= 2 ? UPLOAD_ROW_DETAIL_H : UPLOAD_ROW_H;
-            this.fileList.rowHeight(rowH);
-            final List<LogUploader.FileEntry> rows = this.visibleUploadFiles();
-            // ROWS ARE REBUILT ONLY WHEN MEMBERSHIP CHANGES; ROW CONTENT BINDS ITSELF EVERY FRAME
-            if (!rows.equals(this.uploadRows)) {
-                this.uploadRows = rows;
-                this.fileList.items(rows);
-            }
-            // AN EMPTY SCAN KEEPS ONE BLANK ROW OF PANEL HEIGHT
-            this.fileList.height(rows.isEmpty() ? rowH : WRAP_CONTENT);
-        }
-
-        if (up.visible && report) {
-            final List<RepoTarget> targets = this.uploadRepoTargets();
-            if (!targets.equals(this.repoTargets)) {
-                this.repoTargets = targets;
-                this.repoList.items(targets.subList(1, targets.size()));
-            }
-            final boolean mods = targets.size() > 1;
-            this.repoList.visible(mods);
-            this.noMods.visible(!mods);
-        } else if (!this.repoTargets.isEmpty()) {
-            // OUTSIDE THE REPORT STAGE THE REPO PICKER STATE IS DORMANT — RESET SO IT STARTS FRESH
-            this.repoTargets = List.of();
-            this.repoSelected = 0;
-            this.repoList.items(List.of()).selection(-1);
-        }
-
-        this.uploadCancel.label(up.done ? "CLOSE" : "CANCEL");
-        final boolean upEnabled = this.uploadPrimaryEnabled();
-        final String upLabel = up.stage <= 1 ? "UPLOAD TO MCLO.GS" : up.stage == 2 ? "GENERATE REPORT"
-                : "OPEN " + this.selectedRepo().name().toUpperCase(Locale.ROOT);
-        final Color upColor = !upEnabled ? AppTheme.TEXT_FAINT : up.done || up.uploadsDone ? AppTheme.GREEN : AppTheme.CYAN;
-        this.uploadPrimary.label(upLabel)
-                .icon(upLabel.startsWith("UPLOAD") ? "upload" : upLabel.startsWith("OPEN") ? "link" : upLabel.startsWith("GENERATE") ? "check" : "")
-                .accent(upColor).textColor(upColor)
-                .enabled(upEnabled);
-
-        final var cl = this.ctx.cleanup;
-        this.cleanupDialog.visible(cl.visible)
-                .title(cl.done ? "CACHE CLEANED" : "CLEAN CACHE")
-                .accent(cl.error ? AppTheme.RED : cl.done ? AppTheme.GREEN : AppTheme.CYAN)
-                .panelWidth(Math.min(740, this.ctx.logicalWidth() - 48));
-        // ONCE THE CLEAN RAN THE PRIMARY ALREADY SAYS CLOSE — HIDE CANCEL SO THE FOOTER NEVER SHOWS TWO CLOSE BUTTONS
-        this.cleanupCancel.visible(cl.stage <= 1);
-        final boolean clEnabled = this.cleanupPrimaryEnabled();
-        final String clLabel = cl.stage <= 1 ? "CLEAN CACHE" : "CLOSE";
-        final Color clColor = !clEnabled ? AppTheme.TEXT_FAINT : cl.done ? AppTheme.GREEN : AppTheme.CYAN;
-        this.cleanupPrimary.label(clLabel)
-                .icon(clLabel.startsWith("CLEAN") ? "broom" : "x")
-                .accent(clColor).textColor(clColor)
-                .enabled(clEnabled);
-    }
-
-    // ==== INPUT / SCREEN HOOKS ====
-
-    @Override
-    public boolean dispatchKey(final int key, final int action) {
-        // THE TREE GOES FIRST — A VISIBLE DIALOG IS MODAL AND SWALLOWS EVERYTHING (ESC/ENTER/ARROWS)
-        if (super.dispatchKey(key, action)) return true;
-        if (action != GLFW_RELEASE) return false;
-        switch (key) {
-            case GLFW_KEY_UP -> this.moveSelection(-1);
-            case GLFW_KEY_DOWN -> this.moveSelection(1);
-            case GLFW_KEY_LEFT -> this.switchPanel(0);
-            case GLFW_KEY_RIGHT -> this.switchPanel(this.mediaTests.isEmpty() && !this.entertainment.isEmpty() ? 2 : 1);
-            case GLFW_KEY_U, GLFW_KEY_S -> {
-                // RESOLVE BY ACTION, NOT A HARDCODED SLOT — A MENU REORDER MUST NOT RETARGET A SHORTCUT AT ANOTHER ENTRY
-                final int idx = this.actionIndex(key == GLFW_KEY_U ? Action.UPLOAD_LOGS : Action.SETTINGS);
-                if (idx >= 0) {
-                    this.selectedPanel = 0;
-                    this.selectedAction = idx;
-                    this.confirmSelection();
-                }
-            }
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.confirmSelection();
-            case GLFW_KEY_ESCAPE -> this.navigator.accept(Action.EXIT);
-            default -> {
-                return false;
+        if (this.ctx.catalog.uriGroups != null) {
+            for (int i = 0; i < this.ctx.catalog.uriGroups.length; i++) {
+                final MediaCatalog.URIGroup group = this.ctx.catalog.uriGroups[i];
+                this.mediaTests.add(new MenuEntry(group.name(), group.uris().length + " samples", null, i));
             }
         }
-        return true;
-    }
+        if (!this.ctx.catalog.customTests.isEmpty()) {
+            final String label = "CUSTOM (" + this.ctx.catalog.customTests.size() + ")";
+            this.mediaTests.add(new MenuEntry(label, "custom", null, -2));
+        }
+        if (this.ctx.catalog.iptvChannels.length > 0) this.entertainment.add(new MenuEntry("Television", "", Action.REGION_SELECTOR, -1));
 
-    @Override
-    public List<Keybind> keybinds() {
-        if (this.ctx.upload.visible) return this.ctx.upload.stage >= 3 ? KEYS_UPLOAD_REPORT : KEYS_UPLOAD;
-        if (this.ctx.cleanup.visible) return KEYS_CLEANUP;
-        return KEYS_MENU;
-    }
+        // THE KEYBOARD SELECTION MUST NEVER POINT AT A TILE THE FRESH LISTS DROPPED
+        this.selectedAction = MathUtil.clamp(this.selectedAction, 0, this.actions.size() - 1);
+        this.selectedMedia = MathUtil.clamp(this.selectedMedia, 0, Math.max(0, this.mediaTests.size() - 1));
+        this.selectedEntertainment = MathUtil.clamp(this.selectedEntertainment, 0, Math.max(0, this.entertainment.size() - 1));
+        if (this.selectedPanel == 1 && this.mediaTests.isEmpty()) this.selectedPanel = 0;
+        if (this.selectedPanel == 2 && this.entertainment.isEmpty()) this.selectedPanel = 0;
 
-    @Override
-    public boolean continuous() {
-        return this.ctx.backendsLoading || this.ctx.upload.working || this.ctx.cleanup.working;
+        // REBUILD THE TILE ELEMENTS SO THEY MATCH THE CURRENT MENU ENTRIES
+        if (this.grid != null) this.grid.sync();
     }
-
-    // ==== MENU BEHAVIOR ====
 
     private void handleSelect(final MenuEntry entry) {
         // THE CUSTOM GROUP (-2) IS BUILT FROM THE LINKS ADDED THIS RUN; ACTION ENTRIES CARRY NO GROUP
@@ -439,17 +436,6 @@ public class HomeScreen extends Screen {
             if (this.actions.get(i).action() == action) return i;
         }
         return -1;
-    }
-
-    private String actionIcon(final Action action) {
-        return switch (action) {
-            case OPEN_MULTIMEDIA -> "play";
-            case UPLOAD_LOGS -> "upload";
-            case CLEANUP -> "broom";
-            case SETTINGS -> "settings";
-            case EXIT -> "x";
-            default -> "info";
-        };
     }
 
     private void moveSelection(final int delta) {
@@ -517,7 +503,10 @@ public class HomeScreen extends Screen {
         });
     }
 
-    // ==== UPLOAD DIALOG BEHAVIOR ====
+    // ==========================================================================
+    // UPLOAD DIALOG BEHAVIOR
+    // ==========================================================================
+
     // STATE AND FLOW LIVE IN ctx.upload, REACHED THROUGH navigateAction
 
     private void closeUpload() {
@@ -597,7 +586,7 @@ public class HomeScreen extends Screen {
         this.invalidate();
     }
 
-    // ROW FACTORY FOR THE UPLOAD FILE LIST — EACH ROW SELF-BINDS TO ITS LIVE ENTRY EVERY FRAME
+    // ROW FACTORY FOR THE UPLOAD FILE LIST: EACH ROW SELF-BINDS TO ITS LIVE ENTRY EVERY FRAME
     private Element<?> uploadRow(final LogUploader.FileEntry entry, final int index) {
         final FileRow row = new FileRow();
         row.pip.status(() -> uploadStatus(entry));
@@ -622,23 +611,10 @@ public class HomeScreen extends Screen {
         return row;
     }
 
-    private static Color uploadStateColor(final LogUploader.FileEntry entry) {
-        if (entry.uploaded || "READ OK".equals(entry.state)) return AppTheme.GREEN;
-        if ("UPLOADING".equals(entry.state)) return AppTheme.NEON_LIGHT;
-        if ("INVALID".equals(entry.state)) return AppTheme.AMBER;
-        if ("FAILED".equals(entry.state) || "READ ERROR".equals(entry.state)) return AppTheme.RED;
-        return entry.present ? AppTheme.TEXT_FAINT : AppTheme.RED;
-    }
+    // ==========================================================================
+    // CLEANUP DIALOG BEHAVIOR
+    // ==========================================================================
 
-    private static StatusSquare.Status uploadStatus(final LogUploader.FileEntry entry) {
-        if (entry.uploaded || "READ OK".equals(entry.state)) return StatusSquare.Status.OK;
-        if ("UPLOADING".equals(entry.state)) return StatusSquare.Status.PENDING;
-        if ("INVALID".equals(entry.state)) return StatusSquare.Status.WARN;
-        if ("FAILED".equals(entry.state) || "READ ERROR".equals(entry.state)) return StatusSquare.Status.ERROR;
-        return entry.present ? StatusSquare.Status.OFF : StatusSquare.Status.ERROR;
-    }
-
-    // ==== CLEANUP DIALOG BEHAVIOR ====
     // STATE AND FLOW LIVE IN ctx.cleanup, REACHED THROUGH navigateAction
 
     private void dismissCleanup() {
@@ -673,7 +649,40 @@ public class HomeScreen extends Screen {
         this.invalidate();
     }
 
-    // ==== MENU GRID ====
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static Color uploadStateColor(final LogUploader.FileEntry entry) {
+        if (entry.uploaded || "READ OK".equals(entry.state)) return AppTheme.GREEN;
+        if ("UPLOADING".equals(entry.state)) return AppTheme.NEON_LIGHT;
+        if ("INVALID".equals(entry.state)) return AppTheme.AMBER;
+        if ("FAILED".equals(entry.state) || "READ ERROR".equals(entry.state)) return AppTheme.RED;
+        return entry.present ? AppTheme.TEXT_FAINT : AppTheme.RED;
+    }
+
+    private static StatusSquare.Status uploadStatus(final LogUploader.FileEntry entry) {
+        if (entry.uploaded || "READ OK".equals(entry.state)) return StatusSquare.Status.OK;
+        if ("UPLOADING".equals(entry.state)) return StatusSquare.Status.PENDING;
+        if ("INVALID".equals(entry.state)) return StatusSquare.Status.WARN;
+        if ("FAILED".equals(entry.state) || "READ ERROR".equals(entry.state)) return StatusSquare.Status.ERROR;
+        return entry.present ? StatusSquare.Status.OFF : StatusSquare.Status.ERROR;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES: MENU GRID
+    // ==========================================================================
+
+    /** Navigation vocabulary of the app: the home menu actions plus the cross-screen moves. */
+    public enum Action {
+        OPEN_MULTIMEDIA, UPLOAD_LOGS, CLEANUP,
+        SETTINGS,
+        REGION_SELECTOR,
+        MRL_SELECTOR, PLAYER,
+        EXIT, BACK
+    }
+
+    private record MenuEntry(String label, String meta, Action action, int groupIndex) {}
 
     // TWO-PANEL GRID: ACTIONS ON THE LEFT, MEDIA AND ENTERTAINMENT TILES ON THE RIGHT, WITH THE SECTION HEADS
     // AND THE UPLOAD TOOLTIP
@@ -759,7 +768,7 @@ public class HomeScreen extends Screen {
                 final int row = i / 2;
                 final int tx = this.rightXAbs + col * (this.tileW + colGap);
                 final int ty = y + 36 + row * (TILE_H + 10);
-                // TILES THAT OVERFLOW THE PANEL ARE HIDDEN — NEITHER DRAWN NOR HIT-TESTED
+                // TILES THAT OVERFLOW THE PANEL ARE HIDDEN: NEITHER DRAWN NOR HIT-TESTED
                 if (ty + TILE_H > y + contentH) {
                     fit = i;
                     break;
@@ -869,7 +878,15 @@ public class HomeScreen extends Screen {
             final int h = this.measuredHeight;
             // A SELECTED TILE STACKS THIS FLARE ON TOP OF ITS DECOR GLOW
             if (selected && enabled) canvas.glow(x, y, w, h, 0f, accent, 0.35f);
-            PixelIcon.draw(HomeScreen.this.actionIcon(entry.action()), x + 14, y + 17, 18, accent);
+            final String icon = switch (entry.action()) {
+                case OPEN_MULTIMEDIA -> "play";
+                case UPLOAD_LOGS -> "upload";
+                case CLEANUP -> "broom";
+                case SETTINGS -> "settings";
+                case EXIT -> "x";
+                default -> "info";
+            };
+            PixelIcon.draw(icon, x + 14, y + 17, 18, accent);
             canvas.text(entry.label().toUpperCase(Locale.ROOT), x + 48,
                     y + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BUTTON, true)) / 2),
                     textColor, AppTheme.TEXT_BUTTON, true);
@@ -882,7 +899,7 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // ONE MEDIA-TEST TILE — DECOR FROM LIVE STATE, FOLDER ICON AND TITLES THROUGH THE CANVAS
+    // ONE MEDIA-TEST TILE: DECOR FROM LIVE STATE, FOLDER ICON AND TITLES THROUGH THE CANVAS
     private final class MediaTile extends Element<MediaTile> {
         private final int index;
 
@@ -923,7 +940,7 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // ONE ENTERTAINMENT ROW — DECOR FROM LIVE STATE, CENTERED TV ICON + LABEL THROUGH THE CANVAS
+    // ONE ENTERTAINMENT ROW: DECOR FROM LIVE STATE, CENTERED TV ICON + LABEL THROUGH THE CANVAS
     private final class EntertainmentTile extends Element<EntertainmentTile> {
         private final int index;
 
@@ -1021,7 +1038,11 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // ==== DIALOG BUILDING BLOCKS ====
+    // ==========================================================================
+    // NESTED TYPES: DIALOG BUILDING BLOCKS
+    // ==========================================================================
+
+    private record RepoTarget(String name, String slug, String url, Color accent) {}
 
     // ONE FILE OR SUMMARY ROW: STATUS PIP, NAME (WITH THE URL OR A PROGRESS BAR UNDER IT), SIZE AND STATE BADGE; A
     // ListRow WHOSE ONLY ADDITION IS THIS TWO-LINE LAYOUT OF LIVE ELEMENTS, BOUND EVERY FRAME BY ITS BINDER
@@ -1077,7 +1098,7 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // REPORT PANE — HOSTS THE CLIPBOARD STRIP, HERO AND MOD LIST, AND OWNS THE STAGE-3 UP/DOWN KEYS
+    // REPORT PANE: HOSTS THE CLIPBOARD STRIP, HERO AND MOD LIST, AND OWNS THE STAGE-3 UP/DOWN KEYS
     // (RUNNING BEFORE THE DIALOG'S OWN ESC/ENTER FALLBACK)
     private final class ReportPane extends Parent {
         private ReportPane() {
@@ -1095,7 +1116,7 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // CLIPBOARD CONFIRMATION STRIP — GREEN "COPIED" OR MUTED "UNAVAILABLE", RESOLVED LIVE PER DRAW
+    // CLIPBOARD CONFIRMATION STRIP: GREEN "COPIED" OR MUTED "UNAVAILABLE", RESOLVED LIVE PER DRAW
     private final class CopyStrip extends Element<CopyStrip> {
         @Override
         protected void onDraw(final Canvas canvas) {
@@ -1109,15 +1130,15 @@ public class HomeScreen extends Screen {
             PixelIcon.draw(copied ? "check" : "copy", x + 12, y + (h - 14) / 2, 14,
                     copied ? AppTheme.GREEN : AppTheme.TEXT_FAINT);
             final String msg = copied
-                    ? "Report template copied to clipboard — paste it into the issue body"
-                    : "Clipboard copy unavailable — write the report manually";
+                    ? "Report template copied to clipboard: paste it into the issue body"
+                    : "Clipboard copy unavailable: write the report manually";
             canvas.text(canvas.text().truncateToWidth(msg, w - 44, AppTheme.TEXT_BODY), x + 34,
                     y + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2),
                     copied ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
         }
     }
 
-    // WATERMEDIA HERO BANNER (PRIMARY REPORT TARGET) — LOGO, PRIMARY BADGE, COPY AND ITS SUBMIT BUTTON;
+    // WATERMEDIA HERO BANNER (PRIMARY REPORT TARGET): LOGO, PRIMARY BADGE, COPY AND ITS SUBMIT BUTTON;
     // CLICKS ROUTE BY COORDINATE: THE SUBMIT BOX FIRES THE REPO ACTION, THE BODY ONLY SELECTS
     private final class RepoHero extends Element<RepoHero> {
         private static final int PAD = 14;
@@ -1177,7 +1198,7 @@ public class HomeScreen extends Screen {
             canvas.stroke(x, y, w, h, AppTheme.GREEN, selected ? 2f : 1.5f);
             canvas.fill(x, y, 4, h, AppTheme.GREEN);
 
-            // PACK.PNG LOGO — SQUARE, ASPECT-PRESERVED, CENTERED IN ITS BOX; TEXTURE ID READ PER DRAW
+            // PACK.PNG LOGO: SQUARE, ASPECT-PRESERVED, CENTERED IN ITS BOX; TEXTURE ID READ PER DRAW
             final int logoBox = h - PAD * 2;
             final int logoX = x + PAD + 8;
             final var assets = HomeScreen.this.ctx.assets;
@@ -1198,27 +1219,27 @@ public class HomeScreen extends Screen {
                     y + PAD + Math.max(0, (20 - canvas.textHeight(AppTheme.TEXT_SUBTITLE, false)) / 2),
                     AppTheme.GREEN, AppTheme.TEXT_SUBTITLE, false);
 
-            // TEXT — EACH LINE CLAMPED SO IT NEVER SPILLS PAST THE BADGE, THE BUTTON OR THE HERO EDGE
+            // TEXT: EACH LINE CLAMPED SO IT NEVER SPILLS PAST THE BADGE, THE BUTTON OR THE HERO EDGE
             canvas.text(canvas.text().truncateToWidth("SUBMIT A BUG REPORT ON WATERMEDIA ISSUE TRACKER",
                             textRight - badgeW - 12 - textX, AppTheme.TEXT_BUTTON, Font.BOLD),
                     textX, y + 16, AppTheme.GREEN, AppTheme.TEXT_BUTTON, true);
-            canvas.text(canvas.text().truncateToWidth("AND — if a listed mod is the suspect — also file it in that mod's repo below.",
+            canvas.text(canvas.text().truncateToWidth("AND, if a listed mod is the suspect, also file it in that mod's repo below.",
                             textRight - textX, AppTheme.TEXT_BODY),
                     textX, y + 40, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
             canvas.text(canvas.text().truncateToWidth(repo.slug(), this.submitX - 12 - textX, AppTheme.TEXT_SUBTITLE),
                     textX, y + 64, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
 
-            // SUBMIT — SHARED DESIGN-SYSTEM BUTTON LOOK; ACTIVE WHEN SELECTED OR ITS BOX IS HOVERED
+            // SUBMIT: SHARED DESIGN-SYSTEM BUTTON LOOK; ACTIVE WHEN SELECTED OR ITS BOX IS HOVERED
             Button.render(canvas, this.submitX, this.submitY, 150, 32,
                     "SUBMIT", "", "link", 12, AppTheme.GREEN, AppTheme.GREEN, false,
                     selected || this.submitHover, true);
         }
     }
 
-    // ONE SUSPECTED-MOD CARD IN THE REPORT LIST — ACCENT STRIPE, NAME/SLUG AND ITS OWN SUBMIT BUTTON
+    // ONE SUSPECTED-MOD CARD IN THE REPORT LIST: ACCENT STRIPE, NAME/SLUG AND ITS OWN SUBMIT BUTTON
     private final class RepoCard extends Element<RepoCard> {
         private final RepoTarget repo;
-        private final int targetIdx; // INDEX INTO repoTargets (1..n — 0 IS THE HERO)
+        private final int targetIdx; // INDEX INTO repoTargets (1..n, 0 IS THE HERO)
         private int submitX;
         private int submitY;
         private boolean submitHover;

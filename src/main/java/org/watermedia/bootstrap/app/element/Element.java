@@ -59,22 +59,14 @@ public abstract class Element<T extends Element<T>> {
     protected Consumer<T> onClick;
     protected Consumer<T> onHover;
 
-    @SuppressWarnings("unchecked")
-    protected final T self() {
-        return (T) this;
-    }
-
     // ==========================================================================
-    // MEASURE / LAYOUT / DRAW PIPELINE
+    // PUBLIC API: MEASURE / LAYOUT / DRAW PIPELINE
     // ==========================================================================
 
     /** Refreshes this view from live state before measure; containers forward it to every child, visible or not. */
     public void update() {
         this.onUpdate();
     }
-
-    /** Pulls live state such as labels, progress or visibility into this view before measure. */
-    protected void onUpdate() {}
 
     /** Resolves {@link #measuredWidth}/{@link #measuredHeight} from the size params, padding and content. */
     public final void measure(final int availWidth, final int availHeight) {
@@ -93,21 +85,12 @@ public abstract class Element<T extends Element<T>> {
         };
     }
 
-    /** Sets {@link #contentWidth}/{@link #contentHeight} from the space inside the padding; the default is empty. */
-    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-        this.contentWidth = 0;
-        this.contentHeight = 0;
-    }
-
     /** Places this view's border box top-left at ({@code x},{@code y}) and lays out any children. */
     public final void layout(final int x, final int y) {
         this.left = x;
         this.top = y;
         this.onLayout();
     }
-
-    /** Positions children within the content box. No-op for leaves. */
-    protected void onLayout() {}
 
     /** Paints decor, then content, then the border on top. Skipped when the view is hidden. */
     public final void draw(final Canvas canvas) {
@@ -123,13 +106,11 @@ public abstract class Element<T extends Element<T>> {
             canvas.strokeRound(this.left, this.top, this.measuredWidth, this.measuredHeight, this.radius, this.borderColor, this.borderWidth);
     }
 
-    /** Paints the view's own content (text, image, children). No-op for a bare view. */
-    protected void onDraw(final Canvas canvas) {}
-
     // ==========================================================================
-    // EVENT DISPATCH: RETURN true WHEN THE EVENT IS CONSUMED
+    // PUBLIC API: EVENT DISPATCH
     // ==========================================================================
 
+    // EVERY DISPATCHER RETURNS true WHEN IT CONSUMED THE EVENT
     public boolean dispatchClick(final double mx, final double my) {
         if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
         if (this.onClick != null) {
@@ -160,7 +141,6 @@ public abstract class Element<T extends Element<T>> {
         return this.visible && this.enabled && this.contains(mx, my) && this.onPress(mx, my) ? this : null;
     }
 
-    protected boolean onPress(final double mx, final double my) { return false; }
     public void onDrag(final double mx, final double my) {}
     public void onRelease(final double mx, final double my) {}
     public boolean dispatchScroll(final double mx, final double my, final double amount) { return false; }
@@ -182,7 +162,7 @@ public abstract class Element<T extends Element<T>> {
     }
 
     // ==========================================================================
-    // WIRING
+    // PUBLIC API: WIRING
     // ==========================================================================
 
     /** Requests a repaint of the window this view belongs to. */
@@ -196,14 +176,8 @@ public abstract class Element<T extends Element<T>> {
         this.ctx = context;
     }
 
-    // CONTENT BOX (INSIDE THE PADDING), VALID AFTER layout
-    public int innerLeft() { return this.left + this.padding.left(); }
-    public int innerTop() { return this.top + this.padding.top(); }
-    public int innerWidth() { return Math.max(0, this.measuredWidth - this.padding.horizontal()); }
-    public int innerHeight() { return Math.max(0, this.measuredHeight - this.padding.vertical()); }
-
     // ==========================================================================
-    // ACCESSORS
+    // PUBLIC API: ACCESSORS
     // ==========================================================================
 
     public int left() { return this.left; }
@@ -220,8 +194,14 @@ public abstract class Element<T extends Element<T>> {
     public boolean selected() { return this.selected; }
     public Object tag() { return this.tag; }
 
+    // CONTENT BOX (INSIDE THE PADDING), VALID AFTER layout
+    public int innerLeft() { return this.left + this.padding.left(); }
+    public int innerTop() { return this.top + this.padding.top(); }
+    public int innerWidth() { return Math.max(0, this.measuredWidth - this.padding.horizontal()); }
+    public int innerHeight() { return Math.max(0, this.measuredHeight - this.padding.vertical()); }
+
     // ==========================================================================
-    // FLUENT SETTERS
+    // PUBLIC API: FLUENT SETTERS
     // ==========================================================================
 
     public T size(final int w, final int h) {
@@ -335,5 +315,31 @@ public abstract class Element<T extends Element<T>> {
     public T tag(final Object value) {
         this.tag = value;
         return this.self();
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    /** Pulls live state such as labels, progress or visibility into this view before measure. */
+    protected void onUpdate() {}
+
+    /** Sets {@link #contentWidth}/{@link #contentHeight} from the space inside the padding; the default is empty. */
+    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+        this.contentWidth = 0;
+        this.contentHeight = 0;
+    }
+
+    /** Positions children within the content box. No-op for leaves. */
+    protected void onLayout() {}
+
+    /** Paints the view's own content (text, image, children). No-op for a bare view. */
+    protected void onDraw(final Canvas canvas) {}
+
+    protected boolean onPress(final double mx, final double my) { return false; }
+
+    @SuppressWarnings("unchecked")
+    protected final T self() {
+        return (T) this;
     }
 }

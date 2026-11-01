@@ -10,6 +10,7 @@ import org.watermedia.bootstrap.app.element.StatusSquare;
 import org.watermedia.bootstrap.app.element.StatusText;
 import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.screen.Screen.Keybind;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Spacing;
 
@@ -25,7 +26,7 @@ final class KeybindsBar extends Group<KeybindsBar> {
     /** Fixed footer height in pixels. */
     public static final int H = 44;
 
-    // THE GLOBAL CRT CHIP HAS ONLY TWO STATES — CACHE BOTH SO onUpdate NEVER ALLOCATES A Keybind PER FRAME
+    // THE GLOBAL CRT CHIP HAS ONLY TWO STATES: CACHE BOTH SO onUpdate NEVER ALLOCATES A Keybind PER FRAME
     private static final Keybind CRT_ON = new Keybind("C", "CRT ON");
     private static final Keybind CRT_OFF = new Keybind("C", "CRT OFF");
 
@@ -71,6 +72,10 @@ final class KeybindsBar extends Group<KeybindsBar> {
         this.add(this.row);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /** Pins a fixed keybind list, replacing the constructor supplier as the source. */
     public KeybindsBar keybinds(final List<Keybind> list) {
         final List<Keybind> copy = list == null ? List.of() : List.copyOf(list);
@@ -78,6 +83,10 @@ final class KeybindsBar extends Group<KeybindsBar> {
         this.applied = null; // FORCE THE NEXT UPDATE PASS TO REBUILD FROM THE PINNED LIST
         return this;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onUpdate() {

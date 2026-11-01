@@ -20,64 +20,6 @@ public abstract class Encoder implements Closeable {
     /** Quality a track gets when it names none: a balanced size for lossy codecs. */
     public static final int DEFAULT_QUALITY = 50;
 
-    /**
-     * Video track of an encode.
-     *
-     * @param codec   picture compression, one of the container's {@link Container#video()}
-     * @param width   picture width in pixels
-     * @param height  picture height in pixels
-     * @param format  layout of the frames given to {@link Encoder#video(ByteBuffer, long)}; block-compressed layouts are refused
-     * @param fps     nominal frame rate: the rate control hint and the duration of the last frame
-     * @param quality 0 (smallest) to 100 (best); lossless codecs ignore it
-     * @param repeat  plays of an animation, 0 for forever; video containers ignore it
-     */
-    public record Video(VideoCodec codec, int width, int height, PixelFormat format, int fps, int quality, int repeat) {
-        public Video {
-            if (codec == null || format == null) throw new IllegalArgumentException("A video track needs a codec and a pixel format");
-            if (format.compressed()) throw new IllegalArgumentException("Encoders take raw frames, not " + format);
-            if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid dimensions: " + width + "x" + height);
-            if (format.frameBytes(width, height, 8) > Integer.MAX_VALUE)
-                throw new IllegalArgumentException("A " + width + "x" + height + " " + format + " frame does not fit a buffer");
-            if (fps <= 0 || fps > 1_000) throw new IllegalArgumentException("Frame rate out of range [1,1000]: " + fps);
-            if (quality < 0 || quality > 100) throw new IllegalArgumentException("Quality out of range [0,100]: " + quality);
-            if (repeat < 0) throw new IllegalArgumentException("Repeat count must not be negative: " + repeat);
-        }
-
-        /** Creates a track at the default quality that repeats forever. */
-        public Video(final VideoCodec codec, final int width, final int height, final PixelFormat format, final int fps) {
-            this(codec, width, height, format, fps, DEFAULT_QUALITY, 0);
-        }
-
-        /** Returns the bytes one frame takes in {@link #format()}. */
-        public long frameBytes() { return this.format.frameBytes(this.width, this.height, 8); }
-    }
-
-    /**
-     * Audio track of an encode.
-     *
-     * @param codec      sound compression, one of the container's {@link Container#audio()}
-     * @param sampleRate rate of the given samples in Hz; the encoder resamples when its codec needs another
-     * @param channels   interleaved channels of the given samples, 1 to 8
-     * @param type       sample type of the PCM given to {@link Encoder#audio(ByteBuffer)}
-     * @param bitrate    target bits per second for lossy codecs, 0 for the codec default
-     */
-    public record Audio(AudioCodec codec, int sampleRate, int channels, SampleType type, int bitrate) {
-        public Audio {
-            if (codec == null || type == null) throw new IllegalArgumentException("An audio track needs a codec and a sample type");
-            if (sampleRate < 4_000 || sampleRate > 384_000) throw new IllegalArgumentException("Sample rate out of range [4000,384000]: " + sampleRate);
-            if (channels < 1 || channels > 8) throw new IllegalArgumentException("Channel count out of range [1,8]: " + channels);
-            if (bitrate < 0) throw new IllegalArgumentException("Bitrate must not be negative: " + bitrate);
-        }
-
-        /** Creates a track at the codec's default bitrate. */
-        public Audio(final AudioCodec codec, final int sampleRate, final int channels, final SampleType type) {
-            this(codec, sampleRate, channels, type, 0);
-        }
-
-        /** Returns the bytes one interleaved sample frame takes. */
-        public int frameBytes() { return this.channels * this.type.bytes(); }
-    }
-
     protected final Container container;
     protected final Video video;
     protected final Audio audio;
@@ -91,12 +33,13 @@ public abstract class Encoder implements Closeable {
         this.audio = audio;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Returns the container this encoder writes. */
     public final Container container() { return this.container; }
-
     /** Returns the video track, or null when the encode has none. */
     public final Video video() { return this.video; }
-
     /** Returns the audio track, or null when the encode has none. */
     public final Audio audio() { return this.audio; }
 
@@ -153,6 +96,9 @@ public abstract class Encoder implements Closeable {
         this.finish();
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     /** Encodes a validated frame; the buffer is only valid during the call. */
     protected abstract void frame(ByteBuffer frame, long ptsUs) throws IOException;
 
@@ -164,6 +110,9 @@ public abstract class Encoder implements Closeable {
     /** Flushes the codecs, writes the trailer and closes the target, releasing everything even when it throws. */
     protected abstract void finish() throws IOException;
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // CHECKS THE TRACKS AGAINST THE CONTAINER, SO CodecsAPI REFUSES A MISMATCH BEFORE IT TOUCHES THE TARGET
     static void check(final Container container, final Video video, final Audio audio) {
         if (container == null) throw new IllegalArgumentException("The container is null");
@@ -173,5 +122,66 @@ public abstract class Encoder implements Closeable {
             throw new IllegalArgumentException(container + " cannot carry " + video.codec() + " video, only " + container.video());
         if (audio != null && !container.audio().contains(audio.codec()))
             throw new IllegalArgumentException(container + " cannot carry " + audio.codec() + " audio, only " + container.audio());
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /**
+     * Video track of an encode.
+     *
+     * @param codec   picture compression, one of the container's {@link Container#video()}
+     * @param width   picture width in pixels
+     * @param height  picture height in pixels
+     * @param format  layout of the frames given to {@link Encoder#video(ByteBuffer, long)}; block-compressed layouts are refused
+     * @param fps     nominal frame rate: the rate control hint and the duration of the last frame
+     * @param quality 0 (smallest) to 100 (best); lossless codecs ignore it
+     * @param repeat  plays of an animation, 0 for forever; video containers ignore it
+     */
+    public record Video(VideoCodec codec, int width, int height, PixelFormat format, int fps, int quality, int repeat) {
+        public Video {
+            if (codec == null || format == null) throw new IllegalArgumentException("A video track needs a codec and a pixel format");
+            if (format.compressed()) throw new IllegalArgumentException("Encoders take raw frames, not " + format);
+            if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid dimensions: " + width + "x" + height);
+            if (format.frameBytes(width, height, 8) > Integer.MAX_VALUE)
+                throw new IllegalArgumentException("A " + width + "x" + height + " " + format + " frame does not fit a buffer");
+            if (fps <= 0 || fps > 1_000) throw new IllegalArgumentException("Frame rate out of range [1,1000]: " + fps);
+            if (quality < 0 || quality > 100) throw new IllegalArgumentException("Quality out of range [0,100]: " + quality);
+            if (repeat < 0) throw new IllegalArgumentException("Repeat count must not be negative: " + repeat);
+        }
+
+        /** Creates a track at the default quality that repeats forever. */
+        public Video(final VideoCodec codec, final int width, final int height, final PixelFormat format, final int fps) {
+            this(codec, width, height, format, fps, DEFAULT_QUALITY, 0);
+        }
+
+        /** Returns the bytes one frame takes in {@link #format()}. */
+        public long frameBytes() { return this.format.frameBytes(this.width, this.height, 8); }
+    }
+
+    /**
+     * Audio track of an encode.
+     *
+     * @param codec      sound compression, one of the container's {@link Container#audio()}
+     * @param sampleRate rate of the given samples in Hz; the encoder resamples when its codec needs another
+     * @param channels   interleaved channels of the given samples, 1 to 8
+     * @param type       sample type of the PCM given to {@link Encoder#audio(ByteBuffer)}
+     * @param bitrate    target bits per second for lossy codecs, 0 for the codec default
+     */
+    public record Audio(AudioCodec codec, int sampleRate, int channels, SampleType type, int bitrate) {
+        public Audio {
+            if (codec == null || type == null) throw new IllegalArgumentException("An audio track needs a codec and a sample type");
+            if (sampleRate < 4_000 || sampleRate > 384_000) throw new IllegalArgumentException("Sample rate out of range [4000,384000]: " + sampleRate);
+            if (channels < 1 || channels > 8) throw new IllegalArgumentException("Channel count out of range [1,8]: " + channels);
+            if (bitrate < 0) throw new IllegalArgumentException("Bitrate must not be negative: " + bitrate);
+        }
+
+        /** Creates a track at the codec's default bitrate. */
+        public Audio(final AudioCodec codec, final int sampleRate, final int channels, final SampleType type) {
+            this(codec, sampleRate, channels, type, 0);
+        }
+
+        /** Returns the bytes one interleaved sample frame takes. */
+        public int frameBytes() { return this.channels * this.type.bytes(); }
     }
 }

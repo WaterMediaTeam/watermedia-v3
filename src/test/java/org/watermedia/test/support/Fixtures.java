@@ -49,6 +49,10 @@ public final class Fixtures {
 
     private Fixtures() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /** Reads a fixture file, rethrowing IO failures unchecked for {@code @TestFactory} sites. */
     public static byte[] readAll(final Path path) {
         try { return Files.readAllBytes(path); }

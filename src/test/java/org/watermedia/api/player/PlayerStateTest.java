@@ -31,6 +31,34 @@ public class PlayerStateTest {
 
     private static final MediaPlayer.PlayerState SAMPLE = new MediaPlayer.PlayerState(1, Status.PLAYING, 0L, 1_000L, 1f, false, false); // VALID, CORRUPTED FIELD BY FIELD
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // THE ENCODED SNAPSHOT AS A PLAIN ARRAY, FREE TO CORRUPT
+    private static byte[] bytes(final MediaPlayer.PlayerState playerState) {
+        final byte[] wire = new byte[MediaPlayer.PlayerState.BYTES];
+        playerState.toBytes().get(wire);
+        return wire;
+    }
+
+    private static void roundTrip(final MediaPlayer.PlayerState playerState) {
+        final ByteBuffer wire = playerState.toBytes();
+        assertEquals(MediaPlayer.PlayerState.BYTES, wire.remaining(), "unexpected payload size for " + playerState);
+        assertEquals(playerState, MediaPlayer.PlayerState.read(wire));
+        assertEquals(0, wire.remaining(), "the decode consumes the whole payload");
+    }
+
+    private static void rejected(final ByteBuffer payload) {
+        final int position = payload.position();
+        assertThrows(IllegalArgumentException.class, () -> MediaPlayer.PlayerState.read(payload));
+        assertEquals(position, payload.position(), "a rejected payload must not consume bytes");
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("Round trips")
     class RoundTrips {
@@ -164,27 +192,5 @@ public class PlayerStateTest {
             for (final float speed: new float[] { 0f, -1f, Math.nextUp(4f), Float.NaN, Float.POSITIVE_INFINITY })
                 assertThrows(IllegalArgumentException.class, () -> new MediaPlayer.PlayerState(1, Status.PLAYING, 0L, 0L, speed, false, false), "speed " + speed);
         }
-    }
-
-    // UTILITY
-
-    // THE ENCODED SNAPSHOT AS A PLAIN ARRAY, FREE TO CORRUPT
-    private static byte[] bytes(final MediaPlayer.PlayerState playerState) {
-        final byte[] wire = new byte[MediaPlayer.PlayerState.BYTES];
-        playerState.toBytes().get(wire);
-        return wire;
-    }
-
-    private static void roundTrip(final MediaPlayer.PlayerState playerState) {
-        final ByteBuffer wire = playerState.toBytes();
-        assertEquals(MediaPlayer.PlayerState.BYTES, wire.remaining(), "unexpected payload size for " + playerState);
-        assertEquals(playerState, MediaPlayer.PlayerState.read(wire));
-        assertEquals(0, wire.remaining(), "the decode consumes the whole payload");
-    }
-
-    private static void rejected(final ByteBuffer payload) {
-        final int position = payload.position();
-        assertThrows(IllegalArgumentException.class, () -> MediaPlayer.PlayerState.read(payload));
-        assertEquals(position, payload.position(), "a rejected payload must not consume bytes");
     }
 }

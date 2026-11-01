@@ -11,6 +11,9 @@ final class Predictor {
 
     private Predictor() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     // ADDS THE BLOCK-SELECTED PREDICTORS TO THE RESIDUAL ARGB PIXELS IN ROW ORDER, IN PLACE
     public static void inverse(final int[] pixels, final int width, final int height, final int[] modes, final int blockBits) {
         if (width == 0 || height == 0) return;
@@ -42,6 +45,9 @@ final class Predictor {
         }
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static void applyTileRow(final int[] pixels, final int mode,
                                      final int yOff, final int prevRow, final int width,
                                      final int xStart, final int xEnd) {

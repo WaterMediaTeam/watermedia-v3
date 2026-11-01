@@ -33,8 +33,26 @@ public class TxControlContractTest {
     private static final long SEEK_WINDOW_MS = 100L; // ONE GIF FRAME: A SCRUB LANDS ON THE FRAME THAT COVERS ITS TARGET
     private static final int TEXTURE_CAP = 16;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeAll
     static void boot() { MediaBootstrap.client(); }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static TxMediaPlayer open(final Path fixture, final HeadlessGFXEngine gfx) {
+        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(fixture));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        return new TxMediaPlayer(mrl, 0, gfx);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Terminal states")
@@ -198,13 +216,5 @@ public class TxControlContractTest {
             assertTrue(seen.contains(Status.PAUSED));
             assertFalse(player.canPlay(), "released players are not playable");
         }
-    }
-
-    // UTILITY
-
-    private static TxMediaPlayer open(final Path fixture, final HeadlessGFXEngine gfx) {
-        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(fixture));
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
-        return new TxMediaPlayer(mrl, 0, gfx);
     }
 }

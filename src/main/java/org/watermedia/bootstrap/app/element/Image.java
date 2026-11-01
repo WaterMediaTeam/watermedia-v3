@@ -8,17 +8,15 @@ import java.awt.Color;
  */
 public final class Image extends Element<Image> {
 
-    public enum Fit {
-        CONTAIN,
-        COVER,
-        STRETCH
-    }
-
     private int textureId;
     private int imageWidth;
     private int imageHeight;
     private Fit fit = Fit.CONTAIN;
     private Color tint;
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     public Image image(final int id, final int sourceWidth, final int sourceHeight) {
         this.textureId = id;
@@ -36,6 +34,10 @@ public final class Image extends Element<Image> {
         this.tint = value;
         return this;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
@@ -87,5 +89,15 @@ public final class Image extends Element<Image> {
             }
             canvas.image(this.textureId, bx, by, bw, bh, u0, v0, u1, v1, this.tint);
         }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    public enum Fit {
+        CONTAIN,
+        COVER,
+        STRETCH
     }
 }

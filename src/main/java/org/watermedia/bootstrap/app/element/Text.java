@@ -27,6 +27,10 @@ public final class Text extends Element<Text> {
         this.text = text == null ? "" : text;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public Text text(final String value) {
         this.text = value == null ? "" : value;
         return this;
@@ -61,18 +65,23 @@ public final class Text extends Element<Text> {
 
     public String text() { return this.text; }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-        if (this.ctx == null || this.ctx.text == null || this.text.isEmpty()) {
+        if (this.ctx == null || this.ctx.text == null) {
             this.contentWidth = 0;
-            this.contentHeight = this.ctx != null && this.ctx.text != null ? this.textHeight() : 0;
-        } else {
-            this.contentWidth = this.letterSpacing > 0
-                    ? this.ctx.text.spacedWidth(this.text, this.scale, this.bold, this.letterSpacing)
-                    : this.bold ? this.ctx.text.widthBold(this.text, this.scale) : this.ctx.text.width(this.text, this.scale);
-            this.contentHeight = this.textHeight();
+            this.contentHeight = 0;
+            return;
         }
-        if (this.ctx != null && this.ctx.text != null && !this.subText.isBlank()) {
+        if (this.text.isEmpty()) this.contentWidth = 0;
+        else this.contentWidth = this.letterSpacing > 0
+                ? this.ctx.text.spacedWidth(this.text, this.scale, this.bold, this.letterSpacing)
+                : this.bold ? this.ctx.text.widthBold(this.text, this.scale) : this.ctx.text.width(this.text, this.scale);
+        this.contentHeight = this.bold ? this.ctx.text.glyphHeightBold(this.scale) : this.ctx.text.glyphHeight(this.scale);
+        if (!this.subText.isBlank()) {
             this.contentWidth += CHIP_GAP + this.ctx.text.width(this.subText, AppTheme.TEXT_SUBTITLE) + Theme.CHIP_PAD * 2;
             this.contentHeight = Math.max(this.contentHeight, Theme.CHIP_H);
         }
@@ -111,9 +120,5 @@ public final class Text extends Element<Text> {
                     baseline - canvas.text().baselineOffset(AppTheme.TEXT_SUBTITLE),
                     AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
         }
-    }
-
-    private int textHeight() {
-        return this.bold ? this.ctx.text.glyphHeightBold(this.scale) : this.ctx.text.glyphHeight(this.scale);
     }
 }

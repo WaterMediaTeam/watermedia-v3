@@ -16,7 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("PixelFormat")
 public class PixelFormatTest {
-
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @Test
     @DisplayName("Only BCn formats are compressed, with 8 or 16 block bytes")
     void testCompressed() {
@@ -31,6 +33,9 @@ public class PixelFormatTest {
         }
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Plane geometry")
     class GeometryTests {

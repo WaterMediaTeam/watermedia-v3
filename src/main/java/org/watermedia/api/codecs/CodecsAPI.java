@@ -55,9 +55,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class CodecsAPI {
     private static final Marker IT = MarkerManager.getMarker(CodecsAPI.class.getSimpleName());
 
-    // ==========================================================================
-    // METADATA KEYS — VALUES ARE JDK TYPES ONLY, SO EVERY HOST CAN READ THEM
-    // ==========================================================================
+    // METADATA KEYS: VALUES ARE JDK TYPES ONLY, SO EVERY HOST CAN READ THEM
     /** ICC colour profile, decompressed, as {@code byte[]}; published by PNG, JPEG and WebP. */
     public static final String METAKEY_ICC_PROFILE = "icc_profile";
     /** EXIF payload as {@code byte[]} starting at its TIFF header; published by PNG, JPEG and WebP. */
@@ -103,9 +101,7 @@ public final class CodecsAPI {
     /** GIF application extensions as {@code Map<String, List<byte[]>>}, identifier plus authentication code to payloads. */
     public static final String GIF_METAKEY_APPLICATION_EXTENSION = "gif.application_extension";
 
-    // ==========================================================================
-    // FORMAT SIGNATURES — THE FIRST GROUP DISPATCHES reader, EVERY GROUP FEEDS sniff
-    // ==========================================================================
+    // FORMAT SIGNATURES: THE FIRST GROUP DISPATCHES reader, EVERY GROUP FEEDS sniff
     private static final byte[] PNG_HEADER = { (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
     private static final byte[] JPEG_HEADER = { (byte) 0xFF, (byte) 0xD8 };
     private static final byte[] GIF87_HEADER = { 'G', 'I', 'F', '8', '7', 'a' };
@@ -189,7 +185,7 @@ public final class CodecsAPI {
     private CodecsAPI() {}
 
     // ==========================================================================
-    // READERS, ENCODERS AND SNIFFING
+    // PUBLIC API: READERS, ENCODERS AND SNIFFING
     // ==========================================================================
     /**
      * Opens an {@link ImageReader} for the given source. The buffer is left positioned after the
@@ -249,7 +245,7 @@ public final class CodecsAPI {
                 }
             }
             if (looksLikeSvg(probeText(source, start))) {
-                // SVG HAS NO FIXED HEADER — THE WHOLE DOCUMENT IS THE BODY, SO LEAVE THE POSITION AT start
+                // SVG HAS NO FIXED HEADER: THE WHOLE DOCUMENT IS THE BODY, SO LEAVE THE POSITION AT start
                 source.position(start);
                 return new SvgReader(source, requestedFormat);
             }
@@ -399,7 +395,7 @@ public final class CodecsAPI {
         if (h.length < 2) return MediaType.UNKNOWN;
         final ByteBuffer b = ByteBuffer.wrap(h);
 
-        // RIFF FAMILY — THE FORM TYPE AT OFFSET 8 DECIDES (WAVE=AUDIO, AVI=VIDEO, WEBP=IMAGE)
+        // RIFF FAMILY: THE FORM TYPE AT OFFSET 8 DECIDES (WAVE=AUDIO, AVI=VIDEO, WEBP=IMAGE)
         if (DataTool.startsWith(b, 0, RIFF_HEADER)) {
             if (DataTool.startsWith(b, 8, WEBP_HEADER)) return MediaType.IMAGE;
             if (DataTool.startsWith(b, 8, RIFF_AVI)) return MediaType.VIDEO;
@@ -407,14 +403,14 @@ public final class CodecsAPI {
             return MediaType.UNKNOWN;
         }
 
-        // ISO BASE MEDIA (MP4/MOV/HEIF/AVIF/3GP/M4A...) — THE BRAND AT OFFSET 8 DECIDES
+        // ISO BASE MEDIA (MP4/MOV/HEIF/AVIF/3GP/M4A...): THE BRAND AT OFFSET 8 DECIDES
         if (DataTool.startsWith(b, 4, FTYP_HEADER)) return ofFtyp(12 > h.length ? "" : new String(h, 8, 4, StandardCharsets.US_ASCII));
 
         // AIFF / AIFF-C
         if (DataTool.startsWith(b, 0, FORM_HEADER) && (DataTool.startsWith(b, 8, AIFF_HEADER) || DataTool.startsWith(b, 8, AIFC_HEADER)))
             return MediaType.AUDIO;
 
-        // IMAGES — EXACT MAGIC
+        // IMAGES: EXACT MAGIC
         if (DataTool.startsWith(b, 0, PNG_HEADER)) return MediaType.IMAGE;
         if (DataTool.startsWith(b, 0, JPEG_HEADER)) return MediaType.IMAGE;
         if (DataTool.startsWith(b, 0, GIF87_HEADER) || DataTool.startsWith(b, 0, GIF89_HEADER)) return MediaType.IMAGE;
@@ -436,7 +432,7 @@ public final class CodecsAPI {
         if (h[0] == '#' && h[1] == '?') return MediaType.IMAGE; // RADIANCE HDR ("#?RADIANCE" / "#?RGBE")
         if (looksLikeSvg(probeText(b, 0))) return MediaType.IMAGE; // SVG (XML, ROOT <svg>)
 
-        // VIDEO — CONTAINERS / RAW STREAMS
+        // VIDEO: CONTAINERS AND RAW STREAMS
         if (DataTool.startsWith(b, 0, EBML_HEADER)) return MediaType.VIDEO;
         if (DataTool.startsWith(b, 0, FLV_HEADER)) return MediaType.VIDEO;
         if (DataTool.startsWith(b, 0, ASF_HEADER)) return MediaType.VIDEO;
@@ -447,7 +443,7 @@ public final class CodecsAPI {
         // MPEG-TS: THE 0x47 SYNC BYTE REPEATS EVERY 188 BYTES
         if (h.length > 188 && (h[0] & 0xFF) == 0x47 && (h[188] & 0xFF) == 0x47) return MediaType.VIDEO;
 
-        // AUDIO — CONTAINERS / CODECS
+        // AUDIO: CONTAINERS AND CODECS
         if (DataTool.startsWith(b, 0, ID3_HEADER)) return MediaType.AUDIO;
         if (DataTool.startsWith(b, 0, FLAC_HEADER)) return MediaType.AUDIO;
         if (DataTool.startsWith(b, 0, MIDI_HEADER)) return MediaType.AUDIO;
@@ -463,7 +459,7 @@ public final class CodecsAPI {
         if (DataTool.startsWith(b, 0, AC3_HEADER)) return MediaType.AUDIO;
         if (DataTool.startsWith(b, 0, DTS_HEADER)) return MediaType.AUDIO;
 
-        // OGG — SCAN THE FIRST PAGE FOR THE CODEC ID; VIDEO CODECS WIN, ELSE AUDIO
+        // OGG: SCAN THE FIRST PAGE FOR THE CODEC ID; VIDEO CODECS WIN, ELSE AUDIO
         if (DataTool.startsWith(b, 0, OGG_HEADER)) {
             final String head = new String(h, 0, Math.min(h.length, 64), StandardCharsets.ISO_8859_1);
             if (head.contains("theora") || head.contains("OVP80") || head.contains("daala")) return MediaType.VIDEO;
@@ -474,81 +470,15 @@ public final class CodecsAPI {
         // FORMATS (JPEG, JPEG2000, JPEG-XL) ARE MATCHED FIRST.
         if ((h[0] & 0xFF) == 0xFF && (h[1] & 0xE0) == 0xE0) return MediaType.AUDIO;
 
-        // TEXT SUBTITLES — TOLERATE A LEADING UTF-8 BOM
+        // TEXT SUBTITLES: TOLERATE A LEADING UTF-8 BOM
         final int t = (h.length >= 3 && (h[0] & 0xFF) == 0xEF && (h[1] & 0xFF) == 0xBB && (h[2] & 0xFF) == 0xBF) ? 3 : 0;
         if (DataTool.startsWith(b, t, WEBVTT_HEADER) || DataTool.startsWith(b, t, ASS_HEADER)) return MediaType.SUBTITLES;
 
         return MediaType.UNKNOWN;
     }
 
-    // CLASSIFIES AN ISO-BMFF MAJOR BRAND. STILL-IMAGE (HEIF/AVIF) AND AUDIO-ONLY BRANDS ARE
-    // ENUMERATED; EVERY OTHER BRAND IS A MOVIE CONTAINER (isom, mp4x, qt, m4v, 3gp, dash, mj2...).
-    private static MediaType ofFtyp(final String brand) {
-        final String v = brand.trim().toLowerCase(Locale.ROOT);
-        if (v.startsWith("avif") || v.startsWith("avis")
-                || v.startsWith("heic") || v.startsWith("heix") || v.startsWith("heim") || v.startsWith("heis")
-                || v.startsWith("hevc") || v.startsWith("hevx") || v.startsWith("hevm") || v.startsWith("hevs")
-                || v.startsWith("mif1") || v.startsWith("msf1"))
-            return MediaType.IMAGE;
-        if (v.startsWith("m4a") || v.startsWith("m4b") || v.startsWith("m4p")
-                || v.startsWith("f4a") || v.startsWith("f4b") || v.startsWith("aac"))
-            return MediaType.AUDIO;
-        return MediaType.VIDEO;
-    }
-
-    // EXTRACTS THE LEADING TEXT FOR SVG SNIFFING (NO BINARY MAGIC EXISTS): SKIPS A UTF BOM,
-    // DROPS NUL BYTES SO UTF-16 MARKUP STILL READS AS ASCII, AND CAPS THE SCANNED WINDOW
-    private static String probeText(final ByteBuffer src, final int start) {
-        final int limit = src.limit();
-        int p = start;
-        if (limit - p >= 3 && (src.get(p) & 0xFF) == 0xEF && (src.get(p + 1) & 0xFF) == 0xBB && (src.get(p + 2) & 0xFF) == 0xBF) p += 3;
-        else if (limit - p >= 2 && (((src.get(p) & 0xFF) == 0xFF && (src.get(p + 1) & 0xFF) == 0xFE) || ((src.get(p) & 0xFF) == 0xFE && (src.get(p + 1) & 0xFF) == 0xFF))) p += 2;
-        final int end = Math.min(limit, p + SVG_SNIFF_WINDOW_BYTES);
-        final StringBuilder sb = new StringBuilder(Math.max(16, end - p));
-        for (int i = p; i < end; i++) {
-            final int b = src.get(i) & 0xFF;
-            if (b != 0) sb.append((char) b);
-        }
-        return sb.toString();
-    }
-
-    // WALKS THE XML PROLOG (DECLARATION, COMMENTS, DOCTYPE) AND CHECKS THAT THE FIRST ELEMENT IS <svg>
-    private static boolean looksLikeSvg(final String s) {
-        int i = 0;
-        final int n = s.length();
-        while (i < n) {
-            while (i < n && Character.isWhitespace(s.charAt(i))) i++;
-            if (i >= n || s.charAt(i) != '<') return false;
-            if (s.startsWith("<?", i)) { final int e = s.indexOf("?>", i); if (e < 0) return false; i = e + 2; continue; }
-            if (s.startsWith("<!--", i)) { final int e = s.indexOf("-->", i); if (e < 0) return false; i = e + 3; continue; }
-            if (s.startsWith("<!", i)) {
-                // DOCTYPE / MARKUP DECL — AN INTERNAL DTD SUBSET [ ... ] MAY CONTAIN '>' (e.g. <!ENTITY ...>)
-                // BEFORE THE REAL END, SO SKIP PAST THE MATCHING ']' FIRST WHEN A SUBSET IS PRESENT
-                final int gt = s.indexOf('>', i);
-                if (gt < 0) return false;
-                final int bracket = s.indexOf('[', i);
-                if (bracket >= 0 && bracket < gt) {
-                    final int endBracket = s.indexOf(']', bracket);
-                    final int close = endBracket < 0 ? -1 : s.indexOf('>', endBracket);
-                    if (close < 0) return false;
-                    i = close + 1;
-                } else {
-                    i = gt + 1;
-                }
-                continue;
-            }
-            int k = i + 1;
-            while (k < n && !Character.isWhitespace(s.charAt(k)) && s.charAt(k) != '>' && s.charAt(k) != '/') k++;
-            String name = s.substring(i + 1, k);
-            final int colon = name.indexOf(':');
-            if (colon >= 0) name = name.substring(colon + 1);
-            return name.equalsIgnoreCase("svg");
-        }
-        return false;
-    }
-
     // ==========================================================================
-    // FFMPEG
+    // PUBLIC API: FFMPEG
     // ==========================================================================
     /** Returns whether the FFmpeg natives initialized successfully at boot. */
     public static boolean ffmpegLoaded() {
@@ -571,23 +501,9 @@ public final class CodecsAPI {
         return vulkanHwDecode;
     }
 
-    /** Internal module: boots the FFmpeg natives that decode and encode audio and video; only clients run it. */
-    public static final class Module extends WaterMediaModule {
-        public Module(final WaterMedia watermedia) { super(watermedia); }
-
-        @Override
-        public void start() {
-            // THE BINARIES MODULE EXTRACTS NOTHING ON A DEDICATED SERVER, SO THERE IS NOTHING TO LOAD
-            if (!this.watermedia.clientSide) return;
-            // THE NATIVES COME FROM THE BINARIES MODULE; WITHOUT ITS JAR THERE IS NOTHING TO LOAD
-            if (CodecsAPI.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") == null) {
-                LOGGER.warn(IT, "FFmpeg is unavailable: WaterMedia Binaries is not installed");
-                return;
-            }
-            startFFmpeg(); // LOGS ITS OWN FAILURE AND LEAVES ffmpegError() SET
-        }
-    }
-
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // BOOTS THE BUNDLED FFMPEG NATIVES: POINTS JAVACPP AT THE EXTRACTED BINARIES, LOGS THE BUILD
     // BANNER AND PROBES HARDWARE ACCELERATION. DOES NOTHING WHEN DISABLED BY CONFIG
     private static void startFFmpeg() {
@@ -695,9 +611,92 @@ public final class CodecsAPI {
         }
     }
 
+    // CLASSIFIES AN ISO-BMFF MAJOR BRAND. STILL-IMAGE (HEIF/AVIF) AND AUDIO-ONLY BRANDS ARE
+    // ENUMERATED; EVERY OTHER BRAND IS A MOVIE CONTAINER (isom, mp4x, qt, m4v, 3gp, dash, mj2...).
+    private static MediaType ofFtyp(final String brand) {
+        final String v = brand.trim().toLowerCase(Locale.ROOT);
+        if (v.startsWith("avif") || v.startsWith("avis")
+                || v.startsWith("heic") || v.startsWith("heix") || v.startsWith("heim") || v.startsWith("heis")
+                || v.startsWith("hevc") || v.startsWith("hevx") || v.startsWith("hevm") || v.startsWith("hevs")
+                || v.startsWith("mif1") || v.startsWith("msf1"))
+            return MediaType.IMAGE;
+        if (v.startsWith("m4a") || v.startsWith("m4b") || v.startsWith("m4p")
+                || v.startsWith("f4a") || v.startsWith("f4b") || v.startsWith("aac"))
+            return MediaType.AUDIO;
+        return MediaType.VIDEO;
+    }
+
+    // EXTRACTS THE LEADING TEXT FOR SVG SNIFFING (NO BINARY MAGIC EXISTS): SKIPS A UTF BOM,
+    // DROPS NUL BYTES SO UTF-16 MARKUP STILL READS AS ASCII, AND CAPS THE SCANNED WINDOW
+    private static String probeText(final ByteBuffer src, final int start) {
+        final int limit = src.limit();
+        int p = start;
+        if (limit - p >= 3 && (src.get(p) & 0xFF) == 0xEF && (src.get(p + 1) & 0xFF) == 0xBB && (src.get(p + 2) & 0xFF) == 0xBF) p += 3;
+        else if (limit - p >= 2 && (((src.get(p) & 0xFF) == 0xFF && (src.get(p + 1) & 0xFF) == 0xFE) || ((src.get(p) & 0xFF) == 0xFE && (src.get(p + 1) & 0xFF) == 0xFF))) p += 2;
+        final int end = Math.min(limit, p + SVG_SNIFF_WINDOW_BYTES);
+        final StringBuilder sb = new StringBuilder(Math.max(16, end - p));
+        for (int i = p; i < end; i++) {
+            final int b = src.get(i) & 0xFF;
+            if (b != 0) sb.append((char) b);
+        }
+        return sb.toString();
+    }
+
+    // WALKS THE XML PROLOG (DECLARATION, COMMENTS, DOCTYPE) AND CHECKS THAT THE FIRST ELEMENT IS <svg>
+    private static boolean looksLikeSvg(final String s) {
+        int i = 0;
+        final int n = s.length();
+        while (i < n) {
+            while (i < n && Character.isWhitespace(s.charAt(i))) i++;
+            if (i >= n || s.charAt(i) != '<') return false;
+            if (s.startsWith("<?", i)) { final int e = s.indexOf("?>", i); if (e < 0) return false; i = e + 2; continue; }
+            if (s.startsWith("<!--", i)) { final int e = s.indexOf("-->", i); if (e < 0) return false; i = e + 3; continue; }
+            if (s.startsWith("<!", i)) {
+                // DOCTYPE OR MARKUP DECLARATION: AN INTERNAL DTD SUBSET [ ... ] MAY CONTAIN '>' (e.g. <!ENTITY ...>)
+                // BEFORE THE REAL END, SO SKIP PAST THE MATCHING ']' FIRST WHEN A SUBSET IS PRESENT
+                final int gt = s.indexOf('>', i);
+                if (gt < 0) return false;
+                final int bracket = s.indexOf('[', i);
+                if (bracket >= 0 && bracket < gt) {
+                    final int endBracket = s.indexOf(']', bracket);
+                    final int close = endBracket < 0 ? -1 : s.indexOf('>', endBracket);
+                    if (close < 0) return false;
+                    i = close + 1;
+                } else {
+                    i = gt + 1;
+                }
+                continue;
+            }
+            int k = i + 1;
+            while (k < n && !Character.isWhitespace(s.charAt(k)) && s.charAt(k) != '>' && s.charAt(k) != '/') k++;
+            String name = s.substring(i + 1, k);
+            final int colon = name.indexOf(':');
+            if (colon >= 0) name = name.substring(colon + 1);
+            return name.equalsIgnoreCase("svg");
+        }
+        return false;
+    }
+
     // ==========================================================================
-    // UTILITY
+    // NESTED TYPES
     // ==========================================================================
+    /** Internal module: boots the FFmpeg natives that decode and encode audio and video; only clients run it. */
+    public static final class Module extends WaterMediaModule {
+        public Module(final WaterMedia watermedia) { super(watermedia); }
+
+        @Override
+        public void start() {
+            // THE BINARIES MODULE EXTRACTS NOTHING ON A DEDICATED SERVER, SO THERE IS NOTHING TO LOAD
+            if (!this.watermedia.clientSide) return;
+            // THE NATIVES COME FROM THE BINARIES MODULE; WITHOUT ITS JAR THERE IS NOTHING TO LOAD
+            if (CodecsAPI.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") == null) {
+                LOGGER.warn(IT, "FFmpeg is unavailable: WaterMedia Binaries is not installed");
+                return;
+            }
+            startFFmpeg(); // LOGS ITS OWN FAILURE AND LEAVES ffmpegError() SET
+        }
+    }
+
     // OPENS THE FILE ON THE FIRST WRITE, SO AN ENCODER THAT REFUSES ITS TRACKS OR GETS NO FRAMES LEAVES IT UNTOUCHED
     private static final class LazyFile extends OutputStream {
         private final Path file;

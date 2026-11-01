@@ -50,6 +50,11 @@ public final class NetworkServer {
     private static final ThreadLocal<Watchdog> WATCHDOG = new ThreadLocal<>();
     private static volatile Running running;
 
+    private NetworkServer() {}
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // STARTS THE CONFIGURED LISTENER UNDER cwd; INVALID CONFIGURATION AND BIND FAILURES PROPAGATE TO THE CALLER
     static synchronized void start(final int port, final Path cwd) throws IOException {
         if (running != null)
@@ -58,13 +63,19 @@ public final class NetworkServer {
         // THE CONFIGURATION IS PROCESS STATE, NOT AN ARGUMENT OF THIS CALL
         if (config.serverBindAddress == null || config.serverBindAddress.isBlank())
             throw new IllegalStateException("The file server requires an explicit bind address");
+
         final InetAddress bind = InetAddress.getByName(config.serverBindAddress);
         final String token = config.token;
-        if (token == null || token.isBlank()) throw new IllegalStateException("The file server requires an upload token");
+
+        if (token == null || token.isBlank())
+            throw new IllegalStateException("The file server requires an upload token");
+
         if (!bind.isLoopbackAddress() && WaterMediaConfig.DEFAULT_NETWORK_TOKEN.equals(token.trim()))
             throw new IllegalStateException("A non-loopback file server requires a custom upload token");
+
         if (config.maxServerRequests < 1 || config.serverTimeout < 1 || config.maxStorageSize < 1 || config.maxUploadSize < 0)
             throw new IllegalStateException("File server concurrency, idle timeout and storage limits must be positive");
+
         final Path storage = cwd.resolve("watermedia").resolve("files").toAbsolutePath().normalize();
         Files.createDirectories(storage);
         // OWN THE STORAGE BEFORE CLEANUP, AND KEEP THE LOCK UNTIL ALL WORKERS EXIT.
@@ -243,6 +254,9 @@ public final class NetworkServer {
         LOGGER.info(IT, "Stopped file server");
     }
 
+    // ==========================================================================
+    // REQUEST HANDLERS
+    // ==========================================================================
     private static void handleUpload(final HttpExchange exchange, final Running state) throws IOException {
         try (exchange) {
             if (!"/upload".equals(exchange.getRequestURI().getPath())) {
@@ -457,6 +471,9 @@ public final class NetworkServer {
         }
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // A RANGE OFFSET: DIGITS ONLY, SATURATING ABOVE Long.MAX_VALUE; ANYTHING ELSE IS INVALID_RANGE
     private static long rangeValue(final String value) {
         if (value.isEmpty() || !value.chars().allMatch(c -> c >= '0' && c <= '9')) return INVALID_RANGE;
@@ -464,6 +481,9 @@ public final class NetworkServer {
         return number.bitLength() > 63 ? Long.MAX_VALUE : number.longValue();
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     private static final class Running {
         private final HttpServer server;
         private final ThreadPoolExecutor executor;

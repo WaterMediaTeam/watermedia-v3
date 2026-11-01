@@ -44,6 +44,9 @@ import static org.lwjgl.vulkan.VK11.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
 @DisplayName("VulkanRenderBackend")
 public class VulkanRenderBackendTest {
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @Test
     @DisplayName("The lent device describes its creation and a player decodes on it exactly when it has the video extensions")
     void deviceInfoFeedsDecoding() {
@@ -100,6 +103,9 @@ public class VulkanRenderBackendTest {
         }
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // READS THE ENGINE'S PRIVATE COUNTER OF FRAMES SAMPLED IN PLACE; IT IS NOT PART OF THE API
     private static long decodedFrames(final VKEngine engine) {
         try {

@@ -20,9 +20,9 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class VidLiiPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(VidLiiPlatform.class.getSimpleName());
     public static final String NAME = "VidLii";
+    private static final String[] HOSTS = { "vidlii.com", "www.vidlii.com" };
     private static final String ORIGIN = "https://www.vidlii.com";
     private static final Pattern VIDEO_SRC_PATTERN = Pattern.compile("<video\\s+[^>]*src=\"([^\"]+)\"");
-    private static final String[] HOSTS = { "vidlii.com", "www.vidlii.com" };
 
     @Override
     public String name() { return NAME; }

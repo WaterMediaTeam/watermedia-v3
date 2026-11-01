@@ -37,6 +37,9 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 @DisplayName("GIF decoder")
 public class GifTest {
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @TestFactory
     @DisplayName("reset() replay")
     Iterable<DynamicTest> testGIFReset() {
@@ -57,6 +60,19 @@ public class GifTest {
         return tests;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // DECODED BGRA READ AS LITTLE-ENDIAN INTS, WHICH IS ARGB
+    private static int[] pixels(final ImageData image, final int frame) {
+        final int[] pixels = new int[image.width() * image.height()];
+        image.frames()[frame].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
+        return pixels;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Composition")
     class Composition {
@@ -195,14 +211,6 @@ public class GifTest {
                 assertEquals(1, reader.readAll().frames().length);
             }
         }
-    }
-
-    // UTILITY
-    // DECODED BGRA READ AS LITTLE-ENDIAN INTS, WHICH IS ARGB
-    private static int[] pixels(final ImageData image, final int frame) {
-        final int[] pixels = new int[image.width() * image.height()];
-        image.frames()[frame].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
-        return pixels;
     }
 
     // BUILDS GIF89a STREAMS WITH A TWO-COLOUR GLOBAL PALETTE (BLACK, RED) WHOSE FRAMES ARE ALL INDEX 1

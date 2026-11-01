@@ -36,18 +36,22 @@ import static org.watermedia.tools.JSONTool.str;
 public final class BlueskyPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(BlueskyPlatform.class.getSimpleName());
     public static final String NAME = "Bluesky";
+    private static final String[] HOSTS = { "bsky.app", "www.bsky.app", "main.bsky.dev", "www.main.bsky.dev" };
     private static final String API_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread";
     private static final String BLOB_URL_TMPL = "%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s";
     private static final String PLC_DIRECTORY_URL = "https://plc.directory/%s";
     private static final String DEFAULT_PDS = "https://bsky.social";
     private static final Pattern WEB_PATTERN = Pattern.compile("/profile/([\\w.:%-]+)/post/(\\w+)");
     private static final Pattern AT_PATTERN = Pattern.compile("at://([\\w.:%-]+)/app\\.bsky\\.feed\\.post/(\\w+)", Pattern.CASE_INSENSITIVE);
-    private static final String[] HOSTS = { "bsky.app", "www.bsky.app", "main.bsky.dev", "www.main.bsky.dev" };
     // LABELS THE NETWORK APPLIES TO ADULT AND GRAPHIC POSTS
     private static final Set<String> MATURE_LABELS = Set.of("porn", "sexual", "nudity", "graphic-media");
     private static final int TITLE_LENGTH = 72;
     // VIDEO PLAYLISTS ARE SERVED THROUGH A CDN WITH SHORT-LIVED SESSION TOKENS
     private static final Duration TTL = Duration.ofMinutes(30);
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -70,7 +74,7 @@ public final class BlueskyPlatform implements Platform {
 
         LOGGER.debug(IT, "Fetching Bluesky post '{}' by '{}'", postId, handle);
         try {
-            // RESPONSE SHAPE: { thread: { post: {...} } } — A BLOCKED/NOT-FOUND THREAD OMITS "post"
+            // RESPONSE SHAPE: { thread: { post: {...} } }; A BLOCKED/NOT-FOUND THREAD OMITS "post"
             final String atUri = "at://" + handle + "/app.bsky.feed.post/" + postId;
             final JsonObject post = obj(WebRequests.fetchJson(NAME, API_URL + "?uri=" + enc(atUri) + "&depth=0&parentHeight=0", JsonObject.class), "thread", "post");
             if (post == null)
@@ -116,6 +120,10 @@ public final class BlueskyPlatform implements Platform {
             throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
 
     // THE NETWORK'S LABELS TRAVEL ON THE POST VIEW AND ON ITS AUTHOR; THE GATE RUNS BEFORE ANY MEDIA IS TOUCHED, FOR
     // THE POST ITSELF AND FOR THE POST IT QUOTES
@@ -232,7 +240,6 @@ public final class BlueskyPlatform implements Platform {
         return DEFAULT_PDS;
     }
 
-    // UTILITY
     private static String enc(final String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }

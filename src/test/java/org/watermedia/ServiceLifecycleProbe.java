@@ -29,6 +29,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Exercises the loaded services in a fresh JVM: searches, uploads and the MRL cache sweep. */
 public final class ServiceLifecycleProbe {
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     public static void main(final String[] arguments) throws Exception {
         final Path root = Path.of("").toAbsolutePath();
         WaterConfig.setPath(root.resolve("config"));
@@ -47,6 +50,9 @@ public final class ServiceLifecycleProbe {
         System.out.println("PROBE_OK " + arguments[0]);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static void evicted() throws Exception {
         for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
         final URI key = URI.create("fixture:expired");

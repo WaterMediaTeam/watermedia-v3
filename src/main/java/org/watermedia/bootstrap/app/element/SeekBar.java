@@ -24,6 +24,10 @@ public final class SeekBar extends Element<SeekBar> {
         this.height = 16;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public SeekBar value(final float v) {
         this.value = MathUtil.clamp(v, 0f, 1f);
         return this;
@@ -50,6 +54,21 @@ public final class SeekBar extends Element<SeekBar> {
     }
 
     public float value() { return this.value; }
+
+    @Override
+    public void onDrag(final double mx, final double my) {
+        this.apply(mx);
+    }
+
+    @Override
+    public void onRelease(final double mx, final double my) {
+        this.dragging = false;
+        this.invalidate();
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
@@ -81,16 +100,9 @@ public final class SeekBar extends Element<SeekBar> {
         return true;
     }
 
-    @Override
-    public void onDrag(final double mx, final double my) {
-        this.apply(mx);
-    }
-
-    @Override
-    public void onRelease(final double mx, final double my) {
-        this.dragging = false;
-        this.invalidate();
-    }
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private void apply(final double mx) {
         final int w = this.innerWidth();

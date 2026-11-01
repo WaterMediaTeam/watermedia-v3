@@ -6,17 +6,16 @@ package org.watermedia.bootstrap.app.element;
  */
 public class Parent extends Group<Parent> {
 
-    public enum Orientation {
-        VERTICAL,
-        HORIZONTAL
-    }
-
     private final Orientation orientation;
     private int spacing;
 
     public Parent(final Orientation orientation) {
         this.orientation = orientation == null ? Orientation.VERTICAL : orientation;
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     public static Parent column() {
         return new Parent(Orientation.VERTICAL);
@@ -30,6 +29,10 @@ public class Parent extends Group<Parent> {
         this.spacing = Math.max(0, gap);
         return this;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
@@ -132,10 +135,23 @@ public class Parent extends Group<Parent> {
         }
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     private float mainWeight(final Element<?> child) {
         // AN EXPLICIT WEIGHT WINS; A MAIN-AXIS MAX_PARENT CHILD ACTS AS WEIGHT 1
         if (child.weight > 0f) return child.weight;
         final int main = this.orientation == Orientation.VERTICAL ? child.height : child.width;
         return main == MAX_PARENT ? 1f : 0f;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    public enum Orientation {
+        VERTICAL,
+        HORIZONTAL
     }
 }

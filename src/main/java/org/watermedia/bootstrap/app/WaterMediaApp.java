@@ -15,8 +15,10 @@ import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.screen.*;
+import org.watermedia.bootstrap.app.screen.Screen.Keybind;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
@@ -33,6 +35,7 @@ import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -61,11 +64,11 @@ public class WaterMediaApp {
     private static FrameLimiter frameLimiter;
     // CRT BAND STEP THE LAST FRAME SHOWED; A COMPOSITE WAITS UNTIL THE BAND MOVES PAST IT
     private static long bandStep = -1L;
-    // LAST CURSOR POSITION A HOVER DISPATCH WAS ISSUED FOR — NaN SO THE FIRST FRAME ALWAYS DISPATCHES
+    // LAST CURSOR POSITION A HOVER DISPATCH WAS ISSUED FOR; NaN SO THE FIRST FRAME ALWAYS DISPATCHES
     private static double lastMoveX = Double.NaN;
     private static double lastMoveY = Double.NaN;
 
-    // WINDOW SHELL — THE WHOLE WINDOW RENDERS THROUGH THIS RETAINED TREE
+    // WINDOW SHELL: THE WHOLE WINDOW RENDERS THROUGH THIS RETAINED TREE
     private static RootScreen root;
     private static Dialog errorDialog;
     private static Parent errorLines;
@@ -79,6 +82,9 @@ public class WaterMediaApp {
         initLogging();
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     public static void start(final Runnable task) {
         // PHASE 1: SHOW THE WINDOW ASAP; THE APP SPEC REGISTERS FIRST SO ITS LOAD ON THE WATERCONFIG IO POOL
         // OVERLAPS THE SLOWER WINDOW AND ENGINE BOOT
@@ -110,6 +116,36 @@ public class WaterMediaApp {
         cleanup();
     }
 
+    public static void log(final String message) {
+        WaterMedia.LOGGER.info(IT, message);
+    }
+
+    /** Applies {@link AppConfig#scale}; 0 recomputes the factor from the window's monitor. */
+    public static void reapplyUiScale() {
+        final float factor = AppConfig.scaleFactor(AppConfig.scale);
+        final float s = factor == 0f ? autoUiScale() : factor;
+        // THE TEXT ATLAS REGENERATES LAZILY AT THE NEW PHYSICAL SIZE AND THE NEXT FRAME RELAYOUTS THE TREE
+        ctx.uiScale = s;
+        RenderSystem.uiScale(s);
+        if (ctx.text != null) ctx.text.setUiScale(s);
+        ctx.requestRender();
+    }
+
+    /** Queues a live render engine hot swap for the next main-loop iteration; safe to call from callbacks. */
+    public static void requestEngineSwap(final RenderSystem.Engine target) {
+        // WITHOUT A VULKAN LOADER THE SWAP WOULD TEAR THE WINDOW DOWN ONLY TO REBUILD IT ON OPENGL
+        if (target == RenderSystem.Engine.VULKAN && !RenderSystem.vulkanAvailable()) {
+            WaterMedia.LOGGER.warn(IT, "Vulkan is unavailable on this system; staying on OpenGL");
+            ctx.showError("Vulkan unavailable", "Vulkan is not available on this system.\nThe app keeps running on OpenGL.", null);
+            return;
+        }
+        swapTarget = target;
+        ctx.requestRender();
+    }
+
+    // ==========================================================================
+    // INITIALIZATION
+    // ==========================================================================
     private static void runLoadingPhase() {
         // THE LOADER'S FAILURE; loader.join() PUBLISHES THE WRITE, SO IT NEEDS NO VOLATILE
         final Throwable[] failure = new Throwable[1];
@@ -160,11 +196,6 @@ public class WaterMediaApp {
         handleFrameInput();
     }
 
-    public static void log(final String message) {
-        WaterMedia.LOGGER.info(IT, message);
-    }
-
-    // ==== INITIALIZATION ====
     private static void initWindow() {
         GLFWErrorCallback.create((code, description) ->
                 WaterMedia.LOGGER.error(IT, "GLFW error 0x{}: {}", Integer.toHexString(code), GLFWErrorCallback.getDescription(description))).set();
@@ -270,19 +301,9 @@ public class WaterMediaApp {
         });
     }
 
-    // ==== GLOBAL UI SCALE ====
-
-    /** Applies {@link AppConfig#scale}; 0 recomputes the factor from the window's monitor. */
-    public static void reapplyUiScale() {
-        final float factor = AppConfig.scaleFactor(AppConfig.scale);
-        final float s = factor == 0f ? autoUiScale() : factor;
-        // THE TEXT ATLAS REGENERATES LAZILY AT THE NEW PHYSICAL SIZE AND THE NEXT FRAME RELAYOUTS THE TREE
-        ctx.uiScale = s;
-        RenderSystem.uiScale(s);
-        if (ctx.text != null) ctx.text.setUiScale(s);
-        ctx.requestRender();
-    }
-
+    // ==========================================================================
+    // GLOBAL UI SCALE
+    // ==========================================================================
     // AUTO FACTOR: THE LARGER OF THE MONITOR CONTENT SCALE AND height/1080, SNAPPED LIKE A SAVED FACTOR; THE
     // RESOLUTION TERM CATCHES HIGH-RES PANELS THE OS REPORTS AT 100%
     private static float autoUiScale() {
@@ -298,7 +319,9 @@ public class WaterMediaApp {
         return AppConfig.scaleFactor(Math.max(contentScale, heuristic));
     }
 
-    // ==== WINDOW SHELL ====
+    // ==========================================================================
+    // WINDOW SHELL
+    // ==========================================================================
     // ROOT TREE, GLOBAL DIALOGS AND THE NAVIGATION BINDINGS THE SHELL NEEDS
     private static void initShell() {
         root = new RootScreen(ctx, ctx.text, WaterMediaApp::footerKeybinds);
@@ -307,7 +330,7 @@ public class WaterMediaApp {
             ctx.requestRender();
         });
 
-        // GLOBAL ERROR DIALOG — CONTENT AND VISIBILITY BOUND TO ctx.error EVERY FRAME IN syncShell
+        // GLOBAL ERROR DIALOG: CONTENT AND VISIBILITY BOUND TO ctx.error EVERY FRAME IN syncShell
         errorLines = Parent.column().spacing(6);
         errorDialog = new Dialog()
                 .accent(AppTheme.RED)
@@ -320,7 +343,7 @@ public class WaterMediaApp {
                 .panelWidth(600)
                 .visible(false);
 
-        // EXIT-CONFIRM DIALOG — BOUND TO ctx.exitConfirm; CONFIRMING ENDS THE MAIN LOOP
+        // EXIT-CONFIRM DIALOG, BOUND TO ctx.exitConfirm; CONFIRMING ENDS THE MAIN LOOP
         exitDialog = new Dialog()
                 .accent(AppTheme.RED)
                 .title("EXIT WATERMEDIA")
@@ -413,7 +436,9 @@ public class WaterMediaApp {
         }
     }
 
-    // ==== MAIN LOOP ====
+    // ==========================================================================
+    // MAIN LOOP
+    // ==========================================================================
     // THE LOADING PHASE ALREADY CONFIGURED THE FRAME STATE
     private static void mainLoop() {
         frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
@@ -427,7 +452,7 @@ public class WaterMediaApp {
             }
         });
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
-            // ENGINE HOT-SWAP RUNS AT THE TOP OF THE LOOP ON THE RENDER THREAD — NEVER MID-FRAME
+            // ENGINE HOT-SWAP RUNS AT THE TOP OF THE LOOP ON THE RENDER THREAD, NEVER MID-FRAME
             if (swapTarget != null) performEngineSwap();
             final boolean continuous = root.continuous();
             final boolean band = ctx.crt && root.live() && !iconified;
@@ -473,18 +498,6 @@ public class WaterMediaApp {
         ctx.media.releasePlayer();
     }
 
-    /** Queues a live render engine hot swap for the next main-loop iteration; safe to call from callbacks. */
-    public static void requestEngineSwap(final RenderSystem.Engine target) {
-        // WITHOUT A VULKAN LOADER THE SWAP WOULD TEAR THE WINDOW DOWN ONLY TO REBUILD IT ON OPENGL
-        if (target == RenderSystem.Engine.VULKAN && !RenderSystem.vulkanAvailable()) {
-            WaterMedia.LOGGER.warn(IT, "Vulkan is unavailable on this system; staying on OpenGL");
-            ctx.showError("Vulkan unavailable", "Vulkan is not available on this system.\nThe app keeps running on OpenGL.", null);
-            return;
-        }
-        swapTarget = target;
-        ctx.requestRender();
-    }
-
     // REBUILDS THE WINDOW AND ENGINE IN PLACE, KEEPING THE JVM, THE PLAYER API, THE ctx EXECUTOR AND THE GLOW
     // PULSE; RUNS ONLY FROM THE TOP OF mainLoop()
     private static void performEngineSwap() {
@@ -512,13 +525,13 @@ public class WaterMediaApp {
 
         WaterMedia.LOGGER.info(IT, "Hot-swapping render engine {} -> {}", RenderSystem.engineName(), target);
         try {
-            // 1) DRAIN ALL MEDIA — SAME ORDER AS cleanup(): RELEASE PLAYERS/THUMBNAILS, THEN JOIN THE
+            // 1) DRAIN ALL MEDIA IN THE SAME ORDER AS cleanup(): RELEASE PLAYERS/THUMBNAILS, THEN JOIN THE
             //    BACKGROUND RELEASE QUEUE SO NOTHING TOUCHES THE DEVICE AFTER IT IS DESTROYED
             screens.releaseMediaAll();
             ctx.media.releasePlayer();
             ctx.awaitPlayerRelease();
 
-            // 2) DROP GPU CACHES BOUND TO THE OUTGOING CONTEXT — THEY REBUILD LAZILY (TEXT) OR ARE RECREATED BELOW
+            // 2) DROP GPU CACHES BOUND TO THE OUTGOING CONTEXT; THEY REBUILD LAZILY (TEXT) OR ARE RECREATED BELOW
             ctx.text.reset();
             ctx.assets.dispose();
 
@@ -581,11 +594,13 @@ public class WaterMediaApp {
         frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
     }
 
-    // ==== INPUT HANDLING ====
+    // ==========================================================================
+    // INPUT HANDLING
+    // ==========================================================================
     private static void handleFrameInput() {
         if (ctx.mousePressed) {
             ctx.mousePressed = false;
-            // GLOBAL DIALOGS ARE TRULY MODAL — A PRESS MUST NOT START A DRAG ON CONTENT BENEATH THE SCRIM
+            // GLOBAL DIALOGS ARE TRULY MODAL: A PRESS MUST NOT START A DRAG ON CONTENT BENEATH THE SCRIM
             if (!ctx.hasError() && !ctx.exitConfirm) root.press(ctx.mouseX, ctx.mouseY);
         }
         // HOVER DISPATCHES ONLY ON REAL CURSOR MOVEMENT, SO A PARKED CURSOR NEVER OVERRIDES KEYBOARD NAVIGATION
@@ -620,7 +635,7 @@ public class WaterMediaApp {
             return;
         }
 
-        // THE TREE RESOLVES PRIORITY TOPMOST-FIRST — A VISIBLE GLOBAL DIALOG CONSUMES ESC/ENTER ITSELF
+        // THE TREE RESOLVES PRIORITY TOPMOST-FIRST; A VISIBLE GLOBAL DIALOG CONSUMES ESC/ENTER ITSELF
         root.key(key, action);
     }
 
@@ -629,7 +644,9 @@ public class WaterMediaApp {
         root.character(codepoint);
     }
 
-    // ==== CLEANUP ====
+    // ==========================================================================
+    // CLEANUP
+    // ==========================================================================
     private static void cleanup() {
         // FINISH ANY BACKGROUND PLAYER RELEASE BEFORE TEARING DOWN THE RENDER DEVICE, OR A VULKAN
         // RELEASE COULD DESTROY IMAGES ON AN ALREADY-DESTROYED DEVICE
@@ -642,7 +659,9 @@ public class WaterMediaApp {
         System.exit(0);
     }
 
-    // ==== LOGGING ====
+    // ==========================================================================
+    // LOGGING
+    // ==========================================================================
     private static void initLogging() {
         final String filename = "logs/watermedia-app.log";
         final File logfile = new File(filename);
@@ -672,5 +691,70 @@ public class WaterMediaApp {
 
         Configurator.initialize(builder.build());
         if (rotationFailed) WaterMedia.LOGGER.warn(IT, "Could not rotate {}; continuing in append mode", filename);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    // HOW ONE MAIN-LOOP ITERATION PAINTS THE WINDOW
+    enum FramePlan {
+        IDLE, // NOTHING CHANGED AND NOTHING MOVES: NO FRAME
+        DIRECT, // THE TREE DRAWS STRAIGHT INTO THE WINDOW, LIVE PAINTERS INLINE
+        CACHE, // THE TREE DRAWS INTO THE CACHE LAYERS, WHICH THEN COMPOSITE WITH THE LIVE PAINTERS
+        COMPOSITE; // ONLY THE CACHE LAYERS AND THE LIVE PAINTERS DRAW; THE TREE IS NOT TOUCHED
+
+        // AN ANIMATING SCREEN REPAINTS WHOLE EVERY FRAME, A CHANGE REPAINTS THE TREE (INTO THE CACHE WHILE A CRT BAND MOVES),
+        // AND A STILL TREE UNDER A MOVING BAND COMPOSITES ONCE PER BAND STEP, REBUILDING THE CACHE WHEN THE BACKEND DROPPED IT
+        static FramePlan of(final boolean continuous, final boolean requested, final boolean crt, final boolean live,
+                            final boolean visible, final boolean cacheValid, final boolean stepped) {
+            if (continuous) return DIRECT;
+            final boolean moving = crt && live;
+            if (requested) return moving ? CACHE : DIRECT;
+            if (!moving || !visible) return IDLE;
+            if (!cacheValid) return CACHE;
+            return stepped ? COMPOSITE : IDLE;
+        }
+
+        // RE-CHECKED AFTER beginFrame(): A SWAPCHAIN REBUILD THERE TAKES THE LAYERS, SO THAT COMPOSITE REPAINTS THE TREE
+        FramePlan settle(final boolean cacheValid) {
+            return this == COMPOSITE && !cacheValid ? CACHE : this;
+        }
+    }
+
+    // PACES FRAMES TO THE MONITOR REFRESH RATE FOR DRIVERS THAT IGNORE THE SWAP INTERVAL
+    private static final class FrameLimiter {
+        private static final int DEFAULT_REFRESH_HZ = 60;
+        private static final int MIN_REFRESH_HZ = 30;
+        private static final int MAX_REFRESH_HZ = 360;
+
+        private final int refreshRate;
+        private final long frameNanos;
+        private long nextFrameNanos;
+
+        private FrameLimiter(final int refreshRate) {
+            this.refreshRate = MathUtil.clamp(refreshRate, MIN_REFRESH_HZ, MAX_REFRESH_HZ);
+            this.frameNanos = 1_000_000_000L / this.refreshRate;
+        }
+
+        static FrameLimiter forWindow(final long windowHandle) {
+            long monitor = glfwGetWindowMonitor(windowHandle);
+            if (monitor == 0L) monitor = glfwGetPrimaryMonitor();
+            final GLFWVidMode mode = monitor != 0L ? glfwGetVideoMode(monitor) : null;
+            final int hz = mode != null && mode.refreshRate() > 0 ? mode.refreshRate() : DEFAULT_REFRESH_HZ;
+            return new FrameLimiter(hz);
+        }
+
+        void syncBeforeFrame() {
+            final long now = System.nanoTime();
+            if (this.nextFrameNanos == 0L) this.nextFrameNanos = now;
+            // A FRAME LATE BY MORE THAN ONE PERIOD RESTARTS THE SCHEDULE INSTEAD OF BURSTING TO CATCH UP
+            if (now < this.nextFrameNanos) LockSupport.parkNanos(this.nextFrameNanos - now);
+            else if (now - this.nextFrameNanos > this.frameNanos) this.nextFrameNanos = now;
+            this.nextFrameNanos += this.frameNanos;
+        }
+
+        double idleTimeoutSeconds() {
+            return MathUtil.clamp(1.0 / this.refreshRate, 0.01, 0.25);
+        }
     }
 }

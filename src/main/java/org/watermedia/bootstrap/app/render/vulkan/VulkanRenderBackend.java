@@ -12,9 +12,7 @@ import org.watermedia.api.player.GFXEngine;
 import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.api.player.VKContext;
 import org.watermedia.api.util.MathUtil;
-import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
-import org.watermedia.bootstrap.app.render.TextureHandle;
 import org.watermedia.tools.IOTool;
 
 import java.io.IOException;
@@ -183,6 +181,594 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         }
         WaterMedia.LOGGER.info(IT, "VulkanRenderBackend device ready (queueFamily={}, hostImport={}, minAlign={}, wideLines={}, ycbcrSampler={}, videoDecode={})",
                 this.queueFamily, this.hostImport, this.minAlign, this.wideLines, this.ycbcrSampler, this.decodeCodecs);
+    }
+
+    // ==========================================================================
+    // PUBLIC API: LIFECYCLE
+    // ==========================================================================
+    @Override
+    public void init() {
+        this.ensureCore();
+        if (this.swapchain == 0L) this.buildSwapchain();
+    }
+
+    @Override
+    public void cleanup() {
+        if (this.device != null) vkDeviceWaitIdle(this.device);
+
+        // STILL-PENDING ENGINE DESTRUCTORS RUN NOW: THE DEVICE IS IDLE, SO NO FRAME REFERENCES THEM
+        Retire r;
+        while ((r = this.retireQueue.poll()) != null) r.run().run();
+
+        // EVERY HANDLE IS CHECKED, SO A CORE THAT FAILED HALFWAY IS ALSO TORN DOWN BEFORE ITS DEVICE
+        if (this.device != null) {
+            this.destroySwapchainObjects();
+
+            for (final Frame f: this.frames) {
+                if (f == null) continue;
+                this.freeRetired(f);
+                if (f.vbo != 0L) vkDestroyBuffer(this.device, f.vbo, null);
+                if (f.vboMem != 0L) vkFreeMemory(this.device, f.vboMem, null);
+                if (f.imageAvailable != 0L) vkDestroySemaphore(this.device, f.imageAvailable, null);
+                if (f.inFlightFence != 0L) vkDestroyFence(this.device, f.inFlightFence, null);
+                for (final long pool: f.descPools) vkDestroyDescriptorPool(this.device, pool, null);
+            }
+
+            for (final TextureRecord rec: this.textures.values()) {
+                vkDestroyImageView(this.device, rec.view(), null);
+                vkDestroyImage(this.device, rec.image(), null);
+                vkFreeMemory(this.device, rec.memory(), null);
+            }
+            this.textures.clear();
+
+            if (this.dummyPool != 0L) vkDestroyDescriptorPool(this.device, this.dummyPool, null); // FREES THE SET
+            if (this.dummyView != 0L) vkDestroyImageView(this.device, this.dummyView, null);
+            if (this.dummyImg != 0L) vkDestroyImage(this.device, this.dummyImg, null);
+            if (this.dummyMem != 0L) vkFreeMemory(this.device, this.dummyMem, null);
+
+            if (this.pipeTriList != 0L) vkDestroyPipeline(this.device, this.pipeTriList, null);
+            if (this.pipeLineList != 0L) vkDestroyPipeline(this.device, this.pipeLineList, null);
+            if (this.pipeLineStrip != 0L) vkDestroyPipeline(this.device, this.pipeLineStrip, null);
+            if (this.sdfPipe != 0L) vkDestroyPipeline(this.device, this.sdfPipe, null);
+            if (this.pipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.pipeLayout, null);
+            if (this.sdfPipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.sdfPipeLayout, null);
+            if (this.descLayout != 0L) vkDestroyDescriptorSetLayout(this.device, this.descLayout, null);
+            if (this.renderPass != 0L) vkDestroyRenderPass(this.device, this.renderPass, null);
+            if (this.layerPass != 0L) vkDestroyRenderPass(this.device, this.layerPass, null);
+            if (this.sampler != 0L) vkDestroySampler(this.device, this.sampler, null);
+            if (this.uploadFence != 0L) vkDestroyFence(this.device, this.uploadFence, null);
+            if (this.uploadPool != 0L) vkDestroyCommandPool(this.device, this.uploadPool, null); // FREES uploadCmd
+            if (this.cmdPool != 0L) vkDestroyCommandPool(this.device, this.cmdPool, null); // FREES THE FRAME COMMAND BUFFERS
+            this.coreReady = false;
+        }
+
+        if (this.memProps != null) { this.memProps.free(); this.memProps = null; }
+        if (this.device != null) { vkDestroyDevice(this.device, null); this.device = null; }
+        if (this.features13 != null) { this.features13.free(); this.features13 = null; }
+        if (this.features12 != null) { this.features12.free(); this.features12 = null; }
+        if (this.ycbcrFeatures != null) { this.ycbcrFeatures.free(); this.ycbcrFeatures = null; }
+        if (this.features != null) { this.features.free(); this.features = null; }
+        if (this.surface != 0L) { vkDestroySurfaceKHR(this.instance, this.surface, null); this.surface = 0L; }
+        if (this.instance != null) { vkDestroyInstance(this.instance, null); this.instance = null; }
+        WaterMedia.LOGGER.info(IT, "VulkanRenderBackend cleaned up");
+    }
+
+    // ==========================================================================
+    // PUBLIC API: PER-FRAME FLOW
+    // ==========================================================================
+    @Override
+    public void beginFrame() {
+        this.frameValid = false;
+        this.ensureCore();
+        if (this.swapchain == 0L && !this.buildSwapchain()) return; // STILL MINIMIZED
+
+        final Frame f = this.frames[this.currentFrame];
+        vkWaitForFences(this.device, f.inFlightFence, true, BLOCK);
+        // PRIOR GPU WORK OF THIS SLOT IS DONE: SAFE TO RECLAIM VERTEX BUFFERS RETIRED WHEN IT LAST GREW
+        this.freeRetired(f);
+        // THE FRAME CLOCK ADVANCES ONLY ON REAL FRAMES, PAST THE FENCE WAIT; ENGINE RESOURCES WHOSE FRAMES COMPLETED
+        // ARE DESTROYED IN due ORDER, STOPPING AT THE FIRST ONE NOT YET DUE
+        this.frameCounter++;
+        Retire retired;
+        while ((retired = this.retireQueue.peek()) != null && this.frameCounter >= retired.due()) {
+            this.retireQueue.poll();
+            retired.run().run();
+        }
+
+        try (final MemoryStack stack = stackPush()) {
+            final IntBuffer pImg = stack.mallocInt(1);
+            int acq = vkAcquireNextImageKHR(this.device, this.swapchain, BLOCK, f.imageAvailable, VK_NULL_HANDLE, pImg);
+            if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
+                this.recreateSwapchain();
+                if (this.swapchain == 0L) return;
+                acq = vkAcquireNextImageKHR(this.device, this.swapchain, BLOCK, f.imageAvailable, VK_NULL_HANDLE, pImg);
+            }
+            if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) return; // GIVE UP THIS FRAME
+            this.imageIndex = pImg.get(0);
+
+            // TWO IN-FLIGHT FRAMES MUST NOT TARGET THE SAME IMAGE (THE IMAGE COUNT MAY EXCEED THE FRAME COUNT)
+            if (this.imagesInFlight[this.imageIndex] != 0L)
+                vkWaitForFences(this.device, this.imagesInFlight[this.imageIndex], true, BLOCK);
+            this.imagesInFlight[this.imageIndex] = f.inFlightFence;
+            vkResetFences(this.device, f.inFlightFence);
+
+            vkResetCommandBuffer(f.cmd, 0);
+            final VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
+                    .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+            check(vkBeginCommandBuffer(f.cmd, begin), "begin command buffer");
+        }
+
+        // RESET THE PER-FRAME TRANSIENT STATE
+        for (int i = 0; i <= f.descPoolIndex && i < f.descPools.size(); i++) vkResetDescriptorPool(this.device, f.descPools.get(i), 0);
+        f.descPoolIndex = 0;
+        f.descPoolUsed = 0;
+        f.viewSetCount = 0;
+        f.vertexOffset = 0;
+        this.boundPipeline = 0L;
+        this.boundVbo = 0L;
+        this.boundSet = 0L;
+        // THE PER-FRAME DESCRIPTOR POOLS WERE JUST RESET, SO ANY CACHED SET FROM A PRIOR FRAME IS STALE
+        this.boundView = 0L;
+        this.boundTexSet = 0L;
+        this.vpDirty = true;
+        this.scDirty = true;
+        this.lwDirty = true;
+        this.renderPassActive = false;
+        this.frameValid = true;
+    }
+
+    @Override
+    public void present() {
+        if (!this.frameValid) return;
+        this.endLayer();
+        final Frame f = this.frames[this.currentFrame];
+        if (!this.renderPassActive) this.beginRenderPass(); // THE IMAGE MUST REACH PRESENT_SRC EVEN WITHOUT DRAWS
+        vkCmdEndRenderPass(f.cmd);
+        this.renderPassActive = false;
+        check(vkEndCommandBuffer(f.cmd), "end command buffer");
+
+        final int pres;
+        try (final MemoryStack stack = stackPush()) {
+            final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
+                    .waitSemaphoreCount(1) // NOT AUTO-DERIVED: SHARED WITH pWaitDstStageMask
+                    .pWaitSemaphores(stack.longs(f.imageAvailable))
+                    .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT))
+                    .pCommandBuffers(stack.pointers(f.cmd))
+                    .pSignalSemaphores(stack.longs(this.renderFinished[this.imageIndex]));
+            final VkPresentInfoKHR pi = VkPresentInfoKHR.calloc(stack).sType$Default()
+                    .pWaitSemaphores(stack.longs(this.renderFinished[this.imageIndex]))
+                    .swapchainCount(1).pSwapchains(stack.longs(this.swapchain)).pImageIndices(stack.ints(this.imageIndex));
+            // THE VKEngine PRODUCER SUBMITS TO THE SAME QUEUE UNDER THE SAME LOCK
+            synchronized (this.queueLock) {
+                check(vkQueueSubmit(this.queue, si, f.inFlightFence), "queue submit");
+                pres = vkQueuePresentKHR(this.queue, pi);
+            }
+        }
+        if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) this.recreateSwapchain();
+        else if (pres != VK_SUCCESS) check(pres, "queue present");
+
+        this.currentFrame = (this.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+        this.frameValid = false;
+    }
+
+    @Override
+    public void configureFrameState() {
+        // NO-OP: BLEND IS BAKED INTO THE PIPELINE, AND THERE IS NO DEPTH ATTACHMENT
+    }
+
+    @Override
+    public void clear(final float r, final float g, final float b, final float a) {
+        this.clearR = r;
+        this.clearG = g;
+        this.clearB = b;
+        this.clearA = a;
+        if (!this.frameValid) return;
+        if (this.renderPassActive) {
+            // MID-FRAME CLEAR: THE RENDER PASS IS ALREADY OPEN, SO CLEAR INSIDE IT
+            try (final MemoryStack stack = stackPush()) {
+                final VkClearAttachment.Buffer at = VkClearAttachment.calloc(1, stack);
+                at.get(0).aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).colorAttachment(0);
+                at.get(0).clearValue().color(c -> c.float32(0, r).float32(1, g).float32(2, b).float32(3, a));
+                final VkClearRect.Buffer rect = VkClearRect.calloc(1, stack);
+                rect.get(0).baseArrayLayer(0).layerCount(1);
+                rect.get(0).rect(rc -> rc.offset(o -> o.x(0).y(0)).extent(e -> e.width(this.extentW).height(this.extentH)));
+                vkCmdClearAttachments(this.frames[this.currentFrame].cmd, at, rect);
+            }
+        } else {
+            this.beginRenderPass();
+        }
+    }
+
+    @Override
+    public void viewport(final int width, final int height) {
+        // THE DRAW-TIME VIEWPORT USES THE SWAPCHAIN EXTENT, NOT THIS WINDOW SIZE
+        this.vpDirty = true;
+    }
+
+    // ==========================================================================
+    // PUBLIC API: TREE CACHE LAYERS
+    // ==========================================================================
+    @Override
+    public boolean beginLayer(final int index, final float r, final float g, final float b, final float a) {
+        if (!this.frameValid || !this.layerSupport) return false;
+        if (this.layerImage[index] == 0L && !this.createLayer(index)) return false;
+        final VkCommandBuffer cmd = this.frames[this.currentFrame].cmd;
+        if (this.renderPassActive) vkCmdEndRenderPass(cmd);
+        try (final MemoryStack stack = stackPush()) {
+            final VkClearValue.Buffer clear = VkClearValue.calloc(1, stack);
+            clear.get(0).color(c -> c.float32(0, r).float32(1, g).float32(2, b).float32(3, a));
+            final VkRenderPassBeginInfo rp = VkRenderPassBeginInfo.calloc(stack).sType$Default()
+                    .renderPass(this.layerPass).framebuffer(this.layerFramebuffer[index]).pClearValues(clear);
+            rp.renderArea(area -> area.offset(o -> o.x(0).y(0)).extent(e -> e.width(this.extentW).height(this.extentH)));
+            vkCmdBeginRenderPass(cmd, rp, VK_SUBPASS_CONTENTS_INLINE);
+        }
+        this.renderPassActive = true;
+        this.activeLayer = index;
+        this.vpDirty = true;
+        this.scDirty = true;
+        this.lwDirty = true;
+        return true;
+    }
+
+    @Override
+    public void endLayer() {
+        if (this.activeLayer < 0) return;
+        if (this.renderPassActive) vkCmdEndRenderPass(this.frames[this.currentFrame].cmd);
+        this.renderPassActive = false;
+        this.activeLayer = -1;
+        this.vpDirty = true;
+        this.scDirty = true;
+        this.lwDirty = true;
+    }
+
+    @Override
+    public boolean bindLayer(final int index) {
+        if (this.layerView[index] == 0L) return false;
+        this.currentView = this.layerView[index];
+        this.layerBound = true;
+        return true;
+    }
+
+    @Override
+    public int layerEpoch() {
+        return this.layerEpoch;
+    }
+
+    @Override
+    public void releaseLayers() {
+        if (this.layerImage[0] == 0L && this.layerImage[1] == 0L) return;
+        // BETWEEN FRAMES ONLY THIS BACKEND'S OWN IN-FLIGHT FRAMES CAN STILL READ THE LAYERS; EVERY FENCE STARTS SIGNALED
+        try (final MemoryStack stack = stackPush()) {
+            final LongBuffer fences = stack.mallocLong(MAX_FRAMES_IN_FLIGHT);
+            for (final Frame f: this.frames) fences.put(f.inFlightFence);
+            vkWaitForFences(this.device, fences.flip(), true, BLOCK);
+        }
+        for (int i = 0; i < 2; i++) this.destroyLayer(i);
+        this.layerEpoch++;
+    }
+
+    // ==========================================================================
+    // PUBLIC API: DRAWING
+    // ==========================================================================
+    @Override
+    public void useProjection(final Matrix4f projection) {
+        projection.get(this.proj);
+    }
+
+    @Override
+    public void bindTexture(final int textureId) {
+        final TextureRecord rec = this.textures.get(textureId);
+        this.currentView = rec != null ? rec.view() : 0L;
+        this.layerBound = false;
+    }
+
+    /** Samples an engine-owned {@code VkImageView} already in {@code SHADER_READ_ONLY_OPTIMAL}, never transitioning or destroying it. */
+    @Override
+    public void bindMediaTexture(final long handle) {
+        this.currentView = handle;
+        this.layerBound = false;
+    }
+
+    @Override
+    public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
+        // THE NEGATIVE-HEIGHT VIEWPORT MAPS APP-TOP TO FRAMEBUFFER-TOP AND THE SCISSOR ORIGIN IS TOP-LEFT TOO,
+        // SO THE CLIP Y NEEDS NO GL BOTTOM-LEFT FLIP
+        this.clipEnabled = true;
+        this.clipX = x;
+        this.clipY = y;
+        this.clipW = width;
+        this.clipH = height;
+        this.scDirty = true;
+    }
+
+    @Override
+    public void clearClip() {
+        this.clipEnabled = false;
+        this.scDirty = true;
+    }
+
+    @Override
+    public void lineWidth(final float width) {
+        this.lineW = width;
+        this.lwDirty = true;
+    }
+
+    @Override
+    public void draw(final DrawMode mode, final float[] vertices, final int vertexCount, final boolean textured) {
+        if (!this.frameValid || vertexCount <= 0) return;
+        if (!this.renderPassActive) this.beginRenderPass(); // A DRAW BEFORE ANY clear()
+
+        final Frame f = this.frames[this.currentFrame];
+        final boolean loop = mode == DrawMode.LINE_LOOP;
+        final boolean fan = mode == DrawMode.TRIANGLE_FAN;
+        // LINE_LOOP CLOSES BY REPEATING VERTEX 0; TRIANGLE_FAN EXPANDS TO A TRIANGLE LIST (v0, vi, vi+1) BECAUSE FAN
+        // TOPOLOGY IS NOT PORTABLE (MoltenVK REJECTS IT)
+        final int drawVerts = fan ? (vertexCount - 2) * 3 : (loop ? vertexCount + 1 : vertexCount);
+        if (drawVerts <= 0) return;
+
+        // THE OUTGROWN VERTEX BUFFER IS RETIRED, NOT FREED, BECAUSE EARLIER DRAWS OF THIS FRAME READ IT UNTIL
+        // THE FENCE SIGNALS
+        if (f.vertexOffset + drawVerts > f.vboCapVerts) this.growVbo(f, f.vertexOffset + drawVerts);
+
+        // APPEND AT THE RUNNING OFFSET OF THE PERSISTENTLY MAPPED HOST-VISIBLE BUFFER
+        final long base = f.vboMapped + (long) f.vertexOffset * VERTEX_BYTES;
+        final FloatBuffer dst = MemoryUtil.memFloatBuffer(base, drawVerts * FLOATS_PER_VERTEX);
+        if (fan) {
+            for (int i = 1; i < vertexCount - 1; i++) {
+                dst.put(vertices, 0, FLOATS_PER_VERTEX);
+                dst.put(vertices, i * FLOATS_PER_VERTEX, FLOATS_PER_VERTEX);
+                dst.put(vertices, (i + 1) * FLOATS_PER_VERTEX, FLOATS_PER_VERTEX);
+            }
+        } else {
+            dst.put(vertices, 0, vertexCount * FLOATS_PER_VERTEX);
+            if (loop) dst.put(vertices, 0, FLOATS_PER_VERTEX);
+        }
+        final int firstVertex = f.vertexOffset;
+        f.vertexOffset += drawVerts;
+
+        final VkCommandBuffer cmd = f.cmd;
+        try (final MemoryStack stack = stackPush()) {
+            final long pipe = switch (mode) {
+                case TRIANGLES, TRIANGLE_FAN -> this.pipeTriList; // FANS ARE EXPANDED TO A LIST ABOVE
+                case LINES -> this.pipeLineList;
+                case LINE_LOOP -> this.pipeLineStrip; // A CLOSED LINE STRIP: VULKAN HAS NO LINE_LOOP TOPOLOGY
+            };
+            if (pipe != this.boundPipeline) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                this.boundPipeline = pipe;
+            }
+            if (f.vbo != this.boundVbo) {
+                vkCmdBindVertexBuffers(cmd, 0, stack.longs(f.vbo), stack.longs(0L));
+                this.boundVbo = f.vbo;
+            }
+            // DYNAMIC STATE: SET ON CHANGE; IT PERSISTS FOR THE NEXT DRAWS OF THIS COMMAND BUFFER
+            if (this.vpDirty) {
+                // NEGATIVE-HEIGHT VIEWPORT FROM THE SWAPCHAIN EXTENT, NOT viewport(): IT GIVES OPENGL'S CLIP SPACE
+                // SO THE ortho2D(0, w, h, 0) MATH RENDERS THE SAME, AND ALWAYS MATCHES THE FRAMEBUFFER AND SCISSOR
+                final VkViewport.Buffer v = VkViewport.calloc(1, stack);
+                v.get(0).x(0f).y(this.extentH).width(this.extentW).height(-(float) this.extentH).minDepth(0f).maxDepth(1f);
+                vkCmdSetViewport(cmd, 0, v);
+                this.vpDirty = false;
+            }
+            if (this.scDirty) {
+                vkCmdSetScissor(cmd, 0, this.scissor(stack));
+                this.scDirty = false;
+            }
+            if (this.lwDirty) {
+                vkCmdSetLineWidth(cmd, this.wideLines ? this.lineW : 1.0f); // 1.0 WITHOUT wideLines
+                this.lwDirty = false;
+            }
+
+            final boolean useTex = textured && this.currentView != 0L;
+            // TEXTURED DRAWS SAMPLE currentView THROUGH THE SET THIS FRAME ALREADY WROTE FOR IT, SO ALTERNATING BETWEEN
+            // ATLASES, ICONS AND THUMBNAILS DOES NOT ALLOCATE A SET PER SWITCH; NON-TEXTURED DRAWS BIND THE DUMMY
+            final long set;
+            if (useTex) {
+                if (this.currentView != this.boundView || this.boundTexSet == 0L) {
+                    this.boundTexSet = this.textureSet(stack, f, this.currentView);
+                    this.boundView = this.currentView;
+                }
+                set = this.boundTexSet;
+            } else {
+                set = this.dummySet;
+            }
+            if (set != this.boundSet) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this.pipeLayout, 0, stack.longs(set), null);
+                this.boundSet = set;
+            }
+
+            final ByteBuffer push = stack.malloc(PUSH_BYTES);
+            for (int i = 0; i < 16; i++) push.putFloat(i * 4, this.proj[i]);
+            push.putInt(64, !useTex ? 0 : this.layerBound ? 2 : 1);
+            vkCmdPushConstants(cmd, this.pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, push);
+
+            vkCmdDraw(cmd, drawVerts, 1, firstVertex, 0);
+        }
+    }
+
+    @Override
+    public boolean supportsSoftRect() {
+        return true;
+    }
+
+    @Override
+    public void softRect(final float x, final float y, final float w, final float h, final float radius,
+                         final float r, final float g, final float b, final float a, final float softness) {
+        if (!this.frameValid) return;
+        if (!this.renderPassActive) this.beginRenderPass();
+        final float soft = Math.max(0.5f, softness);
+        final Frame f = this.frames[this.currentFrame];
+        final int drawVerts = 6;
+        if (f.vertexOffset + drawVerts > f.vboCapVerts) this.growVbo(f, f.vertexOffset + drawVerts);
+        final long base = f.vboMapped + (long) f.vertexOffset * VERTEX_BYTES;
+        final FloatBuffer dst = MemoryUtil.memFloatBuffer(base, drawVerts * FLOATS_PER_VERTEX);
+        final float x0 = x - soft, y0 = y - soft, x1 = x + w + soft, y1 = y + h + soft;
+        // 6-VERTEX QUAD: ONLY position IS READ, uv AND color PAD THE 8-FLOAT STRIDE
+        putSoftVertex(dst, x0, y0);
+        putSoftVertex(dst, x1, y0);
+        putSoftVertex(dst, x1, y1);
+        putSoftVertex(dst, x0, y0);
+        putSoftVertex(dst, x1, y1);
+        putSoftVertex(dst, x0, y1);
+        final int firstVertex = f.vertexOffset;
+        f.vertexOffset += drawVerts;
+
+        final VkCommandBuffer cmd = f.cmd;
+        try (final MemoryStack stack = stackPush()) {
+            if (this.sdfPipe != this.boundPipeline) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this.sdfPipe);
+                this.boundPipeline = this.sdfPipe;
+            }
+            if (f.vbo != this.boundVbo) {
+                vkCmdBindVertexBuffers(cmd, 0, stack.longs(f.vbo), stack.longs(0L));
+                this.boundVbo = f.vbo;
+            }
+            if (this.vpDirty) {
+                final VkViewport.Buffer v = VkViewport.calloc(1, stack);
+                v.get(0).x(0f).y(this.extentH).width(this.extentW).height(-(float) this.extentH).minDepth(0f).maxDepth(1f);
+                vkCmdSetViewport(cmd, 0, v);
+                this.vpDirty = false;
+            }
+            if (this.scDirty) {
+                vkCmdSetScissor(cmd, 0, this.scissor(stack));
+                this.scDirty = false;
+            }
+
+            final ByteBuffer push = stack.malloc(PUSH_SDF_BYTES);
+            for (int i = 0; i < 16; i++) push.putFloat(i * 4, this.proj[i]);
+            push.putFloat(64, r).putFloat(68, g).putFloat(72, b).putFloat(76, a);
+            push.putFloat(80, x + w / 2f).putFloat(84, y + h / 2f);
+            push.putFloat(88, w / 2f).putFloat(92, h / 2f);
+            push.putFloat(96, Math.max(0f, radius));
+            push.putFloat(100, soft);
+            vkCmdPushConstants(cmd, this.sdfPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, push);
+
+            vkCmdDraw(cmd, drawVerts, 1, firstVertex, 0);
+        }
+        // THE SDF LAYOUT IS INCOMPATIBLE WITH THE UI ONE (NO SET 0, DIFFERENT PUSH), SO THE NEXT UI DRAW REBINDS ITS
+        // PIPELINE AND DESCRIPTOR SET (IT RE-PUSHES ITS CONSTANTS EVERY DRAW ANYWAY)
+        this.boundPipeline = VK_NULL_HANDLE;
+        this.boundSet = VK_NULL_HANDLE;
+    }
+
+    // ==========================================================================
+    // PUBLIC API: TEXTURES
+    // ==========================================================================
+    @Override
+    public TextureHandle createTexture(final int width, final int height, final ByteBuffer rgba) {
+        this.ensureCore();
+        final TextureRecord rec = this.uploadTexture(width, height, rgba);
+        final int id = this.nextTextureId++;
+        this.textures.put(id, rec);
+        return new TextureHandle(id, width, height);
+    }
+
+    @Override
+    public void deleteTexture(final TextureHandle texture) {
+        if (texture == null || texture.id() <= 0) return;
+        final TextureRecord rec = this.textures.remove(texture.id());
+        if (rec == null) return;
+        // RARE (ATLAS OR ICON TEARDOWN): DRAIN THE RENDER QUEUE, THE ONLY ONE THAT SAMPLES THE VIEW, UNDER THE LOCK THE
+        // ENGINE'S UPLOADS SHARE; A DEVICE-WIDE WAIT WOULD RACE FFMPEG'S DECODE SUBMISSIONS ON ITS OWN QUEUES
+        synchronized (this.queueLock) {
+            vkQueueWaitIdle(this.queue);
+        }
+        vkDestroyImageView(this.device, rec.view(), null);
+        vkDestroyImage(this.device, rec.image(), null);
+        vkFreeMemory(this.device, rec.memory(), null);
+        // THE DRIVER MAY HAND THE SAME HANDLE TO THE NEXT VIEW, SO NO CACHED SET MAY OUTLIVE THIS ONE
+        if (this.boundView == rec.view()) this.boundTexSet = 0L;
+        for (final Frame f: this.frames) {
+            if (f == null) continue;
+            for (int i = 0; i < f.viewSetCount; i++) {
+                if (f.viewSets[i * 2] != rec.view()) continue;
+                f.viewSetCount--;
+                f.viewSets[i * 2] = f.viewSets[f.viewSetCount * 2];
+                f.viewSets[i * 2 + 1] = f.viewSets[f.viewSetCount * 2 + 1];
+                break;
+            }
+        }
+    }
+
+    // ==========================================================================
+    // PUBLIC API: VKContext
+    // ==========================================================================
+    @Override
+    public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
+        // VKEngine BORROWS THIS BACKEND'S DEVICE (THIS IS THE VKContext); THE THREAD AND EXECUTOR ARE UNUSED
+        return () -> PlayerAPI.vkEngine(this);
+    }
+
+    @Override
+    public void retire(final Runnable destroy) {
+        // STAMPED A FEW FRAMES AHEAD (+1 ABSORBS THE frameCounter READ/WRITE RACE WITH beginFrame); A BACKGROUND
+        // RELEASE THREAD MAY CALL THIS, SO THE QUEUE IS CONCURRENT
+        this.retireQueue.add(new Retire(this.frameCounter + MAX_FRAMES_IN_FLIGHT + 1, destroy));
+    }
+
+    @Override
+    public VkInstance vkInstance() {
+        return this.instance;
+    }
+
+    @Override
+    public VkPhysicalDevice physicalDevice() {
+        return this.physicalDevice;
+    }
+
+    @Override
+    public String deviceName() {
+        return this.deviceName;
+    }
+
+    @Override
+    public String deviceVersion() {
+        return this.deviceVersion;
+    }
+
+    @Override
+    public VkDevice vkDevice() {
+        return this.device;
+    }
+
+    @Override
+    public VkQueue queue() {
+        return this.queue;
+    }
+
+    @Override
+    public int queueFamily() {
+        return this.queueFamily;
+    }
+
+    @Override
+    public Object queueLock() {
+        return this.queueLock;
+    }
+
+    @Override
+    public VkPhysicalDeviceMemoryProperties memoryProperties() {
+        return this.memProps;
+    }
+
+    @Override
+    public boolean hostImportSupported() {
+        return this.hostImport;
+    }
+
+    @Override
+    public long minImportedHostPointerAlignment() {
+        return this.minAlign;
+    }
+
+    @Override
+    public boolean ycbcrSampler() {
+        return this.ycbcrSampler;
+    }
+
+    @Override
+    public VKContext.DeviceInfo deviceInfo() {
+        return new VKContext.DeviceInfo(this.features, List.copyOf(this.instanceExtensions), List.copyOf(this.deviceExtensions), this.queueCounts.clone());
     }
 
     // ==========================================================================
@@ -427,24 +1013,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         return -1;
     }
 
-    private static boolean hasDeviceExtension(final VkPhysicalDevice pd, final MemoryStack stack, final String name) {
-        final IntBuffer count = stack.mallocInt(1);
-        vkEnumerateDeviceExtensionProperties(pd, (ByteBuffer) null, count, null);
-        final VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(count.get(0), stack);
-        vkEnumerateDeviceExtensionProperties(pd, (ByteBuffer) null, count, props);
-        for (int i = 0; i < props.capacity(); i++) if (name.equals(props.get(i).extensionNameString())) return true;
-        return false;
-    }
-
     // ==========================================================================
     // CORE / SWAPCHAIN LIFECYCLE
     // ==========================================================================
-    @Override
-    public void init() {
-        this.ensureCore();
-        if (this.swapchain == 0L) this.buildSwapchain();
-    }
-
     private void ensureCore() {
         // THE EXTENT-INDEPENDENT RESOURCES, BUILT ONCE: THE RENDER PASS AND PIPELINES NEED ONLY THE SURFACE FORMAT,
         // NOT THE SWAPCHAIN, SO createTexture() CAN RUN BEFORE ANY FRAME
@@ -793,199 +1364,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     // ==========================================================================
-    // PER-FRAME FLOW
-    // ==========================================================================
-    @Override
-    public void beginFrame() {
-        this.frameValid = false;
-        this.ensureCore();
-        if (this.swapchain == 0L && !this.buildSwapchain()) return; // STILL MINIMIZED
-
-        final Frame f = this.frames[this.currentFrame];
-        vkWaitForFences(this.device, f.inFlightFence, true, BLOCK);
-        // PRIOR GPU WORK OF THIS SLOT IS DONE: SAFE TO RECLAIM VERTEX BUFFERS RETIRED WHEN IT LAST GREW
-        this.freeRetired(f);
-        // THE FRAME CLOCK ADVANCES ONLY ON REAL FRAMES, PAST THE FENCE WAIT; ENGINE RESOURCES WHOSE FRAMES COMPLETED
-        // ARE DESTROYED IN due ORDER, STOPPING AT THE FIRST ONE NOT YET DUE
-        this.frameCounter++;
-        Retire retired;
-        while ((retired = this.retireQueue.peek()) != null && this.frameCounter >= retired.due()) {
-            this.retireQueue.poll();
-            retired.run().run();
-        }
-
-        try (final MemoryStack stack = stackPush()) {
-            final IntBuffer pImg = stack.mallocInt(1);
-            int acq = vkAcquireNextImageKHR(this.device, this.swapchain, BLOCK, f.imageAvailable, VK_NULL_HANDLE, pImg);
-            if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
-                this.recreateSwapchain();
-                if (this.swapchain == 0L) return;
-                acq = vkAcquireNextImageKHR(this.device, this.swapchain, BLOCK, f.imageAvailable, VK_NULL_HANDLE, pImg);
-            }
-            if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) return; // GIVE UP THIS FRAME
-            this.imageIndex = pImg.get(0);
-
-            // TWO IN-FLIGHT FRAMES MUST NOT TARGET THE SAME IMAGE (THE IMAGE COUNT MAY EXCEED THE FRAME COUNT)
-            if (this.imagesInFlight[this.imageIndex] != 0L)
-                vkWaitForFences(this.device, this.imagesInFlight[this.imageIndex], true, BLOCK);
-            this.imagesInFlight[this.imageIndex] = f.inFlightFence;
-            vkResetFences(this.device, f.inFlightFence);
-
-            vkResetCommandBuffer(f.cmd, 0);
-            final VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
-                    .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-            check(vkBeginCommandBuffer(f.cmd, begin), "begin command buffer");
-        }
-
-        // RESET THE PER-FRAME TRANSIENT STATE
-        for (int i = 0; i <= f.descPoolIndex && i < f.descPools.size(); i++) vkResetDescriptorPool(this.device, f.descPools.get(i), 0);
-        f.descPoolIndex = 0;
-        f.descPoolUsed = 0;
-        f.viewSetCount = 0;
-        f.vertexOffset = 0;
-        this.boundPipeline = 0L;
-        this.boundVbo = 0L;
-        this.boundSet = 0L;
-        // THE PER-FRAME DESCRIPTOR POOLS WERE JUST RESET, SO ANY CACHED SET FROM A PRIOR FRAME IS STALE
-        this.boundView = 0L;
-        this.boundTexSet = 0L;
-        this.vpDirty = true;
-        this.scDirty = true;
-        this.lwDirty = true;
-        this.renderPassActive = false;
-        this.frameValid = true;
-    }
-
-    @Override
-    public void present() {
-        if (!this.frameValid) return;
-        this.endLayer();
-        final Frame f = this.frames[this.currentFrame];
-        if (!this.renderPassActive) this.beginRenderPass(); // THE IMAGE MUST REACH PRESENT_SRC EVEN WITHOUT DRAWS
-        vkCmdEndRenderPass(f.cmd);
-        this.renderPassActive = false;
-        check(vkEndCommandBuffer(f.cmd), "end command buffer");
-
-        final int pres;
-        try (final MemoryStack stack = stackPush()) {
-            final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
-                    .waitSemaphoreCount(1) // NOT AUTO-DERIVED: SHARED WITH pWaitDstStageMask
-                    .pWaitSemaphores(stack.longs(f.imageAvailable))
-                    .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT))
-                    .pCommandBuffers(stack.pointers(f.cmd))
-                    .pSignalSemaphores(stack.longs(this.renderFinished[this.imageIndex]));
-            final VkPresentInfoKHR pi = VkPresentInfoKHR.calloc(stack).sType$Default()
-                    .pWaitSemaphores(stack.longs(this.renderFinished[this.imageIndex]))
-                    .swapchainCount(1).pSwapchains(stack.longs(this.swapchain)).pImageIndices(stack.ints(this.imageIndex));
-            // THE VKEngine PRODUCER SUBMITS TO THE SAME QUEUE UNDER THE SAME LOCK
-            synchronized (this.queueLock) {
-                check(vkQueueSubmit(this.queue, si, f.inFlightFence), "queue submit");
-                pres = vkQueuePresentKHR(this.queue, pi);
-            }
-        }
-        if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) this.recreateSwapchain();
-        else if (pres != VK_SUCCESS) check(pres, "queue present");
-
-        this.currentFrame = (this.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-        this.frameValid = false;
-    }
-
-    @Override
-    public void configureFrameState() {
-        // NO-OP: BLEND IS BAKED INTO THE PIPELINE, AND THERE IS NO DEPTH ATTACHMENT
-    }
-
-    @Override
-    public void clear(final float r, final float g, final float b, final float a) {
-        this.clearR = r;
-        this.clearG = g;
-        this.clearB = b;
-        this.clearA = a;
-        if (!this.frameValid) return;
-        if (this.renderPassActive) {
-            // MID-FRAME CLEAR: THE RENDER PASS IS ALREADY OPEN, SO CLEAR INSIDE IT
-            try (final MemoryStack stack = stackPush()) {
-                final VkClearAttachment.Buffer at = VkClearAttachment.calloc(1, stack);
-                at.get(0).aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).colorAttachment(0);
-                at.get(0).clearValue().color(c -> c.float32(0, r).float32(1, g).float32(2, b).float32(3, a));
-                final VkClearRect.Buffer rect = VkClearRect.calloc(1, stack);
-                rect.get(0).baseArrayLayer(0).layerCount(1);
-                rect.get(0).rect(rc -> rc.offset(o -> o.x(0).y(0)).extent(e -> e.width(this.extentW).height(this.extentH)));
-                vkCmdClearAttachments(this.frames[this.currentFrame].cmd, at, rect);
-            }
-        } else {
-            this.beginRenderPass();
-        }
-    }
-
-    @Override
-    public void viewport(final int width, final int height) {
-        // THE DRAW-TIME VIEWPORT USES THE SWAPCHAIN EXTENT, NOT THIS WINDOW SIZE
-        this.vpDirty = true;
-    }
-
-    // ==========================================================================
     // TREE CACHE LAYERS
     // ==========================================================================
-    @Override
-    public boolean beginLayer(final int index, final float r, final float g, final float b, final float a) {
-        if (!this.frameValid || !this.layerSupport) return false;
-        if (this.layerImage[index] == 0L && !this.createLayer(index)) return false;
-        final VkCommandBuffer cmd = this.frames[this.currentFrame].cmd;
-        if (this.renderPassActive) vkCmdEndRenderPass(cmd);
-        try (final MemoryStack stack = stackPush()) {
-            final VkClearValue.Buffer clear = VkClearValue.calloc(1, stack);
-            clear.get(0).color(c -> c.float32(0, r).float32(1, g).float32(2, b).float32(3, a));
-            final VkRenderPassBeginInfo rp = VkRenderPassBeginInfo.calloc(stack).sType$Default()
-                    .renderPass(this.layerPass).framebuffer(this.layerFramebuffer[index]).pClearValues(clear);
-            rp.renderArea(area -> area.offset(o -> o.x(0).y(0)).extent(e -> e.width(this.extentW).height(this.extentH)));
-            vkCmdBeginRenderPass(cmd, rp, VK_SUBPASS_CONTENTS_INLINE);
-        }
-        this.renderPassActive = true;
-        this.activeLayer = index;
-        this.vpDirty = true;
-        this.scDirty = true;
-        this.lwDirty = true;
-        return true;
-    }
-
-    @Override
-    public void endLayer() {
-        if (this.activeLayer < 0) return;
-        if (this.renderPassActive) vkCmdEndRenderPass(this.frames[this.currentFrame].cmd);
-        this.renderPassActive = false;
-        this.activeLayer = -1;
-        this.vpDirty = true;
-        this.scDirty = true;
-        this.lwDirty = true;
-    }
-
-    @Override
-    public boolean bindLayer(final int index) {
-        if (this.layerView[index] == 0L) return false;
-        this.currentView = this.layerView[index];
-        this.layerBound = true;
-        return true;
-    }
-
-    @Override
-    public int layerEpoch() {
-        return this.layerEpoch;
-    }
-
-    @Override
-    public void releaseLayers() {
-        if (this.layerImage[0] == 0L && this.layerImage[1] == 0L) return;
-        // BETWEEN FRAMES ONLY THIS BACKEND'S OWN IN-FLIGHT FRAMES CAN STILL READ THE LAYERS; EVERY FENCE STARTS SIGNALED
-        try (final MemoryStack stack = stackPush()) {
-            final LongBuffer fences = stack.mallocLong(MAX_FRAMES_IN_FLIGHT);
-            for (final Frame f: this.frames) fences.put(f.inFlightFence);
-            vkWaitForFences(this.device, fences.flip(), true, BLOCK);
-        }
-        for (int i = 0; i < 2; i++) this.destroyLayer(i);
-        this.layerEpoch++;
-    }
-
     private boolean createLayer(final int index) {
         // A DEVICE-LOCAL IMAGE THE LAYER PASS RENDERS INTO AND THE WINDOW PASS SAMPLES; A FAILURE DISABLES THE CACHE
         try (final MemoryStack stack = stackPush()) {
@@ -1041,203 +1421,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // ==========================================================================
     // DRAWING
     // ==========================================================================
-    @Override
-    public void useProjection(final Matrix4f projection) {
-        projection.get(this.proj);
-    }
-
-    @Override
-    public void bindTexture(final int textureId) {
-        final TextureRecord rec = this.textures.get(textureId);
-        this.currentView = rec != null ? rec.view() : 0L;
-        this.layerBound = false;
-    }
-
-    /** Samples an engine-owned {@code VkImageView} already in {@code SHADER_READ_ONLY_OPTIMAL}, never transitioning or destroying it. */
-    @Override
-    public void bindMediaTexture(final long handle) {
-        this.currentView = handle;
-        this.layerBound = false;
-    }
-
-    @Override
-    public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
-        // THE NEGATIVE-HEIGHT VIEWPORT MAPS APP-TOP TO FRAMEBUFFER-TOP AND THE SCISSOR ORIGIN IS TOP-LEFT TOO,
-        // SO THE CLIP Y NEEDS NO GL BOTTOM-LEFT FLIP
-        this.clipEnabled = true;
-        this.clipX = x;
-        this.clipY = y;
-        this.clipW = width;
-        this.clipH = height;
-        this.scDirty = true;
-    }
-
-    @Override
-    public void clearClip() {
-        this.clipEnabled = false;
-        this.scDirty = true;
-    }
-
-    @Override
-    public void lineWidth(final float width) {
-        this.lineW = width;
-        this.lwDirty = true;
-    }
-
-    @Override
-    public void draw(final DrawMode mode, final float[] vertices, final int vertexCount, final boolean textured) {
-        if (!this.frameValid || vertexCount <= 0) return;
-        if (!this.renderPassActive) this.beginRenderPass(); // A DRAW BEFORE ANY clear()
-
-        final Frame f = this.frames[this.currentFrame];
-        final boolean loop = mode == DrawMode.LINE_LOOP;
-        final boolean fan = mode == DrawMode.TRIANGLE_FAN;
-        // LINE_LOOP CLOSES BY REPEATING VERTEX 0; TRIANGLE_FAN EXPANDS TO A TRIANGLE LIST (v0, vi, vi+1) BECAUSE FAN
-        // TOPOLOGY IS NOT PORTABLE (MoltenVK REJECTS IT)
-        final int drawVerts = fan ? (vertexCount - 2) * 3 : (loop ? vertexCount + 1 : vertexCount);
-        if (drawVerts <= 0) return;
-
-        // THE OUTGROWN VERTEX BUFFER IS RETIRED, NOT FREED, BECAUSE EARLIER DRAWS OF THIS FRAME READ IT UNTIL
-        // THE FENCE SIGNALS
-        if (f.vertexOffset + drawVerts > f.vboCapVerts) this.growVbo(f, f.vertexOffset + drawVerts);
-
-        // APPEND AT THE RUNNING OFFSET OF THE PERSISTENTLY MAPPED HOST-VISIBLE BUFFER
-        final long base = f.vboMapped + (long) f.vertexOffset * VERTEX_BYTES;
-        final FloatBuffer dst = MemoryUtil.memFloatBuffer(base, drawVerts * FLOATS_PER_VERTEX);
-        if (fan) {
-            for (int i = 1; i < vertexCount - 1; i++) {
-                dst.put(vertices, 0, FLOATS_PER_VERTEX);
-                dst.put(vertices, i * FLOATS_PER_VERTEX, FLOATS_PER_VERTEX);
-                dst.put(vertices, (i + 1) * FLOATS_PER_VERTEX, FLOATS_PER_VERTEX);
-            }
-        } else {
-            dst.put(vertices, 0, vertexCount * FLOATS_PER_VERTEX);
-            if (loop) dst.put(vertices, 0, FLOATS_PER_VERTEX);
-        }
-        final int firstVertex = f.vertexOffset;
-        f.vertexOffset += drawVerts;
-
-        final VkCommandBuffer cmd = f.cmd;
-        try (final MemoryStack stack = stackPush()) {
-            final long pipe = this.pipelineFor(mode);
-            if (pipe != this.boundPipeline) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-                this.boundPipeline = pipe;
-            }
-            if (f.vbo != this.boundVbo) {
-                vkCmdBindVertexBuffers(cmd, 0, stack.longs(f.vbo), stack.longs(0L));
-                this.boundVbo = f.vbo;
-            }
-            // DYNAMIC STATE: SET ON CHANGE; IT PERSISTS FOR THE NEXT DRAWS OF THIS COMMAND BUFFER
-            if (this.vpDirty) {
-                // NEGATIVE-HEIGHT VIEWPORT FROM THE SWAPCHAIN EXTENT, NOT viewport(): IT GIVES OPENGL'S CLIP SPACE
-                // SO THE ortho2D(0, w, h, 0) MATH RENDERS THE SAME, AND ALWAYS MATCHES THE FRAMEBUFFER AND SCISSOR
-                final VkViewport.Buffer v = VkViewport.calloc(1, stack);
-                v.get(0).x(0f).y(this.extentH).width(this.extentW).height(-(float) this.extentH).minDepth(0f).maxDepth(1f);
-                vkCmdSetViewport(cmd, 0, v);
-                this.vpDirty = false;
-            }
-            if (this.scDirty) {
-                vkCmdSetScissor(cmd, 0, this.scissor(stack));
-                this.scDirty = false;
-            }
-            if (this.lwDirty) {
-                vkCmdSetLineWidth(cmd, this.wideLines ? this.lineW : 1.0f); // 1.0 WITHOUT wideLines
-                this.lwDirty = false;
-            }
-
-            final boolean useTex = textured && this.currentView != 0L;
-            // TEXTURED DRAWS SAMPLE currentView THROUGH THE SET THIS FRAME ALREADY WROTE FOR IT, SO ALTERNATING BETWEEN
-            // ATLASES, ICONS AND THUMBNAILS DOES NOT ALLOCATE A SET PER SWITCH; NON-TEXTURED DRAWS BIND THE DUMMY
-            final long set;
-            if (useTex) {
-                if (this.currentView != this.boundView || this.boundTexSet == 0L) {
-                    this.boundTexSet = this.textureSet(stack, f, this.currentView);
-                    this.boundView = this.currentView;
-                }
-                set = this.boundTexSet;
-            } else {
-                set = this.dummySet;
-            }
-            if (set != this.boundSet) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this.pipeLayout, 0, stack.longs(set), null);
-                this.boundSet = set;
-            }
-
-            final ByteBuffer push = stack.malloc(PUSH_BYTES);
-            for (int i = 0; i < 16; i++) push.putFloat(i * 4, this.proj[i]);
-            push.putInt(64, !useTex ? 0 : this.layerBound ? 2 : 1);
-            vkCmdPushConstants(cmd, this.pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, push);
-
-            vkCmdDraw(cmd, drawVerts, 1, firstVertex, 0);
-        }
-    }
-
-    @Override
-    public boolean supportsSoftRect() {
-        return true;
-    }
-
-    @Override
-    public void softRect(final float x, final float y, final float w, final float h, final float radius,
-                         final float r, final float g, final float b, final float a, final float softness) {
-        if (!this.frameValid) return;
-        if (!this.renderPassActive) this.beginRenderPass();
-        final float soft = Math.max(0.5f, softness);
-        final Frame f = this.frames[this.currentFrame];
-        final int drawVerts = 6;
-        if (f.vertexOffset + drawVerts > f.vboCapVerts) this.growVbo(f, f.vertexOffset + drawVerts);
-        final long base = f.vboMapped + (long) f.vertexOffset * VERTEX_BYTES;
-        final FloatBuffer dst = MemoryUtil.memFloatBuffer(base, drawVerts * FLOATS_PER_VERTEX);
-        final float x0 = x - soft, y0 = y - soft, x1 = x + w + soft, y1 = y + h + soft;
-        // 6-VERTEX QUAD: ONLY position IS READ, uv AND color PAD THE 8-FLOAT STRIDE
-        putSoftVertex(dst, x0, y0);
-        putSoftVertex(dst, x1, y0);
-        putSoftVertex(dst, x1, y1);
-        putSoftVertex(dst, x0, y0);
-        putSoftVertex(dst, x1, y1);
-        putSoftVertex(dst, x0, y1);
-        final int firstVertex = f.vertexOffset;
-        f.vertexOffset += drawVerts;
-
-        final VkCommandBuffer cmd = f.cmd;
-        try (final MemoryStack stack = stackPush()) {
-            if (this.sdfPipe != this.boundPipeline) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this.sdfPipe);
-                this.boundPipeline = this.sdfPipe;
-            }
-            if (f.vbo != this.boundVbo) {
-                vkCmdBindVertexBuffers(cmd, 0, stack.longs(f.vbo), stack.longs(0L));
-                this.boundVbo = f.vbo;
-            }
-            if (this.vpDirty) {
-                final VkViewport.Buffer v = VkViewport.calloc(1, stack);
-                v.get(0).x(0f).y(this.extentH).width(this.extentW).height(-(float) this.extentH).minDepth(0f).maxDepth(1f);
-                vkCmdSetViewport(cmd, 0, v);
-                this.vpDirty = false;
-            }
-            if (this.scDirty) {
-                vkCmdSetScissor(cmd, 0, this.scissor(stack));
-                this.scDirty = false;
-            }
-
-            final ByteBuffer push = stack.malloc(PUSH_SDF_BYTES);
-            for (int i = 0; i < 16; i++) push.putFloat(i * 4, this.proj[i]);
-            push.putFloat(64, r).putFloat(68, g).putFloat(72, b).putFloat(76, a);
-            push.putFloat(80, x + w / 2f).putFloat(84, y + h / 2f);
-            push.putFloat(88, w / 2f).putFloat(92, h / 2f);
-            push.putFloat(96, Math.max(0f, radius));
-            push.putFloat(100, soft);
-            vkCmdPushConstants(cmd, this.sdfPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, push);
-
-            vkCmdDraw(cmd, drawVerts, 1, firstVertex, 0);
-        }
-        // THE SDF LAYOUT IS INCOMPATIBLE WITH THE UI ONE (NO SET 0, DIFFERENT PUSH), SO THE NEXT UI DRAW REBINDS ITS
-        // PIPELINE AND DESCRIPTOR SET (IT RE-PUSHES ITS CONSTANTS EVERY DRAW ANYWAY)
-        this.boundPipeline = VK_NULL_HANDLE;
-        this.boundSet = VK_NULL_HANDLE;
-    }
-
     private void beginRenderPass() {
         try (final MemoryStack stack = stackPush()) {
             final VkClearValue.Buffer clear = VkClearValue.calloc(1, stack);
@@ -1274,14 +1457,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final VkRect2D.Buffer r = VkRect2D.calloc(1, stack);
         r.get(0).offset(o -> o.x(fx).y(fy)).extent(e -> e.width(fw).height(fh));
         return r;
-    }
-
-    private long pipelineFor(final DrawMode mode) {
-        return switch (mode) {
-            case TRIANGLES, TRIANGLE_FAN -> this.pipeTriList; // FANS ARE EXPANDED TO A LIST IN draw()
-            case LINES -> this.pipeLineList;
-            case LINE_LOOP -> this.pipeLineStrip; // A CLOSED LINE STRIP: VULKAN HAS NO LINE_LOOP TOPOLOGY
-        };
     }
 
     // ==========================================================================
@@ -1384,42 +1559,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // ==========================================================================
     // TEXTURES
     // ==========================================================================
-    @Override
-    public TextureHandle createTexture(final int width, final int height, final ByteBuffer rgba) {
-        this.ensureCore();
-        final TextureRecord rec = this.uploadTexture(width, height, rgba);
-        final int id = this.nextTextureId++;
-        this.textures.put(id, rec);
-        return new TextureHandle(id, width, height);
-    }
-
-    @Override
-    public void deleteTexture(final TextureHandle texture) {
-        if (texture == null || texture.id() <= 0) return;
-        final TextureRecord rec = this.textures.remove(texture.id());
-        if (rec == null) return;
-        // RARE (ATLAS OR ICON TEARDOWN): DRAIN THE RENDER QUEUE, THE ONLY ONE THAT SAMPLES THE VIEW, UNDER THE LOCK THE
-        // ENGINE'S UPLOADS SHARE; A DEVICE-WIDE WAIT WOULD RACE FFMPEG'S DECODE SUBMISSIONS ON ITS OWN QUEUES
-        synchronized (this.queueLock) {
-            vkQueueWaitIdle(this.queue);
-        }
-        vkDestroyImageView(this.device, rec.view(), null);
-        vkDestroyImage(this.device, rec.image(), null);
-        vkFreeMemory(this.device, rec.memory(), null);
-        // THE DRIVER MAY HAND THE SAME HANDLE TO THE NEXT VIEW, SO NO CACHED SET MAY OUTLIVE THIS ONE
-        if (this.boundView == rec.view()) this.boundTexSet = 0L;
-        for (final Frame f: this.frames) {
-            if (f == null) continue;
-            for (int i = 0; i < f.viewSetCount; i++) {
-                if (f.viewSets[i * 2] != rec.view()) continue;
-                f.viewSetCount--;
-                f.viewSets[i * 2] = f.viewSets[f.viewSetCount * 2];
-                f.viewSets[i * 2 + 1] = f.viewSets[f.viewSetCount * 2 + 1];
-                break;
-            }
-        }
-    }
-
     private TextureRecord uploadTexture(final int w, final int h, final ByteBuffer rgba) {
         // A SAMPLED R8G8B8A8_UNORM DEVICE-LOCAL IMAGE: THE TIGHTLY PACKED RGBA GOES THROUGH A HOST-VISIBLE STAGING
         // BUFFER AND THE IMAGE ENDS IN SHADER_READ_ONLY, SUBMITTED UNDER THE SHARED QUEUE LOCK
@@ -1565,152 +1704,27 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     // ==========================================================================
-    // CLEANUP
+    // UTILITY
     // ==========================================================================
-    @Override
-    public void cleanup() {
-        if (this.device != null) vkDeviceWaitIdle(this.device);
+    private static boolean hasDeviceExtension(final VkPhysicalDevice pd, final MemoryStack stack, final String name) {
+        final IntBuffer count = stack.mallocInt(1);
+        vkEnumerateDeviceExtensionProperties(pd, (ByteBuffer) null, count, null);
+        final VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(count.get(0), stack);
+        vkEnumerateDeviceExtensionProperties(pd, (ByteBuffer) null, count, props);
+        for (int i = 0; i < props.capacity(); i++) if (name.equals(props.get(i).extensionNameString())) return true;
+        return false;
+    }
 
-        // STILL-PENDING ENGINE DESTRUCTORS RUN NOW: THE DEVICE IS IDLE, SO NO FRAME REFERENCES THEM
-        Retire r;
-        while ((r = this.retireQueue.poll()) != null) r.run().run();
+    private static void check(final int result, final String op) {
+        if (result != VK_SUCCESS) throw new IllegalStateException("VulkanRenderBackend: " + op + " failed (VkResult " + result + ")");
+    }
 
-        // EVERY HANDLE IS CHECKED, SO A CORE THAT FAILED HALFWAY IS ALSO TORN DOWN BEFORE ITS DEVICE
-        if (this.device != null) {
-            this.destroySwapchainObjects();
-
-            for (final Frame f: this.frames) {
-                if (f == null) continue;
-                this.freeRetired(f);
-                if (f.vbo != 0L) vkDestroyBuffer(this.device, f.vbo, null);
-                if (f.vboMem != 0L) vkFreeMemory(this.device, f.vboMem, null);
-                if (f.imageAvailable != 0L) vkDestroySemaphore(this.device, f.imageAvailable, null);
-                if (f.inFlightFence != 0L) vkDestroyFence(this.device, f.inFlightFence, null);
-                for (final long pool: f.descPools) vkDestroyDescriptorPool(this.device, pool, null);
-            }
-
-            for (final TextureRecord rec: this.textures.values()) {
-                vkDestroyImageView(this.device, rec.view(), null);
-                vkDestroyImage(this.device, rec.image(), null);
-                vkFreeMemory(this.device, rec.memory(), null);
-            }
-            this.textures.clear();
-
-            if (this.dummyPool != 0L) vkDestroyDescriptorPool(this.device, this.dummyPool, null); // FREES THE SET
-            if (this.dummyView != 0L) vkDestroyImageView(this.device, this.dummyView, null);
-            if (this.dummyImg != 0L) vkDestroyImage(this.device, this.dummyImg, null);
-            if (this.dummyMem != 0L) vkFreeMemory(this.device, this.dummyMem, null);
-
-            if (this.pipeTriList != 0L) vkDestroyPipeline(this.device, this.pipeTriList, null);
-            if (this.pipeLineList != 0L) vkDestroyPipeline(this.device, this.pipeLineList, null);
-            if (this.pipeLineStrip != 0L) vkDestroyPipeline(this.device, this.pipeLineStrip, null);
-            if (this.sdfPipe != 0L) vkDestroyPipeline(this.device, this.sdfPipe, null);
-            if (this.pipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.pipeLayout, null);
-            if (this.sdfPipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.sdfPipeLayout, null);
-            if (this.descLayout != 0L) vkDestroyDescriptorSetLayout(this.device, this.descLayout, null);
-            if (this.renderPass != 0L) vkDestroyRenderPass(this.device, this.renderPass, null);
-            if (this.layerPass != 0L) vkDestroyRenderPass(this.device, this.layerPass, null);
-            if (this.sampler != 0L) vkDestroySampler(this.device, this.sampler, null);
-            if (this.uploadFence != 0L) vkDestroyFence(this.device, this.uploadFence, null);
-            if (this.uploadPool != 0L) vkDestroyCommandPool(this.device, this.uploadPool, null); // FREES uploadCmd
-            if (this.cmdPool != 0L) vkDestroyCommandPool(this.device, this.cmdPool, null); // FREES THE FRAME COMMAND BUFFERS
-            this.coreReady = false;
-        }
-
-        if (this.memProps != null) { this.memProps.free(); this.memProps = null; }
-        if (this.device != null) { vkDestroyDevice(this.device, null); this.device = null; }
-        if (this.features13 != null) { this.features13.free(); this.features13 = null; }
-        if (this.features12 != null) { this.features12.free(); this.features12 = null; }
-        if (this.ycbcrFeatures != null) { this.ycbcrFeatures.free(); this.ycbcrFeatures = null; }
-        if (this.features != null) { this.features.free(); this.features = null; }
-        if (this.surface != 0L) { vkDestroySurfaceKHR(this.instance, this.surface, null); this.surface = 0L; }
-        if (this.instance != null) { vkDestroyInstance(this.instance, null); this.instance = null; }
-        WaterMedia.LOGGER.info(IT, "VulkanRenderBackend cleaned up");
+    private static void putSoftVertex(final FloatBuffer dst, final float x, final float y) {
+        dst.put(x).put(y).put(0f).put(0f).put(0f).put(0f).put(0f).put(0f);
     }
 
     // ==========================================================================
-    // VKContext
-    // ==========================================================================
-    @Override
-    public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
-        // VKEngine BORROWS THIS BACKEND'S DEVICE (THIS IS THE VKContext); THE THREAD AND EXECUTOR ARE UNUSED
-        return () -> PlayerAPI.vkEngine(this);
-    }
-
-    @Override
-    public void retire(final Runnable destroy) {
-        // STAMPED A FEW FRAMES AHEAD (+1 ABSORBS THE frameCounter READ/WRITE RACE WITH beginFrame); A BACKGROUND
-        // RELEASE THREAD MAY CALL THIS, SO THE QUEUE IS CONCURRENT
-        this.retireQueue.add(new Retire(this.frameCounter + MAX_FRAMES_IN_FLIGHT + 1, destroy));
-    }
-
-    @Override
-    public VkInstance vkInstance() {
-        return this.instance;
-    }
-
-    @Override
-    public VkPhysicalDevice physicalDevice() {
-        return this.physicalDevice;
-    }
-
-    @Override
-    public String deviceName() {
-        return this.deviceName;
-    }
-
-    @Override
-    public String deviceVersion() {
-        return this.deviceVersion;
-    }
-
-    @Override
-    public VkDevice vkDevice() {
-        return this.device;
-    }
-
-    @Override
-    public VkQueue queue() {
-        return this.queue;
-    }
-
-    @Override
-    public int queueFamily() {
-        return this.queueFamily;
-    }
-
-    @Override
-    public Object queueLock() {
-        return this.queueLock;
-    }
-
-    @Override
-    public VkPhysicalDeviceMemoryProperties memoryProperties() {
-        return this.memProps;
-    }
-
-    @Override
-    public boolean hostImportSupported() {
-        return this.hostImport;
-    }
-
-    @Override
-    public long minImportedHostPointerAlignment() {
-        return this.minAlign;
-    }
-
-    @Override
-    public boolean ycbcrSampler() {
-        return this.ycbcrSampler;
-    }
-
-    @Override
-    public VKContext.DeviceInfo deviceInfo() {
-        return new VKContext.DeviceInfo(this.features, List.copyOf(this.instanceExtensions), List.copyOf(this.deviceExtensions), this.queueCounts.clone());
-    }
-
-    // ==========================================================================
-    // STATE HOLDERS
+    // NESTED TYPES
     // ==========================================================================
     // ONE FRAME IN FLIGHT: ITS COMMAND BUFFER, SYNC PRIMITIVES, GROWABLE VERTEX BUFFER AND DESCRIPTOR POOLS
     private static final class Frame {
@@ -1734,14 +1748,4 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     // AN ENGINE DESTRUCTOR AND THE FRAME AFTER WHICH IT MAY RUN
     private record Retire(long due, Runnable run) {}
-
-    // UTILITY
-
-    private static void check(final int result, final String op) {
-        if (result != VK_SUCCESS) throw new IllegalStateException("VulkanRenderBackend: " + op + " failed (VkResult " + result + ")");
-    }
-
-    private static void putSoftVertex(final FloatBuffer dst, final float x, final float y) {
-        dst.put(x).put(y).put(0f).put(0f).put(0f).put(0f).put(0f).put(0f);
-    }
 }

@@ -32,13 +32,11 @@ public final class FFTool {
     private static volatile boolean bundled;
     private static volatile Certificates certificates;
 
-    private record Certificates(String file, String protocols) {}
-
     private FFTool() {}
 
-    /** Engine pixel layout and sample precision of an FFmpeg pixel format. */
-    public record Pixels(PixelFormat format, int bits) {}
-
+    // ==========================================================================
+    // PUBLIC API: FORMATS AND NATIVES
+    // ==========================================================================
     /** Maps an FFmpeg pixel format to its engine layout, or null when no engine layout matches. */
     public static Pixels pixels(final int avPixFmt) {
         return switch (avPixFmt) {
@@ -85,7 +83,7 @@ public final class FFTool {
             case AV_PIX_FMT_YUVA420P16LE -> new Pixels(PixelFormat.YUVA420P, 16);
             case AV_PIX_FMT_YUVA422P16LE -> new Pixels(PixelFormat.YUVA422P, 16);
             case AV_PIX_FMT_YUVA444P16LE -> new Pixels(PixelFormat.YUVA444P, 16);
-            // P010/P016 — LEFT-SHIFTED 10/16-BIT NV12, MAP AS 16-BIT (bitScale=1.0 IS CORRECT)
+            // P010/P016: LEFT-SHIFTED 10/16-BIT NV12, MAPPED AS 16-BIT (bitScale=1.0 IS CORRECT)
             case AV_PIX_FMT_P010LE, AV_PIX_FMT_P016LE -> new Pixels(PixelFormat.NV12, 16);
             // HIGH-BIT GRAYSCALE
             case AV_PIX_FMT_GRAY10LE  -> new Pixels(PixelFormat.GRAY, 10);
@@ -157,6 +155,16 @@ public final class FFTool {
     /** Returns whether a native pointer is missing or null. */
     public static boolean isNull(final Pointer pointer) { return pointer == null || pointer.isNull(); }
 
+    /** Reads a native string, or returns {@code orElse} as text when the pointer is null. */
+    public static String string(final BytePointer pointer, final Object orElse) {
+        return !isNull(pointer) ? pointer.getString() : orElse != null ? String.valueOf(orElse) : null;
+    }
+
+    /** Returns a library version packed by {@code AV_VERSION_INT}, such as {@code avformat_version()}, as {@code major.minor.micro}. */
+    public static String parseVersion(final int version) {
+        return (version >> 16) + "." + ((version >> 8) & 0xFF) + "." + (version & 0xFF);
+    }
+
     /** Returns whether the natives link the Vulkan bindings of libavutil; a JNI library built without them lacks their symbols. */
     public static boolean vulkanBindings() {
         try {
@@ -169,24 +177,15 @@ public final class FFTool {
         }
     }
 
-    /** Reads a native string, or returns {@code orElse} as text when the pointer is null. */
-    public static String string(final BytePointer pointer, final Object orElse) {
-        return !isNull(pointer) ? pointer.getString() : orElse != null ? String.valueOf(orElse) : null;
-    }
-
-    /** Returns a library version packed by {@code AV_VERSION_INT}, such as {@code avformat_version()}, as {@code major.minor.micro}. */
-    public static String parseVersion(final int version) {
-        return (version >> 16) + "." + ((version >> 8) & 0xFF) + "." + (version & 0xFF);
-    }
-
     /** Returns whether the loaded natives came from WaterMedia Binaries, whose FFmpeg exports its Vulkan decoder pools. */
     public static boolean bundled() { return bundled; }
 
     /** Records whether the loaded natives came from WaterMedia Binaries; the FFmpeg boot calls it once. */
     public static void bundled(final boolean value) { bundled = value; }
 
-    // ==== NATIVE TLS ====
-
+    // ==========================================================================
+    // PUBLIC API: NATIVE TLS
+    // ==========================================================================
     /** Exports the JVM trust anchors as the PEM bundle every input verifies against, after checking the patched transport options. */
     public static void startTLS() throws Exception {
         // HTTP MUST RETAIN TLS OPTIONS AND CREDENTIAL ORIGINS FOR NESTED MEDIA REQUESTS.
@@ -253,4 +252,13 @@ public final class FFTool {
                 || av_dict_set(options, "protocol_opts", current.protocols(), 0) < 0)
             throw new IllegalStateException("Cannot configure native HTTPS verification");
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /** Engine pixel layout and sample precision of an FFmpeg pixel format. */
+    public record Pixels(PixelFormat format, int bits) {}
+
+    // THE PEM BUNDLE PATH AND THE SERIALIZED NESTED OPTIONS EVERY INPUT RECEIVES
+    private record Certificates(String file, String protocols) {}
 }

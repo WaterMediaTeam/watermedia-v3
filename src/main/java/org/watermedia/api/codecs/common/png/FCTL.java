@@ -25,6 +25,9 @@ public record FCTL(int sequence, int width, int height, int xOffset, int yOffset
     public static final byte BLEND_OP_SOURCE = 0;       // REPLACE ALL COMPONENTS INCLUDING ALPHA
     public static final byte BLEND_OP_OVER = 1;         // ALPHA COMPOSITE (PORTER-DUFF "OVER")
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Reads a complete fcTL chunk (length, type, data and CRC) from the buffer. */
     public static FCTL read(final ByteBuffer buffer) throws IOException {
         return convert(PngChunk.read(buffer, SIGNATURE));
@@ -60,14 +63,6 @@ public record FCTL(int sequence, int width, int height, int xOffset, int yOffset
             throw new CodecException("Invalid fcTL operations: dispose " + (this.dispose & 0xFF) + ", blend " + (this.blend & 0xFF));
     }
 
-    /** Returns the frame delay in milliseconds. */
-    public int delayMs() {
-        final int num = this.delayNum & 0xFFFF;
-        int den = this.delayDen & 0xFFFF;
-        if (den == 0) den = 100; // THE SPEC READS A ZERO DENOMINATOR AS 100 (CENTISECONDS)
-        return (num * 1_000) / den;
-    }
-
     /** Rejects frame bounds that leave the canvas. */
     public void validate(final int canvasWidth, final int canvasHeight) throws CodecException {
         if (this.width <= 0 || this.height <= 0) throw new CodecException("Invalid frame dimensions: " + this.width + "x" + this.height);
@@ -75,6 +70,14 @@ public record FCTL(int sequence, int width, int height, int xOffset, int yOffset
         // LONG MATH: RAW int FIELDS CAN SUM PAST Integer.MAX_VALUE AND WRAP NEGATIVE, FALSELY PASSING
         if ((long) this.xOffset + this.width > canvasWidth || (long) this.yOffset + this.height > canvasHeight)
             throw new CodecException("Frame extends beyond canvas bounds");
+    }
+
+    /** Returns the frame delay in milliseconds. */
+    public int delayMs() {
+        final int num = this.delayNum & 0xFFFF;
+        int den = this.delayDen & 0xFFFF;
+        if (den == 0) den = 100; // THE SPEC READS A ZERO DENOMINATOR AS 100 (CENTISECONDS)
+        return (num * 1_000) / den;
     }
 
     @Override

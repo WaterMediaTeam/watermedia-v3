@@ -36,11 +36,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("PlatformAPI search")
 public class PlatformSearchTest {
-    @BeforeAll
-    static void clientBootstrap() { MediaBootstrap.client(); }
-
     private List<Platform> savedBuiltin;
     private List<Platform> savedCustom;
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @BeforeAll
+    static void clientBootstrap() { MediaBootstrap.client(); }
 
     @BeforeEach
     void isolate() throws Exception {
@@ -60,6 +64,40 @@ public class PlatformSearchTest {
         PlatformAPI.CUSTOM.addAll(this.savedCustom);
         resetSearchState();
     }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static boolean awaitDone(final String query) {
+        return PlayerWait.awaitCondition(() -> !PlatformAPI.searching(query), 3_000);
+    }
+
+    // DISCARDS THE SEARCH IN FLIGHT AND CLEARS HISTORY, THE RESULT CACHE AND THE CACHE-SWEEP CLOCK, SO EACH CASE STARTS CLEAN
+    @SuppressWarnings("unchecked")
+    private static void resetSearchState() throws Exception {
+        final Object lock = field("SEARCH_LOCK").get(null);
+        synchronized (lock) {
+            for (final Future<?> probe: (List<Future<?>>) field("searchProbes").get(null)) probe.cancel(true);
+            ((List<?>) field("searchProbes").get(null)).clear();
+            field("searchRemaining").set(null, 0);
+            field("searchQuery").set(null, null);
+            field("searchGeneration").set(null, (long) field("searchGeneration").get(null) + 1);
+            ((ArrayDeque<?>) field("HISTORY").get(null)).clear();
+            ((Map<?, ?>) field("SEARCH_CACHE").get(null)).clear();
+            field("nextCacheClean").set(null, 0L);
+        }
+    }
+
+    private static Field field(final String name) throws Exception {
+        final Field f = PlatformAPI.class.getDeclaredField(name);
+        f.setAccessible(true);
+        return f;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("History")
@@ -295,8 +333,6 @@ public class PlatformSearchTest {
         }
     }
 
-    // UTILITY
-
     // EMITS `count` MARKER HITS PER SEARCH WHATEVER LIMIT IT IS ASKED, REMEMBERING THAT LIMIT; A NON-NULL `blockMs` SLEEPS
     // (INTERRUPTIBLY) TO STAY IN-FLIGHT
     private static final class StubPlatform implements Platform {
@@ -329,31 +365,5 @@ public class PlatformSearchTest {
                 this.finished.incrementAndGet();
             }
         }
-    }
-
-    private static boolean awaitDone(final String query) {
-        return PlayerWait.awaitCondition(() -> !PlatformAPI.searching(query), 3_000);
-    }
-
-    // DISCARDS THE SEARCH IN FLIGHT AND CLEARS HISTORY, THE RESULT CACHE AND THE CACHE-SWEEP CLOCK, SO EACH CASE STARTS CLEAN
-    @SuppressWarnings("unchecked")
-    private static void resetSearchState() throws Exception {
-        final Object lock = field("SEARCH_LOCK").get(null);
-        synchronized (lock) {
-            for (final Future<?> probe: (List<Future<?>>) field("searchProbes").get(null)) probe.cancel(true);
-            ((List<?>) field("searchProbes").get(null)).clear();
-            field("searchRemaining").set(null, 0);
-            field("searchQuery").set(null, null);
-            field("searchGeneration").set(null, (long) field("searchGeneration").get(null) + 1);
-            ((ArrayDeque<?>) field("HISTORY").get(null)).clear();
-            ((Map<?, ?>) field("SEARCH_CACHE").get(null)).clear();
-            field("nextCacheClean").set(null, 0L);
-        }
-    }
-
-    private static Field field(final String name) throws Exception {
-        final Field f = PlatformAPI.class.getDeclaredField(name);
-        f.setAccessible(true);
-        return f;
     }
 }

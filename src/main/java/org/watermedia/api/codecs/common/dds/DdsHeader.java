@@ -9,7 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * DirectDraw Surface (DDS) container with the modern {@code DX10} extended header — the storage format for
+ * DirectDraw Surface (DDS) container with the modern {@code DX10} extended header: the storage format for
  * BC-compressed frames, the same way RIFF is the container for WebP. This class knows the container only; the block
  * layout comes from the frame's {@link PixelFormat}.
  *
@@ -54,6 +54,9 @@ public final class DdsHeader {
 
     private DdsHeader() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /**
      * Parses and validates the prefix of a BC-in-DDS file from {@code src.position()}, leaving the
      * position unchanged.
@@ -134,6 +137,9 @@ public final class DdsHeader {
         return delays;
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     /** Parsed DDS prefix: dimensions, the file's BC layout and the frame count. */
     public record Info(int width, int height, PixelFormat format, int arraySize) {
         /** Compressed byte size of one frame, edges padded up to the 4x4 block grid. */

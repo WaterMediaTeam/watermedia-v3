@@ -29,6 +29,10 @@ public class KickPlatformTest {
     static final String VOD = "c4a80015-c8ac-47a9-a980-ffa277755103";
     static final String CLIP = "clip_01M6B6P65W5DRXR2PE3M7GSZC0";
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("VOD ids")
     class VodIds {

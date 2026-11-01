@@ -26,9 +26,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("WaterPlatform")
 public class WaterPlatformTest {
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     // location(local) NEEDS WaterMedia.cwd(); THE SHARED CLIENT LOAD KEEPS THE TEST JVM A CLIENT FOR THE MEDIA TESTS
     @BeforeAll
     static void initWaterMedia() { MediaBootstrap.client(); }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("location mapping")

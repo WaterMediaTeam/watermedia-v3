@@ -23,7 +23,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("JSONTool")
 public class JSONToolTest {
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static JsonObject sample() {
+        return JSONTool.parse("{\"s\":\"x\",\"d\":2.5,\"b\":true,\"i\":7,\"l\":9007199254740993,\"nil\":null,"
+                + "\"obj\":{\"k\":1},\"arr\":[1,2],\"word\":\"seven\",\"numText\":\"42\",\"boolText\":\"TRUE\"}", JsonObject.class);
+    }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Binding")
     class BindingTests {
@@ -135,11 +145,5 @@ public class JSONToolTest {
             assertEquals(0d, JSONTool.num(o, "b"));
             assertFalse(JSONTool.bool(o, "word"));
         }
-    }
-
-    // UTILITY
-    private static JsonObject sample() {
-        return JSONTool.parse("{\"s\":\"x\",\"d\":2.5,\"b\":true,\"i\":7,\"l\":9007199254740993,\"nil\":null,"
-                + "\"obj\":{\"k\":1},\"arr\":[1,2],\"word\":\"seven\",\"numText\":\"42\",\"boolText\":\"TRUE\"}", JsonObject.class);
     }
 }

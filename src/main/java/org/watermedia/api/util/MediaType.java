@@ -90,6 +90,9 @@ public enum MediaType {
             "sub",  "text/x-microdvd",
     });
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Classifies a MIME type by its essence, ignoring parameters and whitespace, including the HLS, DASH, RealMedia and SubRip {@code application/*} types; {@link #UNKNOWN} otherwise. */
     public static MediaType of(final String mimeType) {
         if (mimeType == null || mimeType.isEmpty()) return UNKNOWN;
@@ -131,7 +134,9 @@ public enum MediaType {
         return UNKNOWN;
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
     // PAIRS EACH EXTENSION WITH ITS MIME TYPE FROM A FLAT TABLE
     private static Map<String, String> table(final String[] keyValue) {
         final Map<String, String> map = new HashMap<>(keyValue.length / 2);

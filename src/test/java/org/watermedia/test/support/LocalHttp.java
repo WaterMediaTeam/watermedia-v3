@@ -23,6 +23,10 @@ public final class LocalHttp implements AutoCloseable {
         this.server = server;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /** Boots an HTTP server on a random loopback port with the given handler. */
     public static LocalHttp start(final String path, final HttpHandler handler) {
         return start(path, handler, null);

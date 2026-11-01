@@ -10,6 +10,9 @@ import java.util.function.Supplier;
 /** Low-level renderer contract implemented by the OpenGL and Vulkan backends. */
 public interface RenderBackend {
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     void init();
     void cleanup();
     void configureFrameState();
@@ -87,5 +90,21 @@ public interface RenderBackend {
     /** Returns the highest API version as {@code "major.minor"}, captured at init; empty when unknown. */
     default String deviceVersion() {
         return "";
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /** Texture handle owned by the active render backend. */
+    record TextureHandle(int id, int width, int height) {
+        public static final TextureHandle NONE = new TextureHandle(-1, 0, 0);
+    }
+
+    /** Backend-neutral primitive mode of the UI render engine. */
+    enum DrawMode {
+        TRIANGLES,
+        TRIANGLE_FAN,
+        LINES,
+        LINE_LOOP
     }
 }

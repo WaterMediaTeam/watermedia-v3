@@ -20,11 +20,17 @@ final class PathParser {
         this.len = d.length();
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     static void parse(final String d, final Path path) throws CodecException {
         if (d == null || d.isBlank()) return;
         new PathParser(d).run(path);
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private void run(final Path path) throws CodecException {
         char cmd = 0;
         while (true) {
@@ -132,7 +138,7 @@ final class PathParser {
                 case 'Z', 'z' -> {
                     path.close();
                     this.cx = this.sx; this.cy = this.sy; this.lastCmd = cmd;
-                    // Z TAKES NO OPERANDS AND CONSUMES NO INPUT — CLEAR cmd SO STRAY OPERANDS AFTER IT
+                    // Z TAKES NO OPERANDS AND CONSUMES NO INPUT: CLEAR cmd SO STRAY OPERANDS AFTER IT
                     // (e.g. d="z5") BREAK THE LOOP INSTEAD OF RE-ENTERING THIS CASE FOREVER
                     cmd = 0;
                 }
@@ -201,18 +207,6 @@ final class PathParser {
         }
     }
 
-    private static double angle(final double ux, final double uy, final double vx, final double vy) {
-        final double dot = ux * vx + uy * vy;
-        final double lenU = Math.sqrt(ux * ux + uy * uy), lenV = Math.sqrt(vx * vx + vy * vy);
-        double cos = (lenU == 0 || lenV == 0) ? 1 : dot / (lenU * lenV);
-        if (cos < -1) cos = -1; else if (cos > 1) cos = 1;
-        final double ang = Math.acos(cos);
-        return (ux * vy - uy * vx) < 0 ? -ang : ang;
-    }
-
-    // ==========================================================================
-    // TOKENIZER
-    // ==========================================================================
     private void skipSep() {
         while (this.pos < this.len) {
             final char ch = this.d.charAt(this.pos);
@@ -253,7 +247,7 @@ final class PathParser {
             if (!expDigits) this.pos = save; // NOT AN EXPONENT AFTER ALL
         }
         if (!digits) {
-            // NO NUMBER HERE. IF WE ARE ON A COMMAND LETTER THE PREVIOUS COMMAND RAN OUT OF OPERANDS —
+            // NO NUMBER HERE. IF WE ARE ON A COMMAND LETTER THE PREVIOUS COMMAND RAN OUT OF OPERANDS:
             // SIGNAL IT WITH NaN WITHOUT CONSUMING, SO run() DISPATCHES THAT LETTER INSTEAD OF EATING
             // IT AS A BOGUS COORDINATE; OTHERWISE SKIP ONE STRAY CHAR TO GUARANTEE FORWARD PROGRESS
             this.pos = start;
@@ -268,6 +262,18 @@ final class PathParser {
         // AN INFINITY ("1e999") CAN BE SPELLED, AND IT POISONS FLATNESS AND SCANLINE MATH ALIKE
         if (Double.isInfinite(v)) throw new CodecException("Non-finite path coordinate");
         return v;
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static double angle(final double ux, final double uy, final double vx, final double vy) {
+        final double dot = ux * vx + uy * vy;
+        final double lenU = Math.sqrt(ux * ux + uy * uy), lenV = Math.sqrt(vx * vx + vy * vy);
+        double cos = (lenU == 0 || lenV == 0) ? 1 : dot / (lenU * lenV);
+        if (cos < -1) cos = -1; else if (cos > 1) cos = 1;
+        final double ang = Math.acos(cos);
+        return (ux * vy - uy * vx) < 0 ? -ang : ang;
     }
 
     private static boolean isCommand(final char ch) {

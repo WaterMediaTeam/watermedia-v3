@@ -14,7 +14,7 @@ import java.util.List;
 
 /**
  * Manual verification harness (not a JUnit test): resolves URLs through the actual yt-dlp platforms,
- * exactly as {@code PlatformAPI} would — so host routing, yt-dlp extraction and the resulting
+ * exactly as {@code PlatformAPI} would, so host routing, yt-dlp extraction and the resulting
  * {@link Source} are all exercised end-to-end on this machine's own network (useful when a site
  * blocks datacenter IPs). Run its {@code main} from the IDE with the URLs as arguments; with none it
  * resolves one public sample per platform. Facebook/Instagram public items rot fast and often need a
@@ -25,6 +25,10 @@ public final class PlatformSmokeTest {
             "https://www.youtube.com/watch?v=GjEKrr5EjzA",
             "https://soundcloud.com/imaginedragons/believer",
     };
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     public static void main(final String[] args) throws Exception {
         WaterMedia.start("TEST", null, null, true);
@@ -39,6 +43,10 @@ public final class PlatformSmokeTest {
         if (args.length == 0) System.out.println("\nTip: test Facebook/Instagram by passing a fresh public link as an argument");
         System.exit(0);
     }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
 
     private static void resolve(final List<Platform> platforms, final String url) {
         System.out.println("\n=== " + url + " ===");

@@ -9,7 +9,7 @@ import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
-import org.watermedia.api.codecs.readers.webp.FourCC;
+import org.watermedia.api.codecs.readers.WebPReader.FourCC;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.FrameReplay;
@@ -48,11 +48,14 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 @DisplayName("WebP decoder")
 public class WebpTest {
 
-    // LOSSY VP8 DECODE BOUNDS — DECODER VARIANTS ARE NORMAL
+    // LOSSY VP8 DECODE BOUNDS: DECODER VARIANTS ARE NORMAL
     private static final int LOSSY_MAX_DIFF_TOLERANCE = 100;
     private static final double LOSSY_MAX_DIFF_PERCENTAGE = 30.0;
     private static final int LOSSY_SMALL_THRESHOLD = 10;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @TestFactory
     @DisplayName("Lossless pixel match")
     Iterable<DynamicTest> testLossless() {
@@ -107,6 +110,62 @@ public class WebpTest {
         return tests;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // DECODES A STILL WITH THE NO-ARG OVERLOAD, CHECKS IT IS NATIVE TIGHTLY PACKED BGRA AND DIFFS IT AGAINST raw/<name>.pam
+    private static PixelDiff diff(final Path imageFile, final Path dir, final int smallDiff) throws IOException {
+        final ImageData decoded = CodecsAPI.decode(Fixtures.readAll(imageFile));
+        assertEquals(PixelFormat.BGRA, decoded.format(), imageFile + " decodes natively to BGRA");
+        assertEquals(decoded.width() * decoded.height() * 4, decoded.frames()[0].remaining(), imageFile + " frame size");
+        final Path pamPath = dir.resolve("raw").resolve(imageFile.getFileName().toString().replace(".webp", ".pam"));
+        assertTrue(Files.exists(pamPath), "Reference PAM file not found: " + pamPath.toAbsolutePath() + ". Run dwebp to generate reference data");
+        final PamImage reference = PamImage.read(pamPath);
+        final byte[] actualRgba = PamImage.bgraToRgba(decoded.frames()[0], decoded.width(), decoded.height());
+        assertEquals(reference.pixels().length, actualRgba.length, "Pixel data size mismatch for " + imageFile);
+        return PixelDiff.compare(reference.pixels(), actualRgba, smallDiff);
+    }
+
+    // APPENDS ONE CHUNK TO AN EXTENDED FILE AND RECOUNTS THE RIFF SIZE; WITHOUT pad AN ODD BODY ENDS THE FILE UNPADDED
+    private static byte[] append(final byte[] webp, final int fourCC, final byte[] body, final boolean pad) {
+        final ByteBuffer out = ByteBuffer.allocate(webp.length + 8 + body.length + (pad ? body.length & 1 : 0)).order(ByteOrder.LITTLE_ENDIAN);
+        out.put(webp).putInt(fourCC).putInt(body.length).put(body);
+        out.putInt(4, out.capacity() - 8);
+        return out.array();
+    }
+
+    // OFFSET OF THE FIRST CHUNK HEADER WITH THE GIVEN FOURCC, WALKING THE CHUNK LIST
+    private static int indexOf(final byte[] webp, final int fourCC) {
+        final ByteBuffer in = ByteBuffer.wrap(webp).order(ByteOrder.LITTLE_ENDIAN);
+        int at = 12;
+        while (in.getInt(at) != fourCC) at += 8 + ((in.getInt(at + 4) + 1) & ~1);
+        return at;
+    }
+
+    // APPENDS AN EXIF CHUNK: A SIMPLE FILE IS FIRST WRAPPED INTO A VP8X CONTAINER, AN EXTENDED ONE JUST GAINS THE EXIF FLAG
+    private static byte[] withExif(final byte[] webp, final byte[] exif, final int width, final int height) {
+        final boolean extended = webp[12] == 'V' && webp[13] == 'P' && webp[14] == '8' && webp[15] == 'X';
+        final byte[] chunks = Arrays.copyOfRange(webp, 12, webp.length);
+        // THE VP8X FLAGS BYTE FOLLOWS ITS 8-BYTE CHUNK HEADER
+        if (extended) chunks[8] |= 0x08;
+        final byte[] tag = ImageBytes.webpChunk("EXIF", exif);
+        return extended ? ImageBytes.riff(chunks, tag) : ImageBytes.riff(ImageBytes.webpChunk("VP8X", ImageBytes.vp8x(0x08, width, height)), chunks, tag);
+    }
+
+    private static List<Path> listWebp(final Path dir) {
+        assertTrue(Files.exists(dir), "Test folder does not exist: " + dir);
+        try (final Stream<Path> entries = Files.list(dir)) {
+            final List<Path> images = entries.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".webp")).sorted().toList();
+            assertFalse(images.isEmpty(), "Test folder is empty: " + dir);
+            return images;
+        } catch (final IOException e) {
+            throw new UncheckedIOException("Failed to enumerate WebP fixtures in " + dir, e);
+        }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Orientation")
     class Orientation {
@@ -236,60 +295,6 @@ public class WebpTest {
                 assertArrayEquals(xmp, (byte[]) reader.metadata().value(CodecsAPI.METAKEY_XMP));
                 assertEquals(image.frames().length, reader.readAll().frames().length);
             }
-        }
-    }
-
-    // ==========================================================================
-    // UTILITY
-    // ==========================================================================
-
-    // DECODES A STILL WITH THE NO-ARG OVERLOAD, CHECKS IT IS NATIVE TIGHTLY PACKED BGRA AND DIFFS IT AGAINST raw/<name>.pam
-    private static PixelDiff diff(final Path imageFile, final Path dir, final int smallDiff) throws IOException {
-        final ImageData decoded = CodecsAPI.decode(Fixtures.readAll(imageFile));
-        assertEquals(PixelFormat.BGRA, decoded.format(), imageFile + " decodes natively to BGRA");
-        assertEquals(decoded.width() * decoded.height() * 4, decoded.frames()[0].remaining(), imageFile + " frame size");
-        final Path pamPath = dir.resolve("raw").resolve(imageFile.getFileName().toString().replace(".webp", ".pam"));
-        assertTrue(Files.exists(pamPath), "Reference PAM file not found: " + pamPath.toAbsolutePath() + " - Run dwebp to generate reference data");
-        final PamImage reference = PamImage.read(pamPath);
-        final byte[] actualRgba = PamImage.bgraToRgba(decoded.frames()[0], decoded.width(), decoded.height());
-        assertEquals(reference.pixels().length, actualRgba.length, "Pixel data size mismatch for " + imageFile);
-        return PixelDiff.compare(reference.pixels(), actualRgba, smallDiff);
-    }
-
-    // APPENDS ONE CHUNK TO AN EXTENDED FILE AND RECOUNTS THE RIFF SIZE; WITHOUT pad AN ODD BODY ENDS THE FILE UNPADDED
-    private static byte[] append(final byte[] webp, final int fourCC, final byte[] body, final boolean pad) {
-        final ByteBuffer out = ByteBuffer.allocate(webp.length + 8 + body.length + (pad ? body.length & 1 : 0)).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(webp).putInt(fourCC).putInt(body.length).put(body);
-        out.putInt(4, out.capacity() - 8);
-        return out.array();
-    }
-
-    // OFFSET OF THE FIRST CHUNK HEADER WITH THE GIVEN FOURCC, WALKING THE CHUNK LIST
-    private static int indexOf(final byte[] webp, final int fourCC) {
-        final ByteBuffer in = ByteBuffer.wrap(webp).order(ByteOrder.LITTLE_ENDIAN);
-        int at = 12;
-        while (in.getInt(at) != fourCC) at += 8 + ((in.getInt(at + 4) + 1) & ~1);
-        return at;
-    }
-
-    // APPENDS AN EXIF CHUNK: A SIMPLE FILE IS FIRST WRAPPED INTO A VP8X CONTAINER, AN EXTENDED ONE JUST GAINS THE EXIF FLAG
-    private static byte[] withExif(final byte[] webp, final byte[] exif, final int width, final int height) {
-        final boolean extended = webp[12] == 'V' && webp[13] == 'P' && webp[14] == '8' && webp[15] == 'X';
-        final byte[] chunks = Arrays.copyOfRange(webp, 12, webp.length);
-        // THE VP8X FLAGS BYTE FOLLOWS ITS 8-BYTE CHUNK HEADER
-        if (extended) chunks[8] |= 0x08;
-        final byte[] tag = ImageBytes.webpChunk("EXIF", exif);
-        return extended ? ImageBytes.riff(chunks, tag) : ImageBytes.riff(ImageBytes.webpChunk("VP8X", ImageBytes.vp8x(0x08, width, height)), chunks, tag);
-    }
-
-    private static List<Path> listWebp(final Path dir) {
-        assertTrue(Files.exists(dir), "Test folder does not exist: " + dir);
-        try (final Stream<Path> entries = Files.list(dir)) {
-            final List<Path> images = entries.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".webp")).sorted().toList();
-            assertFalse(images.isEmpty(), "Test folder is empty: " + dir);
-            return images;
-        } catch (final IOException e) {
-            throw new UncheckedIOException("Failed to enumerate WebP fixtures in " + dir, e);
         }
     }
 }

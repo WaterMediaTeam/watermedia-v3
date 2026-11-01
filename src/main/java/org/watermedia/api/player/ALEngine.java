@@ -17,7 +17,7 @@ import java.util.EnumSet;
  * latency for sub-sample A/V precision.
  * <p>
  * <b>Precondition:</b> a current OpenAL device/context must already exist when an ALEngine is
- * constructed — in a mod the sound system owns that context, so it must be initialized first.
+ * constructed; in a mod the sound system owns that context, so it must be initialized first.
  * Construction fails fast with {@link IllegalStateException} when no context is current.
  * Create instances through {@code PlayerAPI.alEngine}.
  */
@@ -45,7 +45,7 @@ public final class ALEngine extends SFXEngine {
     private int queuedHead;
     private int queuedCount;
     private long totalQueuedUs;
-    // PRECOMPUTED AL FORMAT CONSTANT — UPDATED BY format(), READ BY upload
+    // PRECOMPUTED AL FORMAT CONSTANT, UPDATED BY format() AND READ BY upload
     private int alFormat;
     private int bytesPerFrame; // BYTES PER SAMPLE-FRAME (CHANNELS × SAMPLE SIZE)
     // REUSED SCRATCH FOR AL_SOFT_source_latency QUERIES: [0] = OFFSET SECONDS, [1] = DEVICE LATENCY SECONDS
@@ -74,8 +74,8 @@ public final class ALEngine extends SFXEngine {
         this.buffers = new int[bufferCount];
         this.freeIds = new int[bufferCount];
         this.queuedDur = new long[bufferCount];
-        // sampleType / channels / sampleRate / alFormat ARE POPULATED BY format()
-        // BEFORE FIRST UPLOAD — UNINITIALIZED STATE IS A CALLER BUG
+        // sampleType / channels / sampleRate / alFormat ARE POPULATED BY format() BEFORE THE FIRST UPLOAD; UNINITIALIZED
+        // STATE IS A CALLER BUG
         AL10.alGetError(); // DRAIN ANY RESIDUAL HOST ERROR (MC's SOUND ENGINE) SO THE CHECK BELOW SEES ONLY OURS
         try {
             AL10.alGenBuffers(this.buffers);
@@ -92,7 +92,7 @@ public final class ALEngine extends SFXEngine {
                     throw new IllegalStateException("OpenAL spatial source setup failed (err=0x" + Integer.toHexString(spatialError) + ")");
             }
         } catch (final RuntimeException | Error failure) {
-            // BOTH SOURCE GENERATION AND OPTIONAL EFFECT SETUP CAN FAIL AFTER BUFFERS WERE ALLOCATED.
+            // BOTH SOURCE GENERATION AND OPTIONAL EFFECT SETUP CAN FAIL AFTER BUFFERS WERE ALLOCATED
             try {
                 if (this.source != 0) AL10.alDeleteSources(this.source);
                 for (final int buffer: this.buffers) if (buffer != 0) AL10.alDeleteBuffers(buffer);
@@ -101,6 +101,20 @@ public final class ALEngine extends SFXEngine {
             }
             throw failure;
         }
+    }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
+    @Override
+    public ChannelSupport[] supportedChannels() {
+        return this.supportedChannels.clone();
+    }
+
+    @Override
+    public SampleType[] supportedTypes() {
+        return this.supportedTypes.clone();
     }
 
     @Override
@@ -120,7 +134,7 @@ public final class ALEngine extends SFXEngine {
                     && (audio == null || previous.environment() != audio.environment()))
                 previous.environment().reset(this.source);
         } finally {
-            // CLEAR EFFECTS EVEN IF THE ADAPTER WAS DISABLED OR ITS RESET FAILED.
+            // CLEAR EFFECTS EVEN IF THE ADAPTER WAS DISABLED OR ITS RESET FAILED
             this.clearSpatial();
         }
         if (audio == null) return true;
@@ -130,7 +144,7 @@ public final class ALEngine extends SFXEngine {
             AL10.alSourcef(this.source, AL10.AL_REFERENCE_DISTANCE, audio.referenceDistance());
             AL10.alSourcef(this.source, AL10.AL_MAX_DISTANCE, audio.maxDistance());
             AL10.alSourcef(this.source, AL10.AL_ROLLOFF_FACTOR, audio.rolloff());
-            // SOUND PHYSICS MAY MOVE AL_POSITION TOWARD A REFLECTION; ALWAYS RESTORE THE REAL ORIGIN FIRST.
+            // SOUND PHYSICS MAY MOVE AL_POSITION TOWARD A REFLECTION; ALWAYS RESTORE THE REAL ORIGIN FIRST
             if (audio.environment() != null) audio.environment().process(this.source, audio);
             this.spatialAudio = audio;
             return true;
@@ -140,69 +154,18 @@ public final class ALEngine extends SFXEngine {
         }
     }
 
-    @Override
-    synchronized void pause() {
-        if (this.source == 0) return;
-        this.requireContext();
-        if (AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) != AL10.AL_PAUSED) AL10.alSourcePause(this.source);
-    }
-
-    @Override
-    synchronized void play() {
-        if (this.source == 0) return;
-        this.requireContext();
-        if (AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) AL10.alSourcePlay(this.source);
-    }
-
     // AL_PITCH IS CORE OPENAL; ONLY A RELEASED SOURCE CANNOT CHANGE SPEED. THE VOLATILE READ NEEDS NO CONTEXT
     @Override
     public boolean canSpeed() { return this.source != 0; }
 
-    @Override
-    synchronized boolean speed(final float speed) {
-        if (this.source == 0 || !Float.isFinite(speed) || speed <= 0) return false;
-        this.requireContext();
-        AL10.alGetError();
-        AL10.alSourcef(this.source, AL10.AL_PITCH, speed); // AL_PITCH RESAMPLES THE SOURCE NATIVELY
-        if (AL10.alGetError() != AL10.AL_NO_ERROR) return false;
-        this.speed = speed;
-        return true;
+    /** Returns a defensive copy of the AL buffer ids owned by this engine. */
+    public int[] buffers() {
+        return this.buffers.clone();
     }
 
-    @Override
-    synchronized void gain() {
-        if (this.source == 0) return;
-        this.requireContext();
-        AL10.alSourcef(this.source, AL10.AL_GAIN, this.volume);
-    }
-
-    @Override
-    synchronized void destroy() {
-        if (this.source == 0) return;
-        this.requireContext();
-        try {
-            if (this.spatial) this.spatialAudio(null);
-        } finally {
-            // DELETING THE SOURCE STOPS PLAYBACK AND DETACHES EVERY BUFFER, EVEN AFTER A FAILED UPLOAD.
-            AL10.alDeleteSources(this.source);
-            AL10.alDeleteBuffers(this.buffers);
-            this.source = 0;
-            this.freeCount = 0;
-            this.queuedHead = 0;
-            this.queuedCount = 0;
-            this.totalQueuedUs = 0;
-        }
-    }
-
-    @Override
-    public ChannelSupport[] supportedChannels() {
-        return this.supportedChannels.clone();
-    }
-
-    @Override
-    public SampleType[] supportedTypes() {
-        return this.supportedTypes.clone();
-    }
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     synchronized boolean apply(final SampleType type, final int channels, final int sampleRate) {
@@ -226,11 +189,11 @@ public final class ALEngine extends SFXEngine {
         this.requireContext();
         AL10.alGetError();
         // DRAIN *ALL* PROCESSED BUFFERS FIRST: alSourcePlay ON A STOPPED SOURCE (UNDERRUN) REPLAYS
-        // ITS QUEUE FROM THE START, SO ANY STALE BUFFER LEFT QUEUED PLAYS OLD AUDIO AGAIN.
+        // ITS QUEUE FROM THE START, SO ANY STALE BUFFER LEFT QUEUED PLAYS OLD AUDIO AGAIN
         this.reclaimProcessed();
 
-        // A STOPPED SOURCE MARKS EVERY QUEUED BUFFER PROCESSED — EVEN FRESH ONES — SO AN UPLOAD
-        // WOULD BE RECLAIMED AND LOST ON THE NEXT CALL; REWIND TO INITIAL SO NEW AUDIO PENDS PROPERLY
+        // A STOPPED SOURCE MARKS EVERY QUEUED BUFFER PROCESSED (EVEN FRESH ONES), SO AN UPLOAD WOULD BE RECLAIMED
+        // AND LOST ON THE NEXT CALL; REWIND TO INITIAL SO NEW AUDIO PENDS PROPERLY
         final int state = AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE);
         checkError("query source state");
         if (this.queuedCount == 0 && state == AL10.AL_STOPPED) {
@@ -238,7 +201,7 @@ public final class ALEngine extends SFXEngine {
             checkError("rewind source");
         }
 
-        // NO BUFFER AVAILABLE — SIGNAL BACKPRESSURE
+        // NO BUFFER AVAILABLE: SIGNAL BACKPRESSURE
         if (this.freeCount == 0) return false;
         final int buffer = this.freeIds[this.freeCount - 1];
 
@@ -249,7 +212,7 @@ public final class ALEngine extends SFXEngine {
         checkError("upload PCM");
         AL10.alSourceQueueBuffers(this.source, buffer);
         checkError("queue PCM");
-        // TRANSFER OWNERSHIP ONLY AFTER BOTH NATIVE OPERATIONS SUCCEEDED.
+        // TRANSFER OWNERSHIP ONLY AFTER BOTH NATIVE OPERATIONS SUCCEEDED
         this.freeCount--;
         // ENQUEUE THE DURATION AT THE FIFO TAIL
         this.queuedDur[(this.queuedHead + this.queuedCount) % this.queuedDur.length] = durationUs;
@@ -282,11 +245,11 @@ public final class ALEngine extends SFXEngine {
         this.requireContext();
         final int state = AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE);
         // STOPPED (UNDERRUN) MEANS EVERYTHING QUEUED ALREADY PLAYED AND THE OFFSET RESET TO 0,
-        // SO THE SUBTRACTION BELOW WOULD WRONGLY REPORT THE WHOLE QUEUE AS PENDING.
+        // SO THE SUBTRACTION BELOW WOULD WRONGLY REPORT THE WHOLE QUEUE AS PENDING
         if (state == AL10.AL_STOPPED) return 0;
 
         // QUEUE PLAYBACK OFFSET, LATENCY-COMPENSATED WHEN AL_SOFT_source_latency EXISTS: THE
-        // SAMPLE AT THE LISTENER IS offset − deviceLatency, GROWING THE PENDING WINDOW.
+        // SAMPLE AT THE LISTENER IS offset − deviceLatency, GROWING THE PENDING WINDOW
         final double offsetSec;
         if (this.latencySupported) {
             SOFTSourceLatency.alGetSourcedvSOFT(this.source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, this.latencyValues);
@@ -299,10 +262,59 @@ public final class ALEngine extends SFXEngine {
         return Math.max(0L, (this.totalQueuedUs - playedUs) / 1_000L);
     }
 
-    /** Returns a defensive copy of the AL buffer ids owned by this engine. */
-    public int[] buffers() {
-        return this.buffers.clone();
+    @Override
+    synchronized void pause() {
+        if (this.source == 0) return;
+        this.requireContext();
+        if (AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) != AL10.AL_PAUSED) AL10.alSourcePause(this.source);
     }
+
+    @Override
+    synchronized void play() {
+        if (this.source == 0) return;
+        this.requireContext();
+        if (AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) AL10.alSourcePlay(this.source);
+    }
+
+    @Override
+    synchronized boolean speed(final float speed) {
+        if (this.source == 0 || !Float.isFinite(speed) || speed <= 0) return false;
+        this.requireContext();
+        AL10.alGetError();
+        AL10.alSourcef(this.source, AL10.AL_PITCH, speed); // AL_PITCH RESAMPLES THE SOURCE NATIVELY
+        if (AL10.alGetError() != AL10.AL_NO_ERROR) return false;
+        this.speed = speed;
+        return true;
+    }
+
+    @Override
+    synchronized void gain() {
+        if (this.source == 0) return;
+        this.requireContext();
+        AL10.alSourcef(this.source, AL10.AL_GAIN, this.volume);
+    }
+
+    @Override
+    synchronized void destroy() {
+        if (this.source == 0) return;
+        this.requireContext();
+        try {
+            if (this.spatial) this.spatialAudio(null);
+        } finally {
+            // DELETING THE SOURCE STOPS PLAYBACK AND DETACHES EVERY BUFFER, EVEN AFTER A FAILED UPLOAD
+            AL10.alDeleteSources(this.source);
+            AL10.alDeleteBuffers(this.buffers);
+            this.source = 0;
+            this.freeCount = 0;
+            this.queuedHead = 0;
+            this.queuedCount = 0;
+            this.totalQueuedUs = 0;
+        }
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private void requireContext() {
         final long localContext = this.threadContext ? EXTThreadLocalContext.alcGetThreadContext() : 0;
@@ -324,7 +336,7 @@ public final class ALEngine extends SFXEngine {
     }
 
     // UNQUEUES EVERY PROCESSED BUFFER AND RETURNS IT TO THE FREE STACK, KEEPING THE QUEUED-DURATION
-    // FIFO IN SYNC (AL RETURNS PROCESSED BUFFERS IN QUEUE ORDER, SO WE POP THE FIFO FRONT).
+    // FIFO IN SYNC (AL RETURNS PROCESSED BUFFERS IN QUEUE ORDER, SO WE POP THE FIFO FRONT)
     private void reclaimProcessed() {
         int processed = AL10.alGetSourcei(this.source, AL10.AL_BUFFERS_PROCESSED);
         checkError("query processed buffers");
@@ -343,6 +355,10 @@ public final class ALEngine extends SFXEngine {
         }
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
     private static void checkError(final String operation) {
         final int error = AL10.alGetError();
         if (error != AL10.AL_NO_ERROR)
@@ -358,7 +374,7 @@ public final class ALEngine extends SFXEngine {
         if (!spatial) {
             channels.add(new ChannelSupport(2, direct));
             if (multichannel) {
-                // MCFORMATS DECLARES ITS OWN FLOAT FORMATS; EXT_FLOAT32 ONLY GATES MONO/STEREO FLOAT.
+                // MCFORMATS DECLARES ITS OWN FLOAT FORMATS; EXT_FLOAT32 ONLY GATES MONO/STEREO FLOAT
                 final EnumSet<SampleType> surround = EnumSet.of(SampleType.U8, SampleType.S16, SampleType.FLT);
                 for (final int count: new int[] { 4, 6, 7, 8 }) channels.add(new ChannelSupport(count, surround));
             }
@@ -387,7 +403,7 @@ public final class ALEngine extends SFXEngine {
                 case 8 -> EXTMCFormats.AL_FORMAT_71CHN16;
                 default -> AL10.AL_NONE;
             };
-            // OPENAL HAS NO NATIVE S32 INTEGER PCM FORMAT — CALLER MUST RESAMPLE TO S16 OR FLT
+            // OPENAL HAS NO NATIVE S32 INTEGER PCM FORMAT: THE CALLER MUST RESAMPLE TO S16 OR FLT
             case S32 -> AL10.AL_NONE;
             case FLT -> switch (channels) {
                 case 1 -> EXTFloat32.AL_FORMAT_MONO_FLOAT32;
@@ -398,7 +414,7 @@ public final class ALEngine extends SFXEngine {
                 case 8 -> EXTMCFormats.AL_FORMAT_71CHN32;
                 default -> AL10.AL_NONE;
             };
-            // DBL COVERS MONO/STEREO ONLY — AL_EXT_DOUBLE HAS NO MULTICHANNEL VARIANTS
+            // DBL COVERS MONO/STEREO ONLY: AL_EXT_DOUBLE HAS NO MULTICHANNEL VARIANTS
             case DBL -> switch (channels) {
                 case 1 -> EXTDouble.AL_FORMAT_MONO_DOUBLE_EXT;
                 case 2 -> EXTDouble.AL_FORMAT_STEREO_DOUBLE_EXT;

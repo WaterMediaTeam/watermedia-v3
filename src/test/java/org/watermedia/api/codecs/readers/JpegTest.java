@@ -44,22 +44,15 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  */
 @DisplayName("JPEG decoder")
 public class JpegTest {
-    // PER-CHANNEL DIFFERENCE BOUNDS — JPEG IS LOSSY AND DECODER VARIANTS ARE NORMAL
+    // PER-CHANNEL DIFFERENCE BOUNDS: JPEG IS LOSSY AND DECODER VARIANTS ARE NORMAL
     private static final int SMALL_DIFF = 8;
     private static final int MAX_DIFF = 80;
     private static final double MAX_MEAN_DIFF = 6.0;
     private static final double MAX_SMALL_DIFF_PERCENT = 10.0;
 
-    private record Fixture(int id, String encoding, PixelFormat nativeFormat) {
-        Path jpeg() {
-            return Fixtures.JPEG_DIR.resolve(this.id + ".jpg");
-        }
-
-        Path raw() {
-            return Fixtures.JPEG_DIR.resolve("raw").resolve(this.id + ".pam");
-        }
-    }
-
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @TestFactory
     @DisplayName("Native format and pixel match")
     Iterable<DynamicTest> testJPEGFixtures() {
@@ -72,7 +65,7 @@ public class JpegTest {
                 new Fixture(5, "jpeg444_all_appx_markers", PixelFormat.BGRA),
                 new Fixture(6, "jpeg420prog_unpadded", PixelFormat.BGRA)
         )) {
-            // NATIVE LAYOUT — NO FORMAT REQUESTED: COLOR IS CONVERTED TO BGRA, GRAYSCALE STAYS ONE BYTE PER PIXEL
+            // NATIVE LAYOUT WITH NO FORMAT REQUESTED: COLOR IS CONVERTED TO BGRA, GRAYSCALE STAYS ONE BYTE PER PIXEL
             tests.add(dynamicTest("JPEG native format [" + fixture.id + " " + fixture.encoding + "]", () -> {
                 final ByteBuffer source = ByteBuffer.wrap(Fixtures.readAll(fixture.jpeg()));
                 try (final ImageReader reader = CodecsAPI.reader(source)) {
@@ -118,6 +111,26 @@ public class JpegTest {
         return tests;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // OFFSET OF THE FF BYTE OF THE FRAME HEADER, FOUND BY WALKING THE MARKER SEGMENTS THAT PRECEDE IT
+    private static int sof(final byte[] jpeg) {
+        int at = 2;
+        while ((jpeg[at + 1] & 0xFF) != 0xC0 && (jpeg[at + 1] & 0xFF) != 0xC2) at += 2 + (((jpeg[at + 2] & 0xFF) << 8) | (jpeg[at + 3] & 0xFF));
+        return at;
+    }
+
+    // INSERTS ONE MARKER SEGMENT RIGHT AFTER SOI
+    private static byte[] withSegment(final byte[] jpeg, final int marker, final byte[] payload) {
+        final ByteBuffer out = ByteBuffer.allocate(jpeg.length + 4 + payload.length);
+        out.put(jpeg, 0, 2).put((byte) 0xFF).put((byte) marker).putShort((short) (payload.length + 2)).put(payload).put(jpeg, 2, jpeg.length - 2);
+        return out.array();
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Metadata")
     class Metadata {
@@ -249,17 +262,14 @@ public class JpegTest {
         }
     }
 
-    // OFFSET OF THE FF BYTE OF THE FRAME HEADER, FOUND BY WALKING THE MARKER SEGMENTS THAT PRECEDE IT
-    private static int sof(final byte[] jpeg) {
-        int at = 2;
-        while ((jpeg[at + 1] & 0xFF) != 0xC0 && (jpeg[at + 1] & 0xFF) != 0xC2) at += 2 + (((jpeg[at + 2] & 0xFF) << 8) | (jpeg[at + 3] & 0xFF));
-        return at;
-    }
+    // A FIXTURE JPEG, ITS REFERENCE PAM AND THE LAYOUT THE DECODER HANDS OUT WHEN NO FORMAT IS REQUESTED
+    private record Fixture(int id, String encoding, PixelFormat nativeFormat) {
+        Path jpeg() {
+            return Fixtures.JPEG_DIR.resolve(this.id + ".jpg");
+        }
 
-    // INSERTS ONE MARKER SEGMENT RIGHT AFTER SOI
-    private static byte[] withSegment(final byte[] jpeg, final int marker, final byte[] payload) {
-        final ByteBuffer out = ByteBuffer.allocate(jpeg.length + 4 + payload.length);
-        out.put(jpeg, 0, 2).put((byte) 0xFF).put((byte) marker).putShort((short) (payload.length + 2)).put(payload).put(jpeg, 2, jpeg.length - 2);
-        return out.array();
+        Path raw() {
+            return Fixtures.JPEG_DIR.resolve("raw").resolve(this.id + ".pam");
+        }
     }
 }

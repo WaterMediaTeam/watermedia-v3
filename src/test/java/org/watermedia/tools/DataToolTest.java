@@ -20,7 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Verifies the pure byte/string helpers in {@link DataTool}: log redaction, lenient parsing and pixel math. */
 @DisplayName("DataTool")
 public class DataToolTest {
-
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Redaction")
     class Redaction {

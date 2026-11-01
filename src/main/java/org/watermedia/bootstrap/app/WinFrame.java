@@ -41,11 +41,14 @@ public final class WinFrame {
 
     private static AppContext ctx;
     private static long hwnd;
-    private static long prevProc; // ORIGINAL (GLFW) WNDPROC — EVERYTHING UNHANDLED CHAINS HERE
+    private static long prevProc; // ORIGINAL (GLFW) WNDPROC; EVERYTHING UNHANDLED CHAINS HERE
     private static WindowProc proc;
 
     private WinFrame() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Subclasses the Win32 window of a GLFW window, replacing any previous install; call it after every window rebuild. */
     public static void install(final long window, final AppContext context) {
         if (!ACTIVE || window == 0L) return;
@@ -53,7 +56,7 @@ public final class WinFrame {
         ctx = context;
         hwnd = glfwGetWin32Window(window);
         // SUBCLASS FIRST: THE SWP_FRAMECHANGED BELOW SENDS WM_NCCALCSIZE, AND OUR HANDLER MUST ANSWER
-        // IT — THE DEFAULT ONE WOULD INSET THE CLIENT AREA BY THE NEW CAPTION/FRAME UNTIL A LATER RESIZE
+        // IT; THE DEFAULT ONE WOULD INSET THE CLIENT AREA BY THE NEW CAPTION/FRAME UNTIL A LATER RESIZE
         prevProc = GetWindowLongPtr(null, hwnd, GWL_WNDPROC);
         proc = WindowProc.create(WinFrame::wndProc);
         SetWindowLongPtr(null, hwnd, GWL_WNDPROC, proc.address());
@@ -62,7 +65,7 @@ public final class WinFrame {
         final long style = GetWindowLongPtr(null, hwnd, GWL_STYLE);
         SetWindowLongPtr(null, hwnd, GWL_STYLE,
                 style | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
-        // APPLY THE NEW FRAME IN PLACE — NO MOVE, NO RESIZE, NO Z-ORDER CHANGE
+        // APPLY THE NEW FRAME IN PLACE: NO MOVE, NO RESIZE, NO Z-ORDER CHANGE
         SetWindowPos(null, hwnd, 0L, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
     }
 
@@ -93,7 +96,7 @@ public final class WinFrame {
             final int x = pa.get(0), y = pb.get(0), w = pc.get(0), h = pd.get(0);
             if (w <= 0 || h <= 0) return;
 
-            // MONITOR HOSTING THE WINDOW CENTER (FULL BOUNDS — THE WORK AREA CAN START BELOW A TOP
+            // MONITOR HOSTING THE WINDOW CENTER (FULL BOUNDS, AS THE WORK AREA CAN START BELOW A TOP
             // TASKBAR), FALLING BACK TO THE PRIMARY WHEN THE CENTER LANDS ON NO MONITOR
             final long monitor = monitorAt(x + w / 2.0, y + h / 2.0, pa, pb);
             if (monitor == 0L) return;
@@ -130,6 +133,9 @@ public final class WinFrame {
         return monitor != 0L ? monitor : glfwGetPrimaryMonitor();
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // CLAMPS THE PROPOSED WM_NCCALCSIZE RECT (FIRST RECT AT lParam) TO ITS MONITOR'S WORK AREA, REMOVING THE
     // MAXIMIZED FRAME OVERHANG WITHOUT SHRINKING A RECT THAT FITS
     private static void clampZoomed(final long rectPtr) {
@@ -162,7 +168,7 @@ public final class WinFrame {
         }
     }
 
-    // SUBCLASSED WNDPROC — RUNS ON THE GLFW MAIN THREAD (INSIDE THE MESSAGE PUMP); EVERYTHING NOT
+    // SUBCLASSED WNDPROC: RUNS ON THE GLFW MAIN THREAD (INSIDE THE MESSAGE PUMP); EVERYTHING NOT
     // HANDLED HERE CHAINS TO THE ORIGINAL GLFW PROC SO ALL GLFW CALLBACKS KEEP FIRING
     private static long wndProc(final long hwnd, final int msg, final long wParam, final long lParam) {
         switch (msg) {
@@ -198,7 +204,7 @@ public final class WinFrame {
             final int cw = r.right() - r.left();
             final int ch = r.bottom() - r.top();
 
-            // RESIZE BORDERS — FLOATING ONLY; CORNERS GET A DOUBLE-SIZED BAND FOR A COMFORTABLE GRIP;
+            // RESIZE BORDERS, FLOATING ONLY; CORNERS GET A DOUBLE-SIZED BAND FOR A COMFORTABLE GRIP;
             // THE TOP BAND WINS OVER THE TITLEBAR: RESIZING FROM THE TOP EDGE IS THE STANDARD BEHAVIOR
             if (!IsZoomed(hwnd)) {
                 final int fx = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);

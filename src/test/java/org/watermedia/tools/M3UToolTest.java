@@ -48,9 +48,8 @@ public class M3UToolTest {
     private static final String BASE = "https://cdn.test/";
 
     // ==========================================================================
-    // ERROR HANDLING TESTS
+    // NESTED TYPES: ERROR HANDLING TESTS
     // ==========================================================================
-
     @Nested
     @DisplayName("Error Handling")
     class ErrorHandlingTests {
@@ -95,9 +94,8 @@ public class M3UToolTest {
     }
 
     // ==========================================================================
-    // MASTER PLAYLIST TESTS
+    // NESTED TYPES: MASTER PLAYLIST TESTS
     // ==========================================================================
-
     @Nested
     @DisplayName("Master Playlist Parsing")
     class MasterPlaylistTests {
@@ -232,9 +230,8 @@ public class M3UToolTest {
     }
 
     // ==========================================================================
-    // MEDIA PLAYLIST TESTS
+    // NESTED TYPES: MEDIA PLAYLIST TESTS
     // ==========================================================================
-
     @Nested
     @DisplayName("Media Playlist Parsing")
     class MediaPlaylistTests {
@@ -355,9 +352,8 @@ public class M3UToolTest {
     }
 
     // ==========================================================================
-    // IPTV PLAYLIST TESTS
+    // NESTED TYPES: IPTV PLAYLIST TESTS
     // ==========================================================================
-
     @Nested
     @DisplayName("IPTV Playlist Parsing")
     class IptvPlaylistTests {
@@ -429,13 +425,14 @@ public class M3UToolTest {
     }
 
     // ==========================================================================
-    // EDGE CASE TESTS
+    // NESTED TYPES: EDGE CASE TESTS
     // ==========================================================================
-
     @Nested
     @DisplayName("Edge Cases")
     class EdgeCaseTests {
-
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
         @Test
         @DisplayName("Handle whitespace around header")
         void testWhitespaceAroundHeader() throws IOException {
@@ -654,9 +651,8 @@ public class M3UToolTest {
     }
 
     // ==========================================================================
-    // REMOTE ENTRIES AND FETCH TESTS
+    // NESTED TYPES: REMOTE ENTRIES AND FETCH TESTS
     // ==========================================================================
-
     @Nested
     @DisplayName("Remote entries and fetch")
     class RemoteEntryTests {

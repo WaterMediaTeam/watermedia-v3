@@ -25,10 +25,34 @@ public class FFMediaPlayerTest {
     private static final long LOAD_TIMEOUT_MS = 15_000L;
     private static final long PLAY_OBSERVE_MS = 8_000L;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeAll
     static void boot() {
-        assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping FFMediaPlayer tests");
+        assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable, skipping FFMediaPlayer tests");
     }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // OPENS A VIDEO-ONLY FF PLAYER ON THE MP4 FIXTURE, APPLIES THE SCALING CONFIG, STARTS IT AND WAITS UNTIL THE DECODE
+    // PIPELINE IS LIVE (THE SOURCE OPENED AND THE ENGINE WAS CONFIGURED BEFORE THE CLOCK LEFT LOADING)
+    private static FFMediaPlayer open(final HeadlessGFXEngine gfx, final Consumer<FFMediaPlayer> config) {
+        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, gfx, null);
+        config.accept(player);
+        assertTrue(player.start());
+        assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.PLAYING, Status.BUFFERING, Status.PAUSED));
+        return player;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Playback")
@@ -104,19 +128,5 @@ public class FFMediaPlayerTest {
                 player.release();
             }
         }
-    }
-
-    // UTILITY
-
-    // OPENS A VIDEO-ONLY FF PLAYER ON THE MP4 FIXTURE, APPLIES THE SCALING CONFIG, STARTS IT AND WAITS UNTIL THE DECODE
-    // PIPELINE IS LIVE (THE SOURCE OPENED AND THE ENGINE WAS CONFIGURED BEFORE THE CLOCK LEFT LOADING)
-    private static FFMediaPlayer open(final HeadlessGFXEngine gfx, final Consumer<FFMediaPlayer> config) {
-        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
-        final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, gfx, null);
-        config.accept(player);
-        assertTrue(player.start());
-        assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.PLAYING, Status.BUFFERING, Status.PAUSED));
-        return player;
     }
 }

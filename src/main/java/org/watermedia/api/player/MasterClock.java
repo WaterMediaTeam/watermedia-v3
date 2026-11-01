@@ -29,7 +29,7 @@ final class MasterClock implements FFDecoder.Timeline {
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition condition = this.lock.newCondition();
 
-    // CLOCK STATE — VOLATILE FOR LOCK-FREE READS
+    // CLOCK STATE: VOLATILE FOR LOCK-FREE READS
     private volatile double pts;
     private volatile double ptsDrift;
     private volatile double lastUpdated;
@@ -37,14 +37,14 @@ final class MasterClock implements FFDecoder.Timeline {
     private volatile Status status = Status.WAITING;
     private volatile int serial;
 
-    // SEEK STATE — ACCESSED UNDER LOCK
+    // SEEK STATE: ACCESSED UNDER LOCK
     private volatile FFDecoder.Seek pendingSeek;
     private volatile boolean pauseIntent;
 
     // PIPELINE STATE
     private volatile boolean demuxFinished;
 
-    // STATUS LISTENER — TRANSITIONS ARE QUEUED UNDER THE LOCK AND DELIVERED AFTER IT IS RELEASED, IN ORDER
+    // STATUS LISTENER: TRANSITIONS ARE QUEUED UNDER THE LOCK AND DELIVERED AFTER IT IS RELEASED, IN ORDER
     // AND BY ONE THREAD AT A TIME (draining), SO A LISTENER RUNS UNDER NO LOCK AND MAY RE-ENTER THE CLOCK
     private volatile BiConsumer<Status, Status> listener;
     private final ArrayDeque<Status[]> events = new ArrayDeque<>();
@@ -56,7 +56,7 @@ final class MasterClock implements FFDecoder.Timeline {
     private volatile long skipThresholdMs = 165;
 
     // ==========================================================================
-    // CLOCK
+    // PUBLIC API: CLOCK
     // ==========================================================================
 
     /** Returns the clock time in seconds, lock-free: speed-corrected {@code ptsDrift + now} while playing, else the frozen last PTS. */
@@ -128,40 +128,12 @@ final class MasterClock implements FFDecoder.Timeline {
     public double speed() { return this.speed; }
 
     // ==========================================================================
-    // STATUS
+    // PUBLIC API: STATUS
     // ==========================================================================
 
     /** Registers the listener of every status transition, delivered in order outside the lock. */
     public void listener(final BiConsumer<Status, Status> listener) {
         this.listener = listener;
-    }
-
-    // DELIVERS QUEUED TRANSITIONS OUTSIDE THE LOCK: A MUTATOR HANDS ITS EVENT TO A RUNNING DRAINER, A NESTED ONE TO ITS
-    // OUTERMOST CALL, AND halt() TO ITS CALLER, SO THE LISTENER NEVER RUNS UNDER THE LOCK
-    void drain() {
-        if (this.lock.isHeldByCurrentThread()) return;
-        while (true) {
-            final Status[] event;
-            this.lock.lock();
-            try {
-                if (this.draining || this.events.isEmpty()) return;
-                event = this.events.pollFirst();
-                this.draining = true;
-            } finally {
-                this.lock.unlock();
-            }
-            try {
-                final BiConsumer<Status, Status> l = this.listener;
-                if (l != null) l.accept(event[0], event[1]);
-            } finally {
-                this.lock.lock();
-                try {
-                    this.draining = false;
-                } finally {
-                    this.lock.unlock();
-                }
-            }
-        }
     }
 
     /** Returns the current status, lock-free. */
@@ -183,10 +155,10 @@ final class MasterClock implements FFDecoder.Timeline {
             current = this.status;
             if (!current.allows(newStatus)) return null; // ALSO THE NO-OP: NO STATUS ALLOWS ITSELF
 
-            // ADJUST CLOCK WHEN LEAVING PLAYING — FREEZE PTS
+            // ADJUST CLOCK WHEN LEAVING PLAYING: FREEZE PTS
             if (current == Status.PLAYING) this.pts = this.time();
 
-            // ADJUST CLOCK WHEN ENTERING PLAYING — RECALIBRATE DRIFT
+            // ADJUST CLOCK WHEN ENTERING PLAYING: RECALIBRATE DRIFT
             if (newStatus == Status.PLAYING) {
                 final double now = wallclock();
                 this.ptsDrift = this.pts - now;
@@ -268,7 +240,7 @@ final class MasterClock implements FFDecoder.Timeline {
     }
 
     // ==========================================================================
-    // SEEK AND PAUSE
+    // PUBLIC API: SEEK AND PAUSE
     // ==========================================================================
 
     /** Requests a seek, freezing the clock at the target in buffering; false without a pipeline to serve it (waiting, ended, stopped, error). */
@@ -327,7 +299,7 @@ final class MasterClock implements FFDecoder.Timeline {
                 changed = this.transition(Status.PAUSED);
             } else {
                 // RESUME: IF WE WERE PAUSED DURING BUFFERING, GO BACK TO BUFFERING
-                // (NOT PLAYING) — THE SEEK HASN'T RESOLVED YET.
+                // (NOT PLAYING): THE SEEK HASN'T RESOLVED YET.
                 // update() WILL TRANSITION BUFFERING→PLAYING WHEN DATA ARRIVES.
                 changed = this.status == Status.PAUSED && this.pendingSeek != null
                         ? this.transition(Status.BUFFERING) : this.transition(Status.PLAYING);
@@ -347,7 +319,7 @@ final class MasterClock implements FFDecoder.Timeline {
     public boolean holding() { return this.pauseIntent && this.status == Status.PAUSED; }
 
     // ==========================================================================
-    // THREAD COORDINATION
+    // PUBLIC API: THREAD COORDINATION
     // ==========================================================================
 
     // BLOCKS UNTIL THE STATUS CHANGES OR A NEW SEEK ARRIVES (timeoutMs 0 = INDEFINITE)
@@ -378,7 +350,7 @@ final class MasterClock implements FFDecoder.Timeline {
             while (this.status == current) {
                 final long remaining = timeoutMs > 0 ? TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()) : Long.MAX_VALUE;
                 if (remaining <= 0) break;
-                // EVERY STATUS MUTATION SIGNALS THIS CONDITION, SO AWAIT THE FULL REMAINDER — NO POLLING CAP
+                // EVERY STATUS MUTATION SIGNALS THIS CONDITION, SO AWAIT THE FULL REMAINDER, NO POLLING CAP
                 this.condition.await(remaining, TimeUnit.MILLISECONDS);
             }
             return this.status;
@@ -388,7 +360,7 @@ final class MasterClock implements FFDecoder.Timeline {
     }
 
     // ==========================================================================
-    // PIPELINE AND FRAME TIMING
+    // PUBLIC API: PIPELINE AND FRAME TIMING
     // ==========================================================================
 
     /** Resets the pipeline state for a new run; the playback speed is a player setting and survives. */
@@ -471,7 +443,41 @@ final class MasterClock implements FFDecoder.Timeline {
     /** Returns the lateness in milliseconds (~5 frames) past which a video frame is skipped. */
     public long skipThresholdMs() { return this.skipThresholdMs; }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    // DELIVERS QUEUED TRANSITIONS OUTSIDE THE LOCK: A MUTATOR HANDS ITS EVENT TO A RUNNING DRAINER, A NESTED ONE TO ITS
+    // OUTERMOST CALL, AND halt() TO ITS CALLER, SO THE LISTENER NEVER RUNS UNDER THE LOCK
+    void drain() {
+        if (this.lock.isHeldByCurrentThread()) return;
+        while (true) {
+            final Status[] event;
+            this.lock.lock();
+            try {
+                if (this.draining || this.events.isEmpty()) return;
+                event = this.events.pollFirst();
+                this.draining = true;
+            } finally {
+                this.lock.unlock();
+            }
+            try {
+                final BiConsumer<Status, Status> l = this.listener;
+                if (l != null) l.accept(event[0], event[1]);
+            } finally {
+                this.lock.lock();
+                try {
+                    this.draining = false;
+                } finally {
+                    this.lock.unlock();
+                }
+            }
+        }
+    }
+
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
 
     // WALLCLOCK IN SECONDS WITH NANOSECOND PRECISION
     private static double wallclock() {

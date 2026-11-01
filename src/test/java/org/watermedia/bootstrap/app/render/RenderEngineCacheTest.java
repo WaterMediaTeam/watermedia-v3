@@ -25,6 +25,9 @@ public class RenderEngineCacheTest {
     private RecordingBackend backend;
     private RenderEngine engine;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @BeforeEach
     void setup() {
         this.backend = new RecordingBackend();
@@ -32,6 +35,9 @@ public class RenderEngineCacheTest {
         this.engine.setupOrtho(100, 50);
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Validity")
     class Validity {

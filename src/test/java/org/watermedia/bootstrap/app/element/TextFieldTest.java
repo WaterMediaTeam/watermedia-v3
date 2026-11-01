@@ -22,6 +22,10 @@ import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
 @DisplayName("TextField")
 public class TextFieldTest {
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("Editing")
     class Editing {

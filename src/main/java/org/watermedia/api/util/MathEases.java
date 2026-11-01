@@ -96,18 +96,17 @@ public enum MathEases {
         this.easing = easing;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Interpolates between start and end at an unclamped time {@code value} (0.0-1.0); elastic and back curves overshoot. */
     public double apply(final double start, final double end, final double value) {
         return this.easing.apply(start, end, value);
     }
 
-    /** A single easing curve mapping {@code (start, end, t)} to an interpolated value. */
-    @FunctionalInterface
-    public interface Easing {
-        double apply(double start, double end, double t);
-    }
-
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
     private static float sin(final float value) {
         return SIN[(int) (value * 10_430.378F) & 0xFFFF];
     }
@@ -131,5 +130,14 @@ public enum MathEases {
         }
         final double u = t - 2.625 / d1;
         return n1 * u * u + 0.984375;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /** A single easing curve mapping {@code (start, end, t)} to an interpolated value. */
+    @FunctionalInterface
+    public interface Easing {
+        double apply(double start, double end, double t);
     }
 }

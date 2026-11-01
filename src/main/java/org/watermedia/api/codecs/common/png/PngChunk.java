@@ -18,12 +18,15 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
     // HARD SANITY CAP FOR A SINGLE CHUNK READ FROM A STREAM, WHERE THE REMAINING LENGTH IS UNKNOWN
     private static final int MAX_CHUNK_BYTES = 256 * 1_024 * 1_024;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Reads a complete chunk from the buffer position, advancing past it. */
     public static PngChunk read(final ByteBuffer buffer) throws IOException {
         try {
             if (buffer.remaining() < 8) throw new EOFException("Unexpected EOF while reading chunk header");
             final int length = buffer.getInt();
-            // THE PNG LENGTH FIELD IS UNSIGNED, SO 0x80000000 READS BACK NEGATIVE — REPORT THE RAW VALUE
+            // THE PNG LENGTH FIELD IS UNSIGNED, SO 0x80000000 READS BACK NEGATIVE; REPORT THE RAW VALUE
             if (length < 0) throw new CodecException("Invalid chunk length: " + Integer.toUnsignedString(length));
             // LONG MATH: length+4 OVERFLOWS int FOR length >= 0x7FFFFFFC, BYPASSING THE EOF CHECK INTO A ~2GB ALLOC
             if (buffer.remaining() < (long) length + 4) throw new EOFException("Unexpected EOF while reading chunk data");
@@ -51,7 +54,7 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
      */
     public static PngChunk read(final InputStream in) throws IOException {
         final int length = readIntBE(in);
-        // THE PNG LENGTH FIELD IS UNSIGNED, SO 0x80000000 READS BACK NEGATIVE — REPORT THE RAW VALUE
+        // THE PNG LENGTH FIELD IS UNSIGNED, SO 0x80000000 READS BACK NEGATIVE; REPORT THE RAW VALUE
         if (length < 0) throw new CodecException("Invalid chunk length: " + Integer.toUnsignedString(length));
         // NO STREAM LENGTH IS KNOWN HERE, SO A HARD SANITY CAP STOPS A ~2GB ALLOC FROM 4 ATTACKER BYTES
         if (length > MAX_CHUNK_BYTES) throw new CodecException("PNG chunk too large: " + length + " bytes (max " + MAX_CHUNK_BYTES + ")");
@@ -65,6 +68,19 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
         }
         final int crc = readIntBE(in);
         return new PngChunk(length, type, data, crc);
+    }
+
+    /** Creates a chunk with the CRC of its type and data; the data array is shared, not copied. */
+    public static PngChunk create(final int type, final byte[] data) {
+        final PngChunk temp = new PngChunk(data.length, type, data, 0);
+        return new PngChunk(data.length, type, data, temp.calculateCRC());
+    }
+
+    /** Calculates the CRC-32 of a byte range. */
+    public static int crc32(final byte[] data, final int offset, final int length) {
+        final CRC32 crc = new CRC32();
+        crc.update(data, offset, length);
+        return (int) crc.getValue();
     }
 
     /** Returns whether the stored CRC differs from the one calculated over the type and data. */
@@ -101,19 +117,6 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
         return (this.type & 0x20) != 0;
     }
 
-    /** Calculates the CRC-32 of a byte range. */
-    public static int crc32(final byte[] data, final int offset, final int length) {
-        final CRC32 crc = new CRC32();
-        crc.update(data, offset, length);
-        return (int) crc.getValue();
-    }
-
-    /** Creates a chunk with the CRC of its type and data; the data array is shared, not copied. */
-    public static PngChunk create(final int type, final byte[] data) {
-        final PngChunk temp = new PngChunk(data.length, type, data, 0);
-        return new PngChunk(data.length, type, data, temp.calculateCRC());
-    }
-
     /** Writes length, type, data and CRC into a big-endian buffer with room for the data plus twelve bytes. */
     public void write(final ByteBuffer buffer) {
         buffer.putInt(this.length);
@@ -122,6 +125,9 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
         buffer.putInt(this.crc);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static int readIntBE(final InputStream in) throws IOException {
         final int b1 = in.read();
         final int b2 = in.read();

@@ -21,11 +21,15 @@ public final class PlayerAPI {
     private static final Marker IT = MarkerManager.getMarker(PlayerAPI.class.getSimpleName());
     private PlayerAPI() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /**
      * Gets or creates an MRL for the given URI string.
      * If cached and not expired, returns immediately; otherwise starts async loading.
      * <p>
-     * A string naming an existing file is resolved through the filesystem — relative paths
+     * A string naming an existing file is resolved through the filesystem; relative paths
      * resolve against the working directory WaterMedia started with (the same root as
      * {@code water://local}), never the launch directory. Anything else is parsed as a URI.
      * This method never throws on malformed or relative input: it returns a non-cached MRL born
@@ -87,7 +91,7 @@ public final class PlayerAPI {
      * Creates a media player for the given MRL source, or {@code null} when no player can be built.
      * <p>
      * {@code null} covers two distinct situations, logged distinctly: the source isn't ready yet
-     * (MRL still {@link MRL.Status#FETCHING} — retry next tick) or a permanent failure (failed MRL,
+     * (MRL still {@link MRL.Status#FETCHING}: retry next tick) or a permanent failure (failed MRL,
      * invalid index, missing backend, or a construction crash). Check {@link MRL#status()} to tell
      * them apart. {@link Error}s always propagate.
      *
@@ -102,7 +106,7 @@ public final class PlayerAPI {
         if (mrl == null || gfx == null || sfx == null) throw new IllegalArgumentException("The MRL and both engine suppliers are required");
         final MRL.Source source = mrl.source(sourceIndex);
         if (source == null) {
-            // STILL FETCHING IS A NORMAL TRANSIENT STATE — DON'T SPAM WARNINGS FOR IT
+            // STILL FETCHING IS A NORMAL TRANSIENT STATE: DON'T SPAM WARNINGS FOR IT
             final MRL.Status status = mrl.status();
             if (status == MRL.Status.FETCHING) LOGGER.debug(IT, "Source {} not ready yet (still fetching): {}", sourceIndex, mrl.uri());
             else LOGGER.warn(IT, "Cannot create player: source {} unavailable (status {}) for {}", sourceIndex, status, mrl.uri());
@@ -147,7 +151,7 @@ public final class PlayerAPI {
      * <p>
      * {@code renderEx} must run its tasks on {@code renderThread} (the thread owning the GL
      * context) and be pumped every render frame. Passing both {@code null} builds a
-     * no-thread-contract engine whose GL calls run synchronously on the calling thread — which
+     * no-thread-contract engine whose GL calls run synchronously on the calling thread, which
      * then must own the context.
      * @param renderThread thread owning the GL context, or null for the no-thread-contract mode
      * @param renderEx     executor dispatching onto {@code renderThread}; required when it is non-null
@@ -217,6 +221,10 @@ public final class PlayerAPI {
     public static JSEngine jsEngine(final int bufferMs) {
         return new JSEngine(bufferMs);
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     /** Internal module: media resolution and the network cache; only clients run it. */
     public static final class Module extends WaterMediaModule {

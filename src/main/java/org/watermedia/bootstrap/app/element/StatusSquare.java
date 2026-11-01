@@ -12,15 +12,6 @@ import java.util.function.Supplier;
  */
 public final class StatusSquare extends Element<StatusSquare> {
 
-    /** Semantic state of the pip; each value maps to a fixed theme color. */
-    public enum Status {
-        OK,
-        WARN,
-        ERROR,
-        PENDING,
-        OFF
-    }
-
     private static final int SIZE = 8;
 
     private Supplier<Status> status = () -> Status.OFF;
@@ -30,6 +21,10 @@ public final class StatusSquare extends Element<StatusSquare> {
     public StatusSquare(final Status value) {
         this.status(value);
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** Sets a fixed status. */
     public StatusSquare status(final Status value) {
@@ -65,6 +60,10 @@ public final class StatusSquare extends Element<StatusSquare> {
         return AppTheme.alpha(base, MathUtil.clamp((int) (255 * pulse), 70, 255));
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         this.contentWidth = SIZE;
@@ -76,5 +75,18 @@ public final class StatusSquare extends Element<StatusSquare> {
         final Color c = tint(this.status.get());
         canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight, c);
         canvas.glow(this.left, this.top, this.measuredWidth, this.measuredHeight, 0f, c, 0.42f);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    /** Semantic state of the pip; each value maps to a fixed theme color. */
+    public enum Status {
+        OK,
+        WARN,
+        ERROR,
+        PENDING,
+        OFF
     }
 }

@@ -23,6 +23,11 @@ import static org.bytedeco.ffmpeg.global.avutil.av_dict_set;
 
 /** Verifies the native TLS bundle built from the JVM truststore, trusted and empty, in a fresh JVM each. */
 public final class TLSLifecycleProbe {
+    private TLSLifecycleProbe() {}
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     public static void run(final Path root, final boolean empty) throws Exception {
         final TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         factory.init((KeyStore) null);

@@ -25,12 +25,16 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class TwitterPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(TwitterPlatform.class.getSimpleName());
     public static final String NAME = "Twitter";
+    private static final String[] HOSTS = { "x.com", "www.x.com", "twitter.com", "www.twitter.com" };
     private static final String API_URL = "https://cdn.syndication.twimg.com/tweet-result?id=%s&token=%s&lang=en";
     private static final String API_TOKEN = "watermedia-java-x-access-token";
     private static final Pattern ID_PATTERN = Pattern.compile("/status/(\\d+)(?:/|$)");
     private static final Pattern RESOLUTION_PATTERN = Pattern.compile("/(\\d{2,5})x(\\d{2,5})/");
-    private static final String[] HOSTS = { "x.com", "www.x.com", "twitter.com", "www.twitter.com" };
     private static final int TITLE_LENGTH = 72;
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -92,6 +96,10 @@ public final class TwitterPlatform implements Platform {
         return new Resolution(null, entries);
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     // ONE MEDIA ITEM OF THE TWEET AS A SOURCE, OR NULL WHEN IT HAS NOTHING PLAYABLE
     private Source entry(final MediaDetail media, final String title, final String description, final String author, final Instant postedAt, final HttpHeaders headers) {
         if ("photo".equals(media.type)) {
@@ -139,7 +147,10 @@ public final class TwitterPlatform implements Platform {
         return null;
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
+
     // THE TEXT X SHOWS: display_text_range (UTF-16 OFFSETS INTO THE ESCAPED TEXT) DROPS REPLY MENTIONS AND THE MEDIA'S OWN
     // t.co LINK, AND THE SYNDICATION ESCAPES ONLY &, < AND > (&amp; LAST, SO AN ESCAPED ENTITY STAYS LITERAL)
     static String text(final String text, final int[] range) {
@@ -147,6 +158,10 @@ public final class TwitterPlatform implements Platform {
         final boolean visible = range != null && range.length == 2 && range[0] >= 0 && range[0] <= range[1] && range[1] <= text.length();
         return (visible ? text.substring(range[0], range[1]) : text).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").strip();
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     private record Tweet(
             @SerializedName("__typename") String typename,

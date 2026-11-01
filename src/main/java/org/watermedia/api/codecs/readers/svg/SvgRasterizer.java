@@ -7,14 +7,17 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * AWT-free anti-aliased scanline rasterizer into a straight {@code 0xAARRGGBB} {@code int[]} canvas: 4x vertical
- * supersampling, analytic horizontal coverage, non-zero or even-odd winding. A stroke is filled as one non-zero union
- * of a quad per segment plus round discs at caps and sharp joins; cost is budgeted per shape (edges) and per document.
+ * AWT-free anti-aliased scanline rasterizer that paints user-space {@link Path} geometry, under the device transform each
+ * call brings, into a straight {@code 0xAARRGGBB} {@code int[]} canvas: 4x vertical supersampling, analytic horizontal
+ * coverage, non-zero or even-odd winding. A stroke is filled as one non-zero union of a quad per segment plus round discs
+ * at caps and sharp joins; cost is budgeted per shape (edges) and per document.
  */
 final class SvgRasterizer {
     // VERTICAL SUPERSAMPLES PER PIXEL ROW
     private static final int SS = 4;
     private static final float SS_WEIGHT = 1.0f / SS;
+    // DEVICE-SPACE FLATTENING TOLERANCE IN PIXELS, SMALL ENOUGH FOR CRISP CURVES AT ANY SCALE
+    private static final double TOL = 0.25;
     // DEVICE-SPACE FLATTENING TOLERANCE FOR THE GENERATED STROKE GEOMETRY
     private static final double STROKE_TOL = 0.2;
 
@@ -24,8 +27,8 @@ final class SvgRasterizer {
     private static final int MAX_EDGES = 200_000;
     private static final long MAX_CROSSINGS = 6_000_000L;
 
-    final int width, height;
-    final int[] canvas;
+    private final int width, height;
+    private final int[] canvas;
 
     private final float[] cov;
 
@@ -52,14 +55,45 @@ final class SvgRasterizer {
         this.cov = new float[width];
     }
 
-    void fill(final List<Path.Subpath> subpaths, final boolean evenOdd, final Paint paint, final float opacity) throws CodecException {
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    int width() { return this.width; }
+    int height() { return this.height; }
+    int[] canvas() { return this.canvas; }
+
+    void fill(final Path geo, final Affine ctm, final boolean evenOdd, final SvgPaint paint, final float opacity) throws CodecException {
+        if (paint == null || opacity <= 0 || geo.isEmpty()) return;
+        final double[] bb = geo.userBounds();
+        if (bb == null) return;
+        final SvgPaint.Sampler sampler = paint.sampler(ctm, bb[0], bb[1], bb[2], bb[3]);
+        this.fill(geo.flatten(ctm, TOL), evenOdd, sampler, opacity);
+    }
+
+    void stroke(final Path geo, final Affine ctm, final double strokeWidthUser, final SvgPaint paint, final float opacity) throws CodecException {
+        if (paint == null || opacity <= 0 || strokeWidthUser <= 0 || geo.isEmpty()) return;
+        final double[] bb = geo.userBounds();
+        if (bb == null) return;
+        final SvgPaint.Sampler sampler = paint.sampler(ctm, bb[0], bb[1], bb[2], bb[3]);
+        // CLAMP TO THE CANVAS DIAGONAL: EVERY CANVAS PIXEL LIES WITHIN ONE DIAGONAL OF ANY OTHER, SO A
+        // WIDER STROKE PAINTS THE SAME PIXELS WHILE ITS ROUND JOIN DISCS WOULD FLATTEN TO MILLIONS OF
+        // POINTS (THE DISC RADIUS DRIVES THE SUBDIVISION DEPTH). ONLY VERTICES OFF-CANVAS COULD DIFFER
+        final double w = this.width, h = this.height;
+        final double halfWidth = Math.min(strokeWidthUser * ctm.scaleFactor() / 2.0, Math.sqrt(w * w + h * h));
+        this.stroke(geo.flatten(ctm, TOL), halfWidth, sampler, opacity);
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+    private void fill(final List<Path.Subpath> subpaths, final boolean evenOdd, final SvgPaint.Sampler sampler, final float opacity) throws CodecException {
         if (opacity <= 0 || subpaths.isEmpty()) return;
         this.buildEdges(subpaths);
         if (this.edgeN == 0) return;
-        this.scan(evenOdd, paint, opacity);
+        this.scan(evenOdd, sampler, opacity);
     }
 
-    void stroke(final List<Path.Subpath> subpaths, final double halfWidth, final Paint paint, final float opacity) throws CodecException {
+    private void stroke(final List<Path.Subpath> subpaths, final double halfWidth, final SvgPaint.Sampler sampler, final float opacity) throws CodecException {
         // NEGATED WIDTH TEST SO A NaN HALF-WIDTH IS REJECTED INSTEAD OF BUILDING NaN STROKE GEOMETRY
         if (opacity <= 0 || !(halfWidth > 0) || subpaths.isEmpty()) return;
         // BUILD THE STROKE OUTLINE IN DEVICE SPACE: QUAD PER SEGMENT + ROUND CAP/JOIN DISCS
@@ -80,36 +114,7 @@ final class SvgRasterizer {
         // FILL THE UNION WITH NON-ZERO WINDING SO OVERLAPS DO NOT DOUBLE-BLEND
         this.buildEdges(g.flatten(Affine.IDENTITY, STROKE_TOL));
         if (this.edgeN == 0) return;
-        this.scan(false, paint, opacity);
-    }
-
-    // TRUE WHEN THE TURN AT VERTEX i BENDS ENOUGH THAT THE TWO SEGMENT QUADS LEAVE A GAP A ROUND JOIN
-    // MUST FILL. THE GAP ≈ hw*(1 - cos(turn/2)); EMIT ONLY WHEN IT EXCEEDS ~1/4 px
-    private static boolean sharpJoin(final double[] p, final int n, final int i, final boolean closed, final double hw) {
-        final int prev = i > 0 ? i - 1 : (closed ? n - 1 : -1);
-        final int next = i < n - 1 ? i + 1 : (closed ? 0 : -1);
-        if (prev < 0 || next < 0) return false; // OPEN ENDPOINT — HANDLED AS A CAP
-        final double inx = p[2 * i] - p[2 * prev], iny = p[2 * i + 1] - p[2 * prev + 1];
-        final double outx = p[2 * next] - p[2 * i], outy = p[2 * next + 1] - p[2 * i + 1];
-        final double li = Math.sqrt(inx * inx + iny * iny), lo = Math.sqrt(outx * outx + outy * outy);
-        if (li < 1e-9 || lo < 1e-9) return true; // DUPLICATE VERTEX — LET A DISC COVER IT
-        final double cosTurn = (inx * outx + iny * outy) / (li * lo);
-        final double cosHalf = Math.sqrt(Math.max(0, (1 + cosTurn) / 2));
-        return hw * (1 - cosHalf) > 0.25;
-    }
-
-    private static void segmentQuad(final Path g, final double x0, final double y0, final double x1, final double y1, final double hw) throws CodecException {
-        final double dx = x1 - x0, dy = y1 - y0;
-        final double len = Math.sqrt(dx * dx + dy * dy);
-        if (len < 1e-9) return; // ZERO-LENGTH SEGMENT — THE VERTEX DISC COVERS IT
-        final double nx = -dy / len * hw, ny = dx / len * hw;
-        // VERTEX ORDER MATCHES THE ELLIPSE (DISC) WINDING SO THE NON-ZERO UNION OF QUADS + CAP/JOIN
-        // DISCS NEVER CANCELS IN THEIR OVERLAP (REVERSED ORDER WOULD NOTCH EVERY CAP AND JOINT)
-        g.moveTo(x0 + nx, y0 + ny);
-        g.lineTo(x0 - nx, y0 - ny);
-        g.lineTo(x1 - nx, y1 - ny);
-        g.lineTo(x1 + nx, y1 + ny);
-        g.close();
+        this.scan(false, sampler, opacity);
     }
 
     private void buildEdges(final List<Path.Subpath> subs) throws CodecException {
@@ -118,7 +123,7 @@ final class SvgRasterizer {
             final double[] p = sp.pts();
             final int n = p.length / 2;
             if (n < 2) continue;
-            // EVERY SUBPATH IS CLOSED FOR FILLING — INCLUDE THE CLOSING EDGE
+            // EVERY SUBPATH IS CLOSED FOR FILLING, SO THE CLOSING EDGE IS INCLUDED
             for (int i = 0; i < n; i++) {
                 final int j = (i + 1) % n;
                 this.addEdge(p[2 * i], p[2 * i + 1], p[2 * j], p[2 * j + 1]);
@@ -154,7 +159,7 @@ final class SvgRasterizer {
         this.edir[i] = dir;
     }
 
-    private void scan(final boolean evenOdd, final Paint paint, final float opacity) throws CodecException {
+    private void scan(final boolean evenOdd, final SvgPaint.Sampler sampler, final float opacity) throws CodecException {
         double yMin = Double.POSITIVE_INFINITY, yMax = Double.NEGATIVE_INFINITY;
         double xMin = Double.POSITIVE_INFINITY, xMax = Double.NEGATIVE_INFINITY;
         for (int i = 0; i < this.edgeN; i++) {
@@ -199,9 +204,9 @@ final class SvgRasterizer {
                 this.crossWork += activeN;
                 if (this.crossWork > MAX_CROSSINGS) throw new CodecException("SVG rasterization exceeds " + MAX_CROSSINGS + " edge crossings");
 
-                final int cnt = this.crossings(ys, activeN);
+                this.crossings(ys, activeN);
                 int wind = 0;
-                for (int i = 0; i < cnt - 1; i++) {
+                for (int i = 0; i < activeN - 1; i++) {
                     wind += this.cdir[i];
                     final boolean inside = evenOdd ? ((i & 1) == 0) : (wind != 0);
                     if (inside) this.addSpan(this.cxs[i], this.cxs[i + 1], xlo, xhi);
@@ -212,7 +217,7 @@ final class SvgRasterizer {
                 float c = this.cov[x];
                 if (c <= 0) continue;
                 if (c > 1) c = 1;
-                final int src = paint.argb(x + 0.5, y + 0.5);
+                final int src = sampler.argb(x + 0.5, y + 0.5);
                 final float aeff = ((src >>> 24) & 0xFF) / 255f * c * opacity;
                 if (aeff <= 0) continue;
                 this.blend(base + x, src, aeff);
@@ -239,12 +244,12 @@ final class SvgRasterizer {
         for (int i = 0; i < this.edgeN; i++) this.order[i] = (int) (keys[i] & 0xFFFFFFL);
     }
 
-    // GATHERS THE X-CROSSINGS OF THE ACTIVE EDGES AT SUB-SCANLINE ys, SORTED ASCENDING. EACH KEY PACKS THE ORDER-
-    // PRESERVING X BITS HIGH AND THE WINDING IN BIT 0, SO ONE O(n log n) Arrays.sort ORDERS BOTH (AN INSERTION SORT
+    // FILLS cxs/cdir WITH THE X-CROSSINGS OF THE ACTIVE EDGES AT SUB-SCANLINE ys, SORTED ASCENDING. EACH KEY PACKS THE
+    // ORDER-PRESERVING X BITS HIGH AND THE WINDING IN BIT 0, SO ONE O(n log n) Arrays.sort ORDERS BOTH (AN INSERTION SORT
     // WOULD BE QUADRATIC PER SUB-SCANLINE); THE DROPPED LOW 24 MANTISSA BITS COST UNDER 1e-5 px
-    private int crossings(final double ys, final int activeN) {
+    private void crossings(final double ys, final int activeN) {
         if (this.ckeys.length < activeN) {
-            // GEOMETRIC GROWTH — THE ACTIVE SET TYPICALLY GAINS ONE EDGE AT A TIME AS THE SWEEP DESCENDS
+            // GEOMETRIC GROWTH: THE ACTIVE SET TYPICALLY GAINS ONE EDGE AT A TIME AS THE SWEEP DESCENDS
             final int cap = Math.max(activeN, this.ckeys.length * 2);
             this.ckeys = new long[cap];
             this.cxs = new double[cap];
@@ -266,7 +271,6 @@ final class SvgRasterizer {
             this.cxs[a] = Double.longBitsToDouble(bits);
             this.cdir[a] = (key & 1) == 0 ? -1 : 1;
         }
-        return activeN;
     }
 
     private void addSpan(double xa, double xb, final int xlo, final int xhi) {
@@ -307,5 +311,37 @@ final class SvgRasterizer {
         final int og = Math.round((sg * aeff + dg * inv) / outA);
         final int ob = Math.round((sb * aeff + db * inv) / outA);
         this.canvas[idx] = (MathUtil.clip255(Math.round(outA * 255f)) << 24) | (MathUtil.clip255(or) << 16) | (MathUtil.clip255(og) << 8) | MathUtil.clip255(ob);
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // TRUE WHEN THE TURN AT VERTEX i BENDS ENOUGH THAT THE TWO SEGMENT QUADS LEAVE A GAP A ROUND JOIN
+    // MUST FILL. THE GAP ≈ hw*(1 - cos(turn/2)); EMIT ONLY WHEN IT EXCEEDS ~1/4 px
+    private static boolean sharpJoin(final double[] p, final int n, final int i, final boolean closed, final double hw) {
+        final int prev = i > 0 ? i - 1 : (closed ? n - 1 : -1);
+        final int next = i < n - 1 ? i + 1 : (closed ? 0 : -1);
+        if (prev < 0 || next < 0) return false; // OPEN ENDPOINT, HANDLED AS A CAP
+        final double inx = p[2 * i] - p[2 * prev], iny = p[2 * i + 1] - p[2 * prev + 1];
+        final double outx = p[2 * next] - p[2 * i], outy = p[2 * next + 1] - p[2 * i + 1];
+        final double li = Math.sqrt(inx * inx + iny * iny), lo = Math.sqrt(outx * outx + outy * outy);
+        if (li < 1e-9 || lo < 1e-9) return true; // DUPLICATE VERTEX: LET A DISC COVER IT
+        final double cosTurn = (inx * outx + iny * outy) / (li * lo);
+        final double cosHalf = Math.sqrt(Math.max(0, (1 + cosTurn) / 2));
+        return hw * (1 - cosHalf) > 0.25;
+    }
+
+    private static void segmentQuad(final Path g, final double x0, final double y0, final double x1, final double y1, final double hw) throws CodecException {
+        final double dx = x1 - x0, dy = y1 - y0;
+        final double len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 1e-9) return; // ZERO-LENGTH SEGMENT: THE VERTEX DISC COVERS IT
+        final double nx = -dy / len * hw, ny = dx / len * hw;
+        // VERTEX ORDER MATCHES THE ELLIPSE (DISC) WINDING SO THE NON-ZERO UNION OF QUADS + CAP/JOIN
+        // DISCS NEVER CANCELS IN THEIR OVERLAP (REVERSED ORDER WOULD NOTCH EVERY CAP AND JOINT)
+        g.moveTo(x0 + nx, y0 + ny);
+        g.lineTo(x0 - nx, y0 - ny);
+        g.lineTo(x1 - nx, y1 - ny);
+        g.lineTo(x1 + nx, y1 + ny);
+        g.close();
     }
 }

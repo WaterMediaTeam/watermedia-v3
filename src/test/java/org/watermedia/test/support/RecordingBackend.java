@@ -2,11 +2,9 @@ package org.watermedia.test.support;
 
 import org.joml.Matrix4f;
 import org.watermedia.api.player.GFXEngine;
-import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.RenderEngine;
 import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.app.render.TextureHandle;
 
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -35,6 +33,9 @@ public final class RecordingBackend implements RenderBackend {
     public float[] lastVertices = new float[0];
     public float[] lastClear = new float[0];
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Puts a fresh {@link RenderEngine} over this backend behind {@link RenderSystem} and returns it. */
     public RenderEngine install() {
         final RenderEngine engine = new RenderEngine(this);
@@ -85,8 +86,9 @@ public final class RecordingBackend implements RenderBackend {
     @Override public void clearClip() { this.clipClears++; }
     @Override public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) { return () -> null; }
 
+    // ==========================================================================
     // UTILITY
-
+    // ==========================================================================
     // RenderSystem KEEPS ITS ENGINE PRIVATE TO THE RENDER THREAD THAT BUILDS IT
     private static void engine(final RenderEngine engine) {
         try {

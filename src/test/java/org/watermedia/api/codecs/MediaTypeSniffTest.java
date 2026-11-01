@@ -24,6 +24,9 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 @DisplayName("MediaType sniffing")
 public class MediaTypeSniffTest {
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @TestFactory
     @DisplayName("On-disk fixtures")
     Iterable<DynamicTest> sniffsFixtures() {
@@ -94,7 +97,9 @@ public class MediaTypeSniffTest {
         return tests;
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
     private static MediaType sniff(final byte[] data) throws Exception {
         try (final ByteArrayInputStream in = new ByteArrayInputStream(data)) {
             return CodecsAPI.sniff(in);

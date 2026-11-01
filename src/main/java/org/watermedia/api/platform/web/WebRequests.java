@@ -10,10 +10,21 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
-/** Request and playlist helpers shared by the web platform handlers. */
+/** Host, request and playlist helpers shared by the web platform handlers. */
 final class WebRequests {
     private WebRequests() {}
+
+    // CASE-INSENSITIVE HOST-SUFFIX MATCH WITH A DOT BOUNDARY: host EQUALS OR ENDS WITH ".<suffix>", SO SUBDOMAINS
+    // (www./m.) MATCH BUT LOOKALIKES LIKE "notyoutube.com" DO NOT; A NULL HOST (file:// URIs) NEVER MATCHES
+    static boolean hostMatches(final String host, final String... suffixes) {
+        if (host == null) return false;
+        final String h = host.toLowerCase(Locale.ROOT);
+        for (final String suffix: suffixes)
+            if (h.equals(suffix) || h.endsWith("." + suffix)) return true;
+        return false;
+    }
 
     // GETS uri AS JSON; A MALFORMED uri FAILS LIKE ANY OTHER REQUEST, SO resolve() NEVER LEAKS IllegalArgumentException
     static <T> T fetchJson(final String platform, final String uri, final Class<T> type) throws PlatformException {

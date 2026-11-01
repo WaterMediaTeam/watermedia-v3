@@ -54,11 +54,9 @@ public final class AppBootstrap {
     private static final Path PREFERENCES = Path.of("config", AppConfig.ID + ".properties");
     private BootstrapWindow window;
 
-    public interface Extension {
-        default String name() { return this.getClass().getSimpleName(); }
-        void load();
-    }
-
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     public static void main(final String... args) {
         final AppBootstrap bootstrap = new AppBootstrap();
         final boolean application = System.getProperty(APP_FLAG) != null;
@@ -96,73 +94,9 @@ public final class AppBootstrap {
         }
     }
 
-    // THE -D OVERRIDE WINS FOR ONE LAUNCH, THEN THE SAVED ENGINE, THEN VULKAN; THE FILE IS ONLY READ, THE APP OWNS IT
-    private String engine() {
-        final String override = engine(System.getProperty(ENGINE_PROP));
-        if (override != null) return override;
-        final Properties preferences = new Properties();
-        try (final InputStream input = Files.newInputStream(PREFERENCES)) { preferences.load(input); }
-        catch (final NoSuchFileException absent) {} // FIRST LAUNCH
-        catch (final IOException | IllegalArgumentException failure) { this.log("Cannot read the app preferences: " + failure.getMessage()); }
-        final String saved = engine(preferences.getProperty(AppConfig.ENGINE));
-        return saved != null ? saved : "vulkan";
-    }
-
-    private static String engine(final String value) {
-        if (value == null) return null;
-        final String name = value.trim().toLowerCase(Locale.ROOT);
-        return name.equals("opengl") || name.equals("vulkan") ? name : null;
-    }
-
-    private static Properties versions() throws IOException {
-        final Properties versions = new Properties();
-        try (final InputStream source = AppBootstrap.class.getResourceAsStream("/bootstrap.properties")) {
-            if (source == null) throw new IOException("Missing bootstrap.properties");
-            versions.load(source);
-        }
-        return versions;
-    }
-
-    private static List<Dependency> dependencies(final Properties versions) throws IOException {
-        final String platform = IOTool.platformClassifier();
-        if (platform.equals("unsupported")) throw new IOException("Unsupported operating system or CPU architecture");
-        final String natives = "natives-" + platform;
-        final String lwjgl = version(versions, "lwjgl");
-        final List<Dependency> dependencies = new ArrayList<>();
-        for (final String artifact: List.of("log4j-api", "log4j-core"))
-            dependencies.add(new Dependency("org/apache/logging/log4j", artifact, version(versions, "log4j"), null, false));
-        dependencies.add(new Dependency("com/google/code/gson", "gson", version(versions, "gson"), null, false));
-        dependencies.add(new Dependency("org/joml", "joml", version(versions, "joml"), null, false));
-        for (final String artifact: List.of("lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal")) {
-            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, null, false));
-            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, natives, false));
-        }
-        // KEEP VULKAN AVAILABLE FOR RUNTIME ENGINE SWITCHES, EVEN WHEN STARTING WITH OPENGL
-        for (final String artifact: List.of("lwjgl-vulkan", "lwjgl-shaderc")) {
-            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, null, true));
-            if (artifact.equals("lwjgl-shaderc") || platform.startsWith("macos"))
-                dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, natives, true));
-        }
-        return dependencies;
-    }
-
-    private static String version(final Properties versions, final String name) throws IOException {
-        final String value = versions.getProperty(name + "_version");
-        if (value == null || !value.matches("[0-9][A-Za-z0-9_.-]*"))
-            throw new IOException("Invalid bootstrap dependency version: " + name);
-        return value;
-    }
-
-    private record Dependency(String group, String artifact, String version, String classifier, boolean optional) {
-        String name() {
-            return this.artifact + "-" + this.version + (this.classifier == null ? "" : "-" + this.classifier) + ".jar";
-        }
-
-        URI source() {
-            return URI.create(MAVEN + this.group + "/" + this.artifact + "/" + this.version + "/" + this.name());
-        }
-    }
-
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private Set<Path> prepare() throws Exception {
         final Set<Path> jars = new LinkedHashSet<>();
         // OUR RESOURCES MUST WIN OVER IDENTICALLY NAMED RESOURCES IN EXTENSION JARS
@@ -208,6 +142,79 @@ public final class AppBootstrap {
         }
         if (!binaries) this.log("WaterMedia Binaries is not installed; video decoding is unavailable.");
         return jars;
+    }
+
+    // THE -D OVERRIDE WINS FOR ONE LAUNCH, THEN THE SAVED ENGINE, THEN VULKAN; THE FILE IS ONLY READ, THE APP OWNS IT
+    private String engine() {
+        final String override = engine(System.getProperty(ENGINE_PROP));
+        if (override != null) return override;
+        final Properties preferences = new Properties();
+        try (final InputStream input = Files.newInputStream(PREFERENCES)) { preferences.load(input); }
+        catch (final NoSuchFileException absent) {} // FIRST LAUNCH
+        catch (final IOException | IllegalArgumentException failure) { this.log("Cannot read the app preferences: " + failure.getMessage()); }
+        final String saved = engine(preferences.getProperty(AppConfig.ENGINE));
+        return saved != null ? saved : "vulkan";
+    }
+
+    private static String engine(final String value) {
+        if (value == null) return null;
+        final String name = value.trim().toLowerCase(Locale.ROOT);
+        return name.equals("opengl") || name.equals("vulkan") ? name : null;
+    }
+
+    private BootstrapWindow window() throws Exception {
+        if (this.window == null) EventQueue.invokeAndWait(() -> this.window = new BootstrapWindow());
+        return this.window;
+    }
+
+    private void log(final String message) {
+        System.out.println(message);
+        if (this.window != null) {
+            final BootstrapWindow window = this.window;
+            EventQueue.invokeLater(() -> window.details.append(message + "\n"));
+        }
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static Properties versions() throws IOException {
+        final Properties versions = new Properties();
+        try (final InputStream source = AppBootstrap.class.getResourceAsStream("/bootstrap.properties")) {
+            if (source == null) throw new IOException("Missing bootstrap.properties");
+            versions.load(source);
+        }
+        return versions;
+    }
+
+    private static List<Dependency> dependencies(final Properties versions) throws IOException {
+        final String platform = IOTool.platformClassifier();
+        if (platform.equals("unsupported")) throw new IOException("Unsupported operating system or CPU architecture");
+        final String natives = "natives-" + platform;
+        final String lwjgl = version(versions, "lwjgl");
+        final List<Dependency> dependencies = new ArrayList<>();
+        for (final String artifact: List.of("log4j-api", "log4j-core"))
+            dependencies.add(new Dependency("org/apache/logging/log4j", artifact, version(versions, "log4j"), null, false));
+        dependencies.add(new Dependency("com/google/code/gson", "gson", version(versions, "gson"), null, false));
+        dependencies.add(new Dependency("org/joml", "joml", version(versions, "joml"), null, false));
+        for (final String artifact: List.of("lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal")) {
+            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, null, false));
+            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, natives, false));
+        }
+        // KEEP VULKAN AVAILABLE FOR RUNTIME ENGINE SWITCHES, EVEN WHEN STARTING WITH OPENGL
+        for (final String artifact: List.of("lwjgl-vulkan", "lwjgl-shaderc")) {
+            dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, null, true));
+            if (artifact.equals("lwjgl-shaderc") || platform.startsWith("macos"))
+                dependencies.add(new Dependency("org/lwjgl", artifact, lwjgl, natives, true));
+        }
+        return dependencies;
+    }
+
+    private static String version(final Properties versions, final String name) throws IOException {
+        final String value = versions.getProperty(name + "_version");
+        if (value == null || !value.matches("[0-9][A-Za-z0-9_.-]*"))
+            throw new IOException("Invalid bootstrap dependency version: " + name);
+        return value;
     }
 
     // THE DIRECTORY IS A PARAMETER SO THE TESTS EXTRACT INTO THEIR OWN TEMPORARY FOLDER
@@ -293,16 +300,21 @@ public final class AppBootstrap {
         return new ProcessBuilder(command).inheritIO().start().waitFor();
     }
 
-    private BootstrapWindow window() throws Exception {
-        if (this.window == null) EventQueue.invokeAndWait(() -> this.window = new BootstrapWindow());
-        return this.window;
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    public interface Extension {
+        default String name() { return this.getClass().getSimpleName(); }
+        void load();
     }
 
-    private void log(final String message) {
-        System.out.println(message);
-        if (this.window != null) {
-            final BootstrapWindow window = this.window;
-            EventQueue.invokeLater(() -> window.details.append(message + "\n"));
+    private record Dependency(String group, String artifact, String version, String classifier, boolean optional) {
+        String name() {
+            return this.artifact + "-" + this.version + (this.classifier == null ? "" : "-" + this.classifier) + ".jar";
+        }
+
+        URI source() {
+            return URI.create(MAVEN + this.group + "/" + this.artifact + "/" + this.version + "/" + this.name());
         }
     }
 

@@ -24,6 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("ListRow")
 public class ListRowTest {
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("Placement")
     class Placement {

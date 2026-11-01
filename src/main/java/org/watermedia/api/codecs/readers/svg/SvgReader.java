@@ -41,10 +41,17 @@ public final class SvgReader extends ImageReader {
         this.h = Math.max(1, (int) Math.round(ih * s));
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     @Override public int width() { return this.w; }
     @Override public int height() { return this.h; }
-    @Override protected PixelFormat decodedFormat() { return this.format; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.EMPTY; }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    @Override protected PixelFormat decodedFormat() { return this.format; }
 
     @Override
     protected boolean hasMore() {
@@ -54,7 +61,7 @@ public final class SvgReader extends ImageReader {
     @Override
     protected ByteBuffer decode() throws IOException {
         if (this.rendered == null) {
-            final RasterOutput out = new RasterOutput(this.w, this.h);
+            final SvgRasterizer out = new SvgRasterizer(this.w, this.h);
             this.document.render(out);
             final int[] canvas = out.canvas(); // 0xAARRGGBB, EXACTLY w*h INTS
             if (this.format == PixelFormat.RGBA) {
@@ -84,6 +91,9 @@ public final class SvgReader extends ImageReader {
         this.rendered = null;
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     // MINIMAL InputStream VIEW OVER A ByteBuffer SO StAX READS THE DOCUMENT WITHOUT COPYING IT TO A byte[]
     private static final class ByteBufferInputStream extends InputStream {
         private final ByteBuffer buf;

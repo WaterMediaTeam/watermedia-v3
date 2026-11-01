@@ -59,6 +59,10 @@ final class NetworkCache {
 
     private NetworkCache() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /** Opens the cache store at {@code dir}; a previous store, if any, is simply replaced. */
     public static synchronized void start(final Path dir) throws IOException {
         final Store store = new Store(dir.toAbsolutePath());
@@ -140,6 +144,10 @@ final class NetworkCache {
         if (done.file() == null || isPlaylist(done.body().contentType)) return null;
         return new CachedFile(done.file(), false, done.body().contentType);
     }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
 
     // ONE TRANSFER PER KEY, SHARED BY CONCURRENT CALLERS. SOCKET I/O IGNORES INTERRUPTS, SO THE TRANSFER RUNS ON A CACHE WORKER
     // AND EVERY CALLER WAITS INTERRUPTIBLY: A STOPPED PLAYER LEAVES AT ONCE AND THE SHARED TRANSFER STILL FILLS THE CACHE
@@ -387,7 +395,7 @@ final class NetworkCache {
                 return -1L;
             }
         }
-        // NO CACHING HEADERS — BOUND THE LIFETIME INSTEAD OF CACHING FOREVER.
+        // NO CACHING HEADERS: BOUND THE LIFETIME INSTEAD OF CACHING FOREVER.
         return now + DEFAULT_TTL_MS;
     }
 
@@ -403,7 +411,7 @@ final class NetworkCache {
     }
 
     // CANONICAL CACHE KEY: uri + '\n' + LOWERCASED "name:value" LINES + OPTIONAL "accept:" TAIL.
-    // THE BYTE STREAM MUST STAY STABLE — ANY DRIFT ORPHANS EVERY EXISTING ON-DISK CACHE.
+    // THE BYTE STREAM MUST STAY STABLE: ANY DRIFT ORPHANS EVERY EXISTING ON-DISK CACHE.
     private static byte[] keyHash(final URI uri, final HttpHeaders headers, final String accept) {
         final StringBuilder key = new StringBuilder(uri.toASCIIString()).append('\n');
         if (headers != null && !headers.empty()) {
@@ -414,6 +422,10 @@ final class NetworkCache {
         if (accept != null && (headers == null || !headers.has("Accept"))) key.append("accept:").append(accept);
         return DataTool.sha256(key.toString().getBytes(StandardCharsets.UTF_8));
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     public record CachedBytes(byte[] bytes, String contentType, boolean cached, long expiresAt) {}
     public record CachedFile(Path path, boolean cached, String contentType) {}

@@ -46,7 +46,7 @@ public final class MaliciousImages {
         // DIRECT BUFFER IS RESERVED. THE TRAILING NEWLINE ENDS THE HEIGHT TOKEN SO THE HEADER PARSES
         write(dir, "direct-memory-bomb.pam", ascii("P4\n16384 16384\n"));
 
-        // DEPTH 65535 WOULD SIZE A 2 GiB ROW FROM 69 BYTES (CVE-2017-2581's RASTER ARITHMETIC); NetpbmHeader BINDS DEPTH
+        // DEPTH 65535 WOULD SIZE A 2 GiB ROW FROM 69 BYTES (CVE-2017-2581's RASTER ARITHMETIC); NetpbmReader.Header BINDS DEPTH
         // TO THE TUPLE TYPE, SO RGB WITH ANY DEPTH BUT 3 IS REFUSED BEFORE A ROW IS SIZED. HEIGHT 1 DODGES SIZE HEURISTICS
         write(dir, "pam-depth-bomb.pam", ascii(
                 "P7\nWIDTH 16384\nHEIGHT 1\nDEPTH 65535\nMAXVAL 65535\nTUPLTYPE RGB\nENDHDR\n"));
@@ -57,7 +57,7 @@ public final class MaliciousImages {
         write(dir, "truncated-raster.pam", ascii("P5\n1 1 255\n"));
 
         // A 60 KB TUPLTYPE OF CARRIAGE RETURNS AND FORGED LOG PREFIXES, AIMED AT THE MESSAGE THE PLAYER LOGS;
-        // NetpbmHeader CAPS THE VALUE AT 256 CHARACTERS AND BLANKS EVERY NON-PRINTABLE BYTE
+        // NetpbmReader.Header CAPS THE VALUE AT 256 CHARACTERS AND BLANKS EVERY NON-PRINTABLE BYTE
         write(dir, "tupltype-log-injection.pam", ascii(
                 "P7\nWIDTH 1\nHEIGHT 1\nDEPTH 1\nMAXVAL 1\nTUPLTYPE "
                         + "\rX [12:00:00] [Render thread/INFO]: forged log line ".repeat(1_200)
@@ -71,7 +71,7 @@ public final class MaliciousImages {
         // REFERENCE DECODER AND NEVER AS 16384, WHICH WOULD LET AN UPSTREAM SIZE CHECK SEE DIFFERENT DIMENSIONS
         write(dir, "comment-token-merge.pam", ascii("P5\n1#x\n6384 100 255\n"));
 
-        // VERTICAL TABS AS SEPARATORS: THE HEADER PRE-SCANNER AND THE TOKEN PARSER SHARE NetpbmHeader.whitespace,
+        // VERTICAL TABS AS SEPARATORS: THE HEADER PRE-SCANNER AND THE TOKEN PARSER SHARE NetpbmReader.whitespace,
         // SO BOTH AGREE THE RASTER 0x10..0x13 STARTS RIGHT AFTER THE MAXVAL TOKEN
         write(dir, "whitespace-desync.pam", new ImageBytes()
                 .ascii("P5").u8(0x0B).ascii("2").u8(0x0B).ascii("2").u8(0x0B).ascii("255").u8(0x0A)

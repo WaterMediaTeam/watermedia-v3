@@ -3,9 +3,8 @@ package org.watermedia.api.codecs.readers;
 import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.codecs.common.Limits;
-import org.watermedia.api.codecs.readers.netpbm.NetpbmHeader;
-import org.watermedia.api.codecs.readers.netpbm.NetpbmType;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
@@ -34,8 +33,8 @@ public final class NetpbmReader extends ImageReader {
     private static final int MAX_SAMPLE_DIGITS = 5;
     private static final byte[] ENDHDR = "ENDHDR".getBytes(StandardCharsets.US_ASCII);
 
-    private final NetpbmType type;
-    private final NetpbmHeader header;
+    private final Type type;
+    private final Header header;
     private final ByteBuffer directOut;
     private final int rasterStart;
     private boolean delivered;
@@ -46,9 +45,9 @@ public final class NetpbmReader extends ImageReader {
     public NetpbmReader(final ByteBuffer data, final int version, final PixelFormat requestedFormat) throws IOException {
         super(data, requestedFormat);
         if (version < 1 || version > 7) throw new IllegalArgumentException("Netpbm version must be 1 to 7, not " + version);
-        // RE-SYNTHESIZE "P<digit>" SO NetpbmHeader.parse SEES THE WHOLE HEADER; readHeaderBytes CAPS THE BUFFERING
-        this.header = NetpbmHeader.parse(ByteBuffer.wrap(readHeaderBytes(this.data, version)));
-        this.type = NetpbmType.values()[this.header.version() - 1];
+        // RE-SYNTHESIZE "P<digit>" SO Header.read SEES THE WHOLE HEADER; readHeaderBytes CAPS THE BUFFERING
+        this.header = Header.read(ByteBuffer.wrap(readHeaderBytes(this.data, version)));
+        this.type = Type.values()[this.header.version() - 1];
 
         // THE PIXEL BUDGET IS WHAT THE VERY NEXT STATEMENT RESERVES: A PER-AXIS CAP ALONE LETS A 15-BYTE
         // HEADER RESERVE 1 GiB OF DIRECT MEMORY BEFORE ONE RASTER BYTE IS READ
@@ -60,21 +59,21 @@ public final class NetpbmReader extends ImageReader {
         this.rasterStart = this.data.position();
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     @Override public int width() { return this.header.width(); }
     @Override public int height() { return this.header.height(); }
-    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.EMPTY; }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
 
     @Override
     protected boolean hasMore() {
         return !this.delivered;
-    }
-
-    @Override
-    protected boolean rewind() {
-        this.data.position(this.rasterStart);
-        this.delivered = false;
-        return true;
     }
 
     @Override
@@ -142,6 +141,16 @@ public final class NetpbmReader extends ImageReader {
         return this.directOut;
     }
 
+    @Override
+    protected boolean rewind() {
+        this.data.position(this.rasterStart);
+        this.delivered = false;
+        return true;
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private void decodeGrayscale(final int depth, final int maxVal, final boolean hasAlpha) throws CodecException {
         final int bytes = maxVal < 256 ? 1 : 2;
         int offset = this.raster((long) this.header.width() * depth * bytes);
@@ -195,7 +204,7 @@ public final class NetpbmReader extends ImageReader {
                 continue;
             }
             if (c < 0) throw new CodecException("Truncated Netpbm plain raster");
-            if (!NetpbmHeader.whitespace(c)) break;
+            if (!whitespace(c)) break;
         }
         if (bit) {
             if (c != '0' && c != '1') throw new CodecException("Invalid plain bitmap bit: " + (char) c);
@@ -214,8 +223,17 @@ public final class NetpbmReader extends ImageReader {
         return value;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static int readUnsignedOrEnd(final ByteBuffer in) {
         return in.hasRemaining() ? in.get() & 0xFF : -1;
+    }
+
+    // NETPBM HEADER WHITESPACE (C isspace()); THE HEADER PRE-SCANNER, THE TOKEN PARSER AND THE PLAIN RASTER SHARE IT
+    // SO ALL THREE AGREE ON WHERE A TOKEN ENDS
+    private static boolean whitespace(final int c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C;
     }
 
     // RE-EMITS "P<digit>" THEN DRAINS THE ASCII HEADER FROM THE STREAM UNTIL THE RASTER BEGINS. THE BOUNDARY
@@ -254,7 +272,7 @@ public final class NetpbmReader extends ImageReader {
         }
 
         // P1..P6: "Pn WSP width WSP height [WSP maxval] WSP" WITH '#' COMMENTS TO '\n'; BITMAPS (P1/P4) CARRY 3 TOKENS.
-        // THE TOKEN RULES MUST MATCH NetpbmHeader.nextToken EXACTLY: THIS SCAN DECIDES WHERE THE RASTER STARTS AND
+        // THE TOKEN RULES MUST MATCH Header.nextToken EXACTLY: THIS SCAN DECIDES WHERE THE RASTER STARTS AND
         // THAT ONE WHAT THE DIMENSIONS ARE, SO A DISAGREEMENT DESYNCS THEM
         final int expectedTokens = (version == 1 || version == 4) ? 3 : 4;
         int tokens = 1; // ALREADY WROTE "Pn"
@@ -275,12 +293,188 @@ public final class NetpbmReader extends ImageReader {
                 if (inToken) { tokens++; inToken = false; }
                 continue;
             }
-            if (NetpbmHeader.whitespace(b)) {
+            if (whitespace(b)) {
                 if (inToken) { tokens++; inToken = false; }
             } else {
                 inToken = true;
             }
         }
         return out.toByteArray();
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    // NETPBM VARIANTS IN MAGIC-NUMBER ORDER: PLAIN ASCII P1..P3, THEN BINARY P4..P7. THE ORDINAL IS THE MAGIC DIGIT
+    // MINUS ONE, SO NEVER REORDER
+    private enum Type {
+        PBM_PLAIN,
+        PGM_PLAIN,
+        PPM_PLAIN,
+        PBM,
+        PGM,
+        PPM,
+        PAM
+    }
+
+    // PARSED HEADER OF ANY VARIANT; depth AND maxVal ARE NULL WHEN THE VARIANT DOES NOT DECLARE THEM, AND tuplType
+    // FOLLOWS THE PAM SPEC SPELLING
+    private record Header(int version, int width, int height, Integer depth, Integer maxVal, String tuplType) {
+        // TUPLTYPE IS THE ONLY FREE-FORM HEADER VALUE AND IT REACHES EXCEPTION MESSAGES (AND THE LOG) VERBATIM.
+        // A REAL PAM HEADER IS UNDER 200 BYTES IN TOTAL, SO THIS IS ALREADY GENEROUS
+        private static final int MAX_TUPLTYPE_CHARS = 256;
+
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
+        // PARSES AND VALIDATES AN ASCII HEADER STARTING AT ITS "Pn" TOKEN: A PAM TUPLE TYPE OUTSIDE THE SIX THE READER
+        // DECODES IS AN UnsupportedFormatException, A MALFORMED HEADER OR AN OUT-OF-RANGE VALUE A CodecException
+        static Header read(final ByteBuffer data) throws CodecException {
+            int version = 0;
+            int width = 0;
+            int height = 0;
+            Integer depth = null;
+            Integer maxVal = null;
+            String tuplType = "";
+            boolean tuplTypeSeen = false;
+            int tokenIndex = 0;
+
+            label:
+            while (data.hasRemaining()) {
+                final String token = nextToken(data);
+                if (token.isEmpty()) break;
+                tokenIndex++;
+
+                if (tokenIndex == 1 && token.startsWith("P")) {
+                    version = parseInt(token.substring(1));
+                    continue;
+                }
+
+                switch (version) {
+                    case 1, 4 -> {
+                        switch (tokenIndex) {
+                            case 2 -> width = parseInt(token);
+                            case 3 -> {
+                                height = parseInt(token);
+                                break label;
+                            }
+                        }
+                    }
+                    case 2, 3, 5, 6 -> {
+                        switch (tokenIndex) {
+                            case 2 -> width = parseInt(token);
+                            case 3 -> height = parseInt(token);
+                            case 4 -> {
+                                maxVal = parseInt(token);
+                                break label;
+                            }
+                        }
+                    }
+                    case 7 -> {
+                        // PAM: KEY-VALUE PAIRS UNTIL ENDHDR
+                        switch (token) {
+                            case "WIDTH" -> width = nextTokenInt(data);
+                            case "HEIGHT" -> height = nextTokenInt(data);
+                            case "DEPTH" -> depth = nextTokenInt(data);
+                            case "MAXVAL" -> maxVal = nextTokenInt(data);
+                            case "TUPLTYPE" -> {
+                                // A REPEATED TUPLTYPE IS REJECTED: CONCATENATING THEM WOULD LET ONE FILE GROW AN UNBOUNDED STRING
+                                if (tuplTypeSeen) throw new CodecException("Duplicate PAM TUPLTYPE");
+                                tuplTypeSeen = true;
+                                tuplType = readRestOfLine(data).trim();
+                            }
+                            case "ENDHDR" -> {
+                                break label;
+                            }
+                        }
+                    }
+                    default -> throw new CodecException("Unknown Netpbm version: " + version);
+                }
+            }
+
+            if (width <= 0) throw new CodecException("Invalid WIDTH: " + width + ". Must be greater than 0.");
+            if (height <= 0) throw new CodecException("Invalid HEIGHT: " + height + ". Must be greater than 0.");
+
+            // EVERYTHING BUT A BITMAP REQUIRES MAXVAL; A TRUNCATED HEADER LEAVES IT NULL AND NPEs THE DECODER UNDER A BLANKET CATCH
+            if (version != 1 && version != 4 && maxVal == null)
+                throw new CodecException("Missing MAXVAL for P" + version);
+            if (maxVal != null && (maxVal <= 0 || maxVal > 65_535))
+                throw new CodecException("Invalid MAXVAL: " + maxVal + ". Must be between 1 and 65535.");
+
+            if (version == 7) {
+                // THE TUPLE TYPE BELOW BOUNDS DEPTH TO 1..4; A MISSING OR NON-POSITIVE ONE IS MALFORMED WHATEVER THE TYPE
+                if (depth == null || depth <= 0)
+                    throw new CodecException("Invalid DEPTH: " + depth + ". Must be greater than 0.");
+
+                // DEPTH SIZES EVERY ROW AND IS THE ONE RASTER DIMENSION THE PIXEL CAP DOES NOT COVER, SO IT IS BOUND TO
+                // THE TUPLE TYPE: "DEPTH 65535 / TUPLTYPE RGB" IS A 2 GiB ROW DESCRIBED BY 69 BYTES. ANY OTHER TUPLE TYPE
+                // (OR NONE) IS VALID PAM WITH NO SAMPLE LAYOUT THE READER KNOWS, SO IT IS REFUSED BEFORE A RASTER IS SIZED
+                final int expectedDepth = switch (tuplType) {
+                    case "BLACKANDWHITE", "GRAYSCALE" -> 1;
+                    case "BLACKANDWHITE_ALPHA", "GRAYSCALE_ALPHA" -> 2;
+                    case "RGB" -> 3;
+                    case "RGB_ALPHA" -> 4;
+                    default -> throw new UnsupportedFormatException("Unsupported PAM tuple type: " + (tuplType.isEmpty() ? "(none)" : tuplType));
+                };
+                if (depth != expectedDepth)
+                    throw new CodecException("PAM DEPTH " + depth + " does not match TUPLTYPE " + tuplType);
+                if (tuplType.startsWith("BLACKANDWHITE") && maxVal != 1)
+                    throw new CodecException("PAM " + tuplType + " requires MAXVAL 1, not " + maxVal);
+            }
+
+            return new Header(version, width, height, depth, maxVal, tuplType);
+        }
+
+        // ======================================================================
+        // UTILITY
+        // ======================================================================
+        private static int nextTokenInt(final ByteBuffer buf) throws CodecException {
+            final String valueToken = nextToken(buf);
+            if (valueToken.isBlank()) throw new CodecException("Expected integer token but found blank");
+            return parseInt(valueToken);
+        }
+
+        private static int parseInt(final String string) throws CodecException {
+            try {
+                return Integer.parseInt(string);
+            } catch (final NumberFormatException e) {
+                throw new CodecException(e);
+            }
+        }
+
+        private static String nextToken(final ByteBuffer buf) {
+            final StringBuilder sb = new StringBuilder();
+            while (buf.hasRemaining()) {
+                // & 0xFF: A BARE CAST SIGN-EXTENDS 0x80.. INTO U+FF80.., CORRUPTING THE TOKEN AND DOUBLING ITS FOOTPRINT
+                final char c = (char) (buf.get() & 0xFF);
+                if (c == '#') {
+                    // A COMMENT ENDS THE CURRENT TOKEN AND RUNS TO END OF LINE, SO "1#x\n6384" STAYS THE TWO
+                    // TOKENS EVERY REFERENCE DECODER READS INSTEAD OF MERGING INTO "16384"
+                    while (buf.hasRemaining() && buf.get() != '\n') { /* SKIP THE COMMENT BODY */ }
+                    if (!sb.isEmpty()) break;
+                    continue;
+                }
+                if (whitespace(c)) {
+                    if (!sb.isEmpty()) break;
+                    continue;
+                }
+                sb.append(c);
+            }
+            return sb.toString();
+        }
+
+        // READS A TAG VALUE UP TO ITS END OF LINE. THE VALUE IS ATTACKER-CHOSEN AND IS INTERPOLATED INTO
+        // MESSAGES THE PLAYER LOGS VERBATIM, SO IT IS BOUNDED AND EVERYTHING OUTSIDE PRINTABLE ASCII
+        // BECOMES A SPACE: A RAW CR/LF WOULD LET AN IMAGE FORGE WHOLE LINES INTO latest.log
+        private static String readRestOfLine(final ByteBuffer buf) throws CodecException {
+            final StringBuilder sb = new StringBuilder();
+            while (buf.hasRemaining()) {
+                final char c = (char) (buf.get() & 0xFF);
+                if (c == '\n') break;
+                if (sb.length() >= MAX_TUPLTYPE_CHARS) throw new CodecException("PAM TUPLTYPE too long");
+                sb.append(c >= 0x20 && c < 0x7F ? c : ' ');
+            }
+            return sb.toString();
+        }
     }
 }

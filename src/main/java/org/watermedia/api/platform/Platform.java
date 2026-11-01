@@ -13,10 +13,14 @@ import java.util.List;
 /**
  * Contract for a platform handler. A single {@link #resolve(URI)} call both
  * decides whether the URI belongs to this platform and resolves it to a raw
- * {@link Resolution} — direct links, dimensions, metadata. {@link MRL.Source}
+ * {@link Resolution} (direct links, dimensions, metadata). {@link MRL.Source}
  * construction lives in {@link MRL}, not here.
  */
 public interface Platform {
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** Provides the human-readable platform name (e.g. "Kick", "BiliBili"). */
     String name();
@@ -24,13 +28,13 @@ public interface Platform {
     /**
      * Resolves the URI to one or more sources with their qualities and metadata. The contract has three outcomes:
      * <ul>
-     *   <li>{@code null} — the URI does not belong to this platform (foreign host or scheme); the
+     *   <li>{@code null}: the URI does not belong to this platform (foreign host or scheme); the
      *       caller must keep probing other handlers.</li>
-     *   <li>a thrown {@link PlatformException} — the URI belongs to this platform but cannot be
+     *   <li>a thrown {@link PlatformException}: the URI belongs to this platform but cannot be
      *       resolved: a URL shape the handler does not support ({@link PlatformException#unsupported}),
      *       a parse or network failure, or mature content while {@code platforms.allowMatureContent}
      *       is off ({@link MatureContentException}).</li>
-     *   <li>a {@link Resolution} instance — the URI was resolved successfully.</li>
+     *   <li>a {@link Resolution} instance: the URI was resolved successfully.</li>
      * </ul>
      * The call blocks on network I/O and may run on several loader threads at once, so an
      * implementation must be thread-safe. It translates every failure it meets, an interrupted wait
@@ -61,6 +65,10 @@ public interface Platform {
     default List<PlatformResult> search(final String query, final int limit) throws PlatformException {
         return List.of();
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     /**
      * Result of {@link #resolve(URI)}. May carry several {@link Source sources} when the URI is a

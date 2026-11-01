@@ -30,6 +30,10 @@ public class TxReleaseTest {
     private static final long RELEASE_RETURN_MS = 2_000L;
     private static final long WAIT_MS = 3_000L;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeAll static void boot() { MediaBootstrap.client(); }
 
     @Test

@@ -27,6 +27,21 @@ public class VP8LosslessDecoderTest {
 
     private static final int[] ZERO = {0};
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // ONE HUFFMAN GROUP OF SIMPLE PREFIX CODES (GREEN, RED, BLUE, ALPHA, THEN A ZERO-BIT DISTANCE CODE): ONE 8-BIT SYMBOL
+    // COSTS ZERO BITS PER PIXEL, TWO COST ONE BIT AND A 0 PICKS THE FIRST
+    private static void group(final Bits bits, final int[] green, final int[] red, final int[] blue, final int[] alpha) {
+        for (final int[] symbols: new int[][] { green, red, blue, alpha, ZERO }) {
+            bits.put(1, 1).put(symbols.length - 1, 1).put(1, 1).put(symbols[0], 8);
+            if (symbols.length == 2) bits.put(symbols[1], 8);
+        }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Bundled palette")
     class BundledPalette {
@@ -99,15 +114,6 @@ public class VP8LosslessDecoderTest {
             final ByteBuffer alph = ByteBuffer.allocate(1 + stream.length).put((byte) 0x01).put(stream).flip();
             final byte[] alpha = AlphaDecoder.decode(alph, 5, 2);
             assertArrayEquals(new byte[]{0, 85, (byte) 170, (byte) 255, 0, 0, 85, (byte) 170, (byte) 255, 0}, alpha);
-        }
-    }
-
-    // ONE HUFFMAN GROUP OF SIMPLE PREFIX CODES (GREEN, RED, BLUE, ALPHA, THEN A ZERO-BIT DISTANCE CODE): ONE 8-BIT SYMBOL
-    // COSTS ZERO BITS PER PIXEL, TWO COST ONE BIT AND A 0 PICKS THE FIRST
-    private static void group(final Bits bits, final int[] green, final int[] red, final int[] blue, final int[] alpha) {
-        for (final int[] symbols: new int[][] { green, red, blue, alpha, ZERO }) {
-            bits.put(1, 1).put(symbols.length - 1, 1).put(1, 1).put(symbols[0], 8);
-            if (symbols.length == 2) bits.put(symbols[1], 8);
         }
     }
 }

@@ -33,19 +33,23 @@ import static org.watermedia.tools.JSONTool.*;
 public final class TikTokPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(TikTokPlatform.class.getSimpleName());
     public static final String NAME = "TikTok";
+    private static final String[] HOSTS = { "www.tiktok.com", "tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "m.tiktok.com" };
+    private static final String[] SHORT_HOSTS = { "vm.tiktok.com", "vt.tiktok.com" };
     private static final String TIKTOK_REFERER = "https://www.tiktok.com/";
     private static final Pattern VIDEO_ID_PATTERN = Pattern.compile("/video/(\\d+)");
     private static final Pattern EMBED_ID_PATTERN = Pattern.compile("/embed(?:/v2)?/(\\d+)");
     private static final Pattern UNIVERSAL_DATA_PATTERN = Pattern.compile("<script[^>]+id=\"__UNIVERSAL_DATA_FOR_REHYDRATION__\"[^>]*>\\s*(\\{.*?})\\s*</script>", Pattern.DOTALL);
     private static final Pattern URL_KEY_PATTERN = Pattern.compile("v[^_]+_([^_]+)_(\\d+)p_(\\d+)");
-    private static final String[] HOSTS = { "www.tiktok.com", "tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "m.tiktok.com" };
-    private static final String[] SHORT_HOSTS = { "vm.tiktok.com", "vt.tiktok.com" };
     private static final String WAF_MARKER = "Please wait...";
     // THE CHALLENGE IS A PROOF OF WORK; THE INTERRUPT FLAG IS CHECKED EVERY FEW THOUSAND HASHES
     private static final int CHALLENGE_ATTEMPTS = 1_000_000;
     private static final int CHALLENGE_CHECK_MASK = 0x3FFF;
     // PLAY URLS ARE SIGNED; WHEN THEY CARRY NO expire PARAMETER THIS IS THE FALLBACK
     private static final Duration TTL = Duration.ofMinutes(30);
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -86,6 +90,136 @@ public final class TikTokPlatform implements Platform {
             throw e;
         } catch (final IOException | RuntimeException e) {
             throw new PlatformException(NAME, "Failed to resolve " + link, e);
+        }
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
+    // null MEANS THE PAGE CARRIED NO VIDEO DATA, WHICH IS NORMAL FOR THE FIRST FETCH OF A WAF-CHALLENGED REQUEST;
+    // THE CALLER DECIDES WHETHER TO SOLVE THE CHALLENGE OR FAIL
+    private JsonObject extractVideoData(final String html, final String videoId) throws PlatformException {
+        final Matcher matcher = UNIVERSAL_DATA_PATTERN.matcher(html);
+        if (!matcher.find()) {
+            LOGGER.debug(IT, "No __UNIVERSAL_DATA_FOR_REHYDRATION__ found for TikTok video {}", videoId);
+            return null;
+        }
+
+        final JsonObject videoDetail = obj(JSONTool.parse(matcher.group(1), JsonObject.class), "__DEFAULT_SCOPE__", "webapp.video-detail");
+        if (videoDetail == null) return null;
+
+        final int status = intOr(videoDetail, "statusCode", 0);
+        if (status == 10_216 || status == 10_222) throw new PlatformException(NAME, "Video " + videoId + " is private or requires login");
+        if (status == 10_204) throw new PlatformException(NAME, "IP address is blocked from accessing video " + videoId);
+        if (status != 0) LOGGER.warn(IT, "TikTok video {} returned status code {}", videoId, status);
+
+        return obj(videoDetail, "itemInfo", "itemStruct");
+    }
+
+    private Resolution buildResult(final JsonObject awemeDetail, final String videoId, final String cookies) throws PlatformException {
+        final JsonObject video = obj(awemeDetail, "video");
+        if (video == null) throw new PlatformException(NAME, "No video object found for video " + videoId);
+
+        final String desc = str(awemeDetail, "desc");
+        final String title = (desc != null && !desc.isEmpty()) ? desc : "TikTok video #" + videoId;
+
+        final long createTime = longOr(awemeDetail, "createTime", 0L);
+        final Instant publishedAt = createTime > 0 ? Instant.ofEpochSecond(createTime) : null;
+
+        // TIKTOK REPORTS video duration IN SECONDS; Metadata IS MILLISECONDS
+        final long durationMs = Math.max(0L, intOr(video, "duration", 0)) * 1_000L;
+
+        final URI thumbnail = findThumbnail(awemeDetail, video);
+        final String author = extractAuthor(awemeDetail);
+
+        final Metadata metadata = new Metadata(title, desc, publishedAt, durationMs, author);
+        final List<Quality> variants = new ArrayList<>();
+
+        final JsonArray bitrateInfo = arr(video, "bitrateInfo");
+        if (bitrateInfo != null) this.parseBitrateInfo(variants, bitrateInfo, video);
+
+        if (variants.isEmpty()) {
+            URI fallback = extractAddrUri(video, "playAddr");
+            if (fallback == null) fallback = extractAddrUri(video, "downloadAddr");
+            if (fallback == null)
+                throw new PlatformException(NAME, "Video '" + videoId + "' exposed no playable URLs (bitrateInfo, playAddr, and downloadAddr all empty)");
+            // NO RELIABLE DIMENSIONS ON THIS FALLBACK, FFMediaPlayer PROBES AND RE-BUCKETS IT
+            LOGGER.debug(IT, "TikTok video '{}' had no usable bitrateInfo, falling back to {}", videoId, fallback);
+            variants.add(new Quality(fallback, 0, 0));
+        }
+
+        if (author == null) LOGGER.warn(IT, "TikTok video '{}' has no resolvable author", videoId);
+        LOGGER.debug(IT, "TikTok resolved video '{}' with {} variant(s)", videoId, variants.size());
+        final Instant signed = DataTool.expiry(variants.get(0).uri());
+
+        // THE SIGNED CDN URLS STILL REJECT REQUESTS WITHOUT A BROWSER UA, THE PAGE REFERER AND THE WAF COOKIES OF THE
+        // SCRAPE; FFmpeg REPLAYS THESE HEADERS ON EVERY SEGMENT FETCH
+        final HttpHeaders headers = new HttpHeaders()
+                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
+                .set("Accept", NetRequest.ACCEPT_ANY)
+                .set("Referer", TIKTOK_REFERER);
+        if (cookies != null && !cookies.isEmpty()) headers.set("Cookie", cookies);
+        return new Resolution(signed != null ? signed : Instant.now().plus(TTL), new Source(MediaType.VIDEO, thumbnail, metadata, headers, variants, null, null));
+    }
+
+    // ONE QUALITY PER bitrateInfo ENTRY, SIZED BY PlayAddr.Width/Height FIRST, THEN THE HEIGHT ENCODED IN UrlKey
+    // ("..._720p_..."), FINALLY THE PARENT VIDEO'S SIZE; MRL MAPS THE BUCKETS, NOTHING IS PRE-COLLAPSED HERE
+    private void parseBitrateInfo(final List<Quality> out, final JsonArray bitrateInfos, final JsonObject video) {
+        final int playWidth = Math.max(0, intOr(video, "width", 0));
+        final int playHeight = Math.max(0, intOr(video, "height", 0));
+
+        for (int i = 0; i < bitrateInfos.size(); i++) {
+            final JsonObject playAddr = obj(bitrateInfos.get(i), "PlayAddr");
+            final URI url = pickBestUrl(playAddr);
+            if (url == null) continue;
+
+            final String urlKey = str(playAddr, "UrlKey");
+            if (urlKey != null) {
+                final Matcher keyMatcher = URL_KEY_PATTERN.matcher(urlKey);
+                if (keyMatcher.find() && "bytevc2".equals(keyMatcher.group(1))) continue;
+            }
+
+            int w = Math.max(0, intOr(playAddr, "Width", 0));
+            int h = Math.max(0, intOr(playAddr, "Height", 0));
+
+            if (h <= 0 && urlKey != null) {
+                final Matcher keyMatcher = URL_KEY_PATTERN.matcher(urlKey);
+                if (keyMatcher.find()) h = Math.max(0, DataTool.parseInt(keyMatcher.group(2), 0));
+            }
+            if (w <= 0 && h <= 0) { w = playWidth; h = playHeight; }
+
+            out.add(new Quality(url, w, h));
+        }
+        LOGGER.debug(IT, "TikTok parsed {} variant(s) from {} bitrateInfo entry(es)", out.size(), bitrateInfos.size());
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static Webpage fetchWebpage(final URI uri, final String cookies) throws IOException {
+        final NetRequest req = new NetRequest(uri)
+                .accept("text/html,application/xhtml+xml,*/*")
+                .userAgent(NetRequest.UserAgent.GENERIC)
+                .referer(TIKTOK_REFERER)
+                .header("Accept-Language", "en-US,en;q=0.9");
+        if (cookies != null) req.header("Cookie", cookies);
+
+        req.send();
+        try (req) {
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
+            final String html = req.text();
+
+            // THE name=value PAIRS OF EVERY Set-Cookie HEADER; null WHEN THE RESPONSE SET NONE
+            final StringBuilder setCookies = new StringBuilder();
+            for (final String header: req.responseHeaders().values("Set-Cookie")) {
+                final String nameValue = header.split(";", 2)[0].trim();
+                if (nameValue.isEmpty()) continue;
+                if (!setCookies.isEmpty()) setCookies.append("; ");
+                setCookies.append(nameValue);
+            }
+            return new Webpage(html, setCookies.isEmpty() ? null : setCookies.toString());
         }
     }
 
@@ -150,84 +284,6 @@ public final class TikTokPlatform implements Platform {
         return classMatcher.find() ? classMatcher.group(1) : null;
     }
 
-    // RESULT BUILDING
-    private Resolution buildResult(final JsonObject awemeDetail, final String videoId, final String cookies) throws PlatformException {
-        final JsonObject video = obj(awemeDetail, "video");
-        if (video == null) throw new PlatformException(NAME, "No video object found for video " + videoId);
-
-        final String desc = str(awemeDetail, "desc");
-        final String title = (desc != null && !desc.isEmpty()) ? desc : "TikTok video #" + videoId;
-
-        final long createTime = longOr(awemeDetail, "createTime", 0L);
-        final Instant publishedAt = createTime > 0 ? Instant.ofEpochSecond(createTime) : null;
-
-        // TIKTOK REPORTS video duration IN SECONDS; Metadata IS MILLISECONDS
-        final long durationMs = Math.max(0L, intOr(video, "duration", 0)) * 1_000L;
-
-        final URI thumbnail = findThumbnail(awemeDetail, video);
-        final String author = extractAuthor(awemeDetail);
-
-        final Metadata metadata = new Metadata(title, desc, publishedAt, durationMs, author);
-        final List<Quality> variants = new ArrayList<>();
-
-        final JsonArray bitrateInfo = arr(video, "bitrateInfo");
-        if (bitrateInfo != null) this.parseBitrateInfo(variants, bitrateInfo, video);
-
-        if (variants.isEmpty()) {
-            URI fallback = extractAddrUri(video, "playAddr");
-            if (fallback == null) fallback = extractAddrUri(video, "downloadAddr");
-            if (fallback == null)
-                throw new PlatformException(NAME, "Video '" + videoId + "' exposed no playable URLs (bitrateInfo, playAddr, and downloadAddr all empty)");
-            // NO RELIABLE DIMENSIONS ON THIS FALLBACK, FFMediaPlayer PROBES AND RE-BUCKETS IT
-            LOGGER.debug(IT, "TikTok video '{}' had no usable bitrateInfo, falling back to {}", videoId, fallback);
-            variants.add(new Quality(fallback, 0, 0));
-        }
-
-        if (author == null) LOGGER.warn(IT, "TikTok video '{}' has no resolvable author", videoId);
-        LOGGER.debug(IT, "TikTok resolved video '{}' with {} variant(s)", videoId, variants.size());
-        final Instant signed = DataTool.expiry(variants.get(0).uri());
-
-        // THE SIGNED CDN URLS STILL REJECT REQUESTS WITHOUT A BROWSER UA, THE PAGE REFERER AND THE WAF COOKIES OF THE
-        // SCRAPE; FFmpeg REPLAYS THESE HEADERS ON EVERY SEGMENT FETCH
-        final HttpHeaders headers = new HttpHeaders()
-                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
-                .set("Accept", NetRequest.ACCEPT_ANY)
-                .set("Referer", TIKTOK_REFERER);
-        if (cookies != null && !cookies.isEmpty()) headers.set("Cookie", cookies);
-        return new Resolution(signed != null ? signed : Instant.now().plus(TTL), new Source(MediaType.VIDEO, thumbnail, metadata, headers, variants, null, null));
-    }
-
-    // FORMAT PARSING: PlayAddr.Width/Height FIRST, THEN THE HEIGHT ENCODED IN UrlKey ("..._720p_..."),
-    // FINALLY THE PARENT VIDEO'S SIZE; MRL MAPS THE BUCKETS, NOTHING IS PRE-COLLAPSED HERE
-    private void parseBitrateInfo(final List<Quality> out, final JsonArray bitrateInfos, final JsonObject video) {
-        final int playWidth = Math.max(0, intOr(video, "width", 0));
-        final int playHeight = Math.max(0, intOr(video, "height", 0));
-
-        for (int i = 0; i < bitrateInfos.size(); i++) {
-            final JsonObject playAddr = obj(bitrateInfos.get(i), "PlayAddr");
-            final URI url = pickBestUrl(playAddr);
-            if (url == null) continue;
-
-            final String urlKey = str(playAddr, "UrlKey");
-            if (urlKey != null) {
-                final Matcher keyMatcher = URL_KEY_PATTERN.matcher(urlKey);
-                if (keyMatcher.find() && "bytevc2".equals(keyMatcher.group(1))) continue;
-            }
-
-            int w = Math.max(0, intOr(playAddr, "Width", 0));
-            int h = Math.max(0, intOr(playAddr, "Height", 0));
-
-            if (h <= 0 && urlKey != null) {
-                final Matcher keyMatcher = URL_KEY_PATTERN.matcher(urlKey);
-                if (keyMatcher.find()) h = Math.max(0, DataTool.parseInt(keyMatcher.group(2), 0));
-            }
-            if (w <= 0 && h <= 0) { w = playWidth; h = playHeight; }
-
-            out.add(new Quality(url, w, h));
-        }
-        LOGGER.debug(IT, "TikTok parsed {} variant(s) from {} bitrateInfo entry(es)", out.size(), bitrateInfos.size());
-    }
-
     // THE FIRST CDN LINK OF A UrlList; A www.tiktok.com LINK IS ONLY THE FALLBACK
     private static URI pickBestUrl(final JsonObject playAddr) {
         final JsonArray urlList = arr(playAddr, "UrlList");
@@ -261,7 +317,6 @@ public final class TikTokPlatform implements Platform {
         return listed != null ? listed : DataTool.uri(str(obj(element), "src"));
     }
 
-    // METADATA EXTRACTION
     private static URI findThumbnail(final JsonObject awemeDetail, final JsonObject video) {
         for (final String key: new String[]{"originCover", "cover", "thumbnail"}) {
             URI uri = DataTool.uri(str(video, key));
@@ -291,52 +346,10 @@ public final class TikTokPlatform implements Platform {
         return embed.find() ? embed.group(1) : null;
     }
 
-    // DATA EXTRACTION: null MEANS THE PAGE CARRIED NO VIDEO DATA, WHICH IS NORMAL FOR THE FIRST FETCH OF A
-    // WAF-CHALLENGED REQUEST; THE CALLER DECIDES WHETHER TO SOLVE THE CHALLENGE OR FAIL
-    private JsonObject extractVideoData(final String html, final String videoId) throws PlatformException {
-        final Matcher matcher = UNIVERSAL_DATA_PATTERN.matcher(html);
-        if (!matcher.find()) {
-            LOGGER.debug(IT, "No __UNIVERSAL_DATA_FOR_REHYDRATION__ found for TikTok video {}", videoId);
-            return null;
-        }
-
-        final JsonObject videoDetail = obj(JSONTool.parse(matcher.group(1), JsonObject.class), "__DEFAULT_SCOPE__", "webapp.video-detail");
-        if (videoDetail == null) return null;
-
-        final int status = intOr(videoDetail, "statusCode", 0);
-        if (status == 10_216 || status == 10_222) throw new PlatformException(NAME, "Video " + videoId + " is private or requires login");
-        if (status == 10_204) throw new PlatformException(NAME, "IP address is blocked from accessing video " + videoId);
-        if (status != 0) LOGGER.warn(IT, "TikTok video {} returned status code {}", videoId, status);
-
-        return obj(videoDetail, "itemInfo", "itemStruct");
-    }
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     // FETCHED PAGE HTML PAIRED WITH THE WAF COOKIES CAPTURED FROM ITS Set-Cookie RESPONSE (null WHEN NONE)
     private record Webpage(String html, String cookies) {}
-
-    // HTTP
-    private static Webpage fetchWebpage(final URI uri, final String cookies) throws IOException {
-        final NetRequest req = new NetRequest(uri)
-                .accept("text/html,application/xhtml+xml,*/*")
-                .userAgent(NetRequest.UserAgent.GENERIC)
-                .referer(TIKTOK_REFERER)
-                .header("Accept-Language", "en-US,en;q=0.9");
-        if (cookies != null) req.header("Cookie", cookies);
-
-        req.send();
-        try (req) {
-            if (req.statusCode() != 200) throw new PlatformException(NAME, "HTTP " + req.statusCode() + " for " + uri);
-            final String html = req.text();
-
-            // THE name=value PAIRS OF EVERY Set-Cookie HEADER; null WHEN THE RESPONSE SET NONE
-            final StringBuilder setCookies = new StringBuilder();
-            for (final String header: req.responseHeaders().values("Set-Cookie")) {
-                final String nameValue = header.split(";", 2)[0].trim();
-                if (nameValue.isEmpty()) continue;
-                if (!setCookies.isEmpty()) setCookies.append("; ");
-                setCookies.append(nameValue);
-            }
-            return new Webpage(html, setCookies.isEmpty() ? null : setCookies.toString());
-        }
-    }
 }

@@ -1,8 +1,8 @@
 package org.watermedia.bootstrap.app;
 
-import org.watermedia.bootstrap.app.screen.Keybind;
 import org.watermedia.bootstrap.app.screen.RootScreen;
 import org.watermedia.bootstrap.app.screen.Screen;
+import org.watermedia.bootstrap.app.screen.Screen.Keybind;
 
 import java.util.HashMap;
 import java.util.List;

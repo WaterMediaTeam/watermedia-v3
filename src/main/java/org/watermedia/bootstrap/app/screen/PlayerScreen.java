@@ -127,10 +127,9 @@ public final class PlayerScreen extends Screen {
         this.navigator = navigator;
     }
 
-    @Override
-    protected Element<?> build() {
-        return new ParentFrame().add(new VideoSurface()).add(new CrtOverlay()).add(new Hud());
-    }
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public void onEnter() {
@@ -189,6 +188,76 @@ public final class PlayerScreen extends Screen {
     }
 
     @Override
+    public boolean dispatchKey(final int key, final int action) {
+        this.settleUntil = System.nanoTime() + SETTLE_NS;
+        // THE TREE (INCLUDING OPEN DIALOGS) ALWAYS WINS FIRST. THE SPEED MENU CLOSES ON THE ESC/ENTER PRESS; IF THIS
+        // PRESS CLOSED IT, ITS RELEASE IS SWALLOWED SO ONE TAP DOES NOT ALSO FIRE A SCREEN SHORTCUT
+        final boolean menuOpen = this.speedMenuOpen();
+        if (super.dispatchKey(key, action)) {
+            if (menuOpen && action != GLFW_RELEASE && !this.speedMenuOpen()) this.swallowKey = key;
+            return true;
+        }
+        if (action != GLFW_RELEASE) {
+            // A FRESH PRESS DROPS A STALE SWALLOW (E.G. THE MOUSE CLOSED THE MENU); SHORTCUTS ACT ON RELEASE
+            this.swallowKey = -1;
+            return false;
+        }
+        if (key == this.swallowKey) {
+            this.swallowKey = -1;
+            return true;
+        }
+        // NO SCREEN SHORTCUT FIRES WHILE THE SPEED MENU IS OPEN
+        if (menuOpen) return false;
+        // ESC GOES BEFORE THE PLAYER CHECK SO IT LEAVES EVEN WHEN PLAYER CREATION FAILED
+        if (key == GLFW_KEY_ESCAPE) {
+            this.returnToMenu();
+            return true;
+        }
+        final MediaPlayer player = this.ctx.media.player;
+        if (player == null) return false;
+        switch (key) {
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openQualityDialog();
+            case GLFW_KEY_V -> this.openVideoDialog();
+            case GLFW_KEY_SPACE -> this.togglePlayback(player);
+            case GLFW_KEY_LEFT -> player.rewind();
+            case GLFW_KEY_RIGHT -> player.forward();
+            case GLFW_KEY_U -> player.seekQuick(player.time() + 5_000);
+            case GLFW_KEY_Y -> player.seekQuick(player.time() - 5_000);
+            case GLFW_KEY_S -> player.stop();
+            case GLFW_KEY_UP -> player.volume(player.volume() + 5);
+            case GLFW_KEY_DOWN -> player.volume(player.volume() - 5);
+            case GLFW_KEY_PERIOD -> player.nextFrame();
+            case GLFW_KEY_COMMA -> player.previousFrame();
+            case GLFW_KEY_N -> this.navigateSource(1);
+            case GLFW_KEY_B -> this.navigateSource(-1);
+            case GLFW_KEY_L -> this.toggleLoop(player);
+            case GLFW_KEY_0, GLFW_KEY_KP_0 -> this.seekToPercent(0);
+            case GLFW_KEY_1, GLFW_KEY_KP_1 -> this.seekToPercent(10);
+            case GLFW_KEY_2, GLFW_KEY_KP_2 -> this.seekToPercent(20);
+            case GLFW_KEY_3, GLFW_KEY_KP_3 -> this.seekToPercent(30);
+            case GLFW_KEY_4, GLFW_KEY_KP_4 -> this.seekToPercent(40);
+            case GLFW_KEY_5, GLFW_KEY_KP_5 -> this.seekToPercent(50);
+            case GLFW_KEY_6, GLFW_KEY_KP_6 -> this.seekToPercent(60);
+            case GLFW_KEY_7, GLFW_KEY_KP_7 -> this.seekToPercent(70);
+            case GLFW_KEY_8, GLFW_KEY_KP_8 -> this.seekToPercent(80);
+            case GLFW_KEY_9, GLFW_KEY_KP_9 -> this.seekToPercent(90);
+            default -> {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
+    protected Element<?> build() {
+        return new ParentFrame().add(new VideoSurface()).add(new CrtOverlay()).add(new Hud());
+    }
+
+    @Override
     protected void onUpdate() {
         final MediaPlayer player = this.ctx.media.player;
         // CHIME ONCE PER ENDING, ONLY WHILE NO DIALOG IS OPEN
@@ -206,7 +275,9 @@ public final class PlayerScreen extends Screen {
         if (this.videoDialog != null) this.syncVideoDialog();
     }
 
-    // ==== PLAYER CONTROL ====
+    // ==========================================================================
+    // PLAYER CONTROL
+    // ==========================================================================
 
     private void startPlayer() {
         if (this.ctx.media.selectedMRL == null || this.ctx.media.selectedSource == null) return;
@@ -326,76 +397,9 @@ public final class PlayerScreen extends Screen {
         canvas.text(label, x + 11, y + Math.max(0, (22 - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2), color, AppTheme.TEXT_BODY, false);
     }
 
-    private String sourceTitle(final MRL.Source source, final int sourceIndex) {
-        final Metadata meta = source != null ? source.metadata() : null;
-        if (meta != null && meta.title() != null && !meta.title().isBlank()) return meta.title();
-        if (this.ctx.media.selectedMRLName != null && !this.ctx.media.selectedMRLName.isBlank()) return this.ctx.media.selectedMRLName;
-        return "SOURCE " + (sourceIndex + 1);
-    }
-
-    // ==== KEYBOARD ====
-    // THE TREE (INCLUDING OPEN DIALOGS) ALWAYS WINS FIRST
-
-    @Override
-    public boolean dispatchKey(final int key, final int action) {
-        this.settleUntil = System.nanoTime() + SETTLE_NS;
-        // THE SPEED MENU CLOSES ON THE ESC/ENTER PRESS; IF THIS PRESS CLOSED IT, ITS RELEASE IS SWALLOWED
-        // SO ONE TAP DOES NOT ALSO FIRE A SCREEN SHORTCUT
-        final boolean menuOpen = this.speedMenuOpen();
-        if (super.dispatchKey(key, action)) {
-            if (menuOpen && action != GLFW_RELEASE && !this.speedMenuOpen()) this.swallowKey = key;
-            return true;
-        }
-        if (action != GLFW_RELEASE) {
-            // A FRESH PRESS DROPS A STALE SWALLOW (E.G. THE MOUSE CLOSED THE MENU); SHORTCUTS ACT ON RELEASE
-            this.swallowKey = -1;
-            return false;
-        }
-        if (key == this.swallowKey) {
-            this.swallowKey = -1;
-            return true;
-        }
-        // NO SCREEN SHORTCUT FIRES WHILE THE SPEED MENU IS OPEN
-        if (menuOpen) return false;
-        // ESC GOES BEFORE THE PLAYER CHECK SO IT LEAVES EVEN WHEN PLAYER CREATION FAILED
-        if (key == GLFW_KEY_ESCAPE) {
-            this.returnToMenu();
-            return true;
-        }
-        final MediaPlayer player = this.ctx.media.player;
-        if (player == null) return false;
-        switch (key) {
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openQualityDialog();
-            case GLFW_KEY_V -> this.openVideoDialog();
-            case GLFW_KEY_SPACE -> this.togglePlayback(player);
-            case GLFW_KEY_LEFT -> player.rewind();
-            case GLFW_KEY_RIGHT -> player.forward();
-            case GLFW_KEY_U -> player.seekQuick(player.time() + 5_000);
-            case GLFW_KEY_Y -> player.seekQuick(player.time() - 5_000);
-            case GLFW_KEY_S -> player.stop();
-            case GLFW_KEY_UP -> player.volume(player.volume() + 5);
-            case GLFW_KEY_DOWN -> player.volume(player.volume() - 5);
-            case GLFW_KEY_PERIOD -> player.nextFrame();
-            case GLFW_KEY_COMMA -> player.previousFrame();
-            case GLFW_KEY_N -> this.navigateSource(1);
-            case GLFW_KEY_B -> this.navigateSource(-1);
-            case GLFW_KEY_L -> this.toggleLoop(player);
-            case GLFW_KEY_0, GLFW_KEY_KP_0 -> this.seekToPercent(0);
-            case GLFW_KEY_1, GLFW_KEY_KP_1 -> this.seekToPercent(10);
-            case GLFW_KEY_2, GLFW_KEY_KP_2 -> this.seekToPercent(20);
-            case GLFW_KEY_3, GLFW_KEY_KP_3 -> this.seekToPercent(30);
-            case GLFW_KEY_4, GLFW_KEY_KP_4 -> this.seekToPercent(40);
-            case GLFW_KEY_5, GLFW_KEY_KP_5 -> this.seekToPercent(50);
-            case GLFW_KEY_6, GLFW_KEY_KP_6 -> this.seekToPercent(60);
-            case GLFW_KEY_7, GLFW_KEY_KP_7 -> this.seekToPercent(70);
-            case GLFW_KEY_8, GLFW_KEY_KP_8 -> this.seekToPercent(80);
-            case GLFW_KEY_9, GLFW_KEY_KP_9 -> this.seekToPercent(90);
-            default -> {
-                return false;
-            }
-        }
-        return true;
-    }
+    // ==========================================================================
+    // SPEED MENU
+    // ==========================================================================
 
     // THE OVERLAY ONLY HOSTS THE TWO DIALOGS AND THE SPEED MENU, SO ANY OTHER CHILD IS THE MENU
     private boolean speedMenuOpen() {
@@ -418,7 +422,9 @@ public final class PlayerScreen extends Screen {
         return nearest;
     }
 
-    // ==== QUALITY DIALOG (SOURCE + QUALITY SELECTION) ====
+    // ==========================================================================
+    // QUALITY DIALOG (SOURCE + QUALITY SELECTION)
+    // ==========================================================================
 
     private void openQualityDialog() {
         if (this.ctx.media.availableSources == null || this.ctx.media.availableSources.length == 0) return;
@@ -621,7 +627,36 @@ public final class PlayerScreen extends Screen {
         this.hideQualityDialog();
     }
 
-    // ==== VIDEO DIALOG (UPLOAD RESOLUTION CAP + LOD LEVEL) ====
+    // SOURCE ROW OF THE QUALITY DIALOG: THE ICON MARKS THE PLAYING SOURCE, THE MEDIA TYPE TAG SITS RIGHT
+    private ListRow sourceRow(final MRL.Source source, final int index) {
+        final int tagW = this.typeTagWidth(source.type());
+        return new ListRow()
+                .fill(AppTheme.alpha(AppTheme.BG_1, 150), null, AppTheme.alpha(AppTheme.NEON_DARK, 90))
+                .outline(AppTheme.STROKE_BRIGHT, AppTheme.NEON_LIGHT, 1f, 2f)
+                .selectedGlow(AppTheme.NEON, 0.20f, false)
+                .binder(row -> {
+                    final boolean active = index == this.ctx.media.selectedSourceIndex;
+                    row.icon(active ? "play" : "folder", 14, 12, 15, active ? AppTheme.GREEN : AppTheme.NEON_LIGHT, null);
+                })
+                .title(() -> {
+                    // THE SOURCE TITLE, ELSE THE SELECTED MRL NAME, ELSE ITS POSITION
+                    final Metadata meta = source.metadata();
+                    if (meta != null && meta.title() != null && !meta.title().isBlank()) return meta.title().toUpperCase(Locale.ROOT);
+                    if (this.ctx.media.selectedMRLName != null && !this.ctx.media.selectedMRLName.isBlank())
+                        return this.ctx.media.selectedMRLName.toUpperCase(Locale.ROOT);
+                    return "SOURCE " + (index + 1);
+                })
+                .titleStyle(AppTheme.TEXT_BODY, true, AppTheme.TEXT_SOFT, AppTheme.TEXT)
+                .textAt(34, 10)
+                .textRight(tagW + 34, 0)
+                .subtitle(() -> "SOURCE " + (index + 1) + "/" + (this.ctx.media.availableSources != null ? this.ctx.media.availableSources.length : 1)
+                        + " - " + source.qualities().size() + " QUALITIES", AppTheme.TEXT_SUBTITLE, AppTheme.TEXT_FAINT, 32)
+                .trail((canvas, row, x, y, w, h) -> this.drawTypeTag(canvas, x + w - tagW - 12, y + Math.max(0, (h - 22) / 2), source.type()));
+    }
+
+    // ==========================================================================
+    // VIDEO DIALOG (UPLOAD RESOLUTION CAP + LOD LEVEL)
+    // ==========================================================================
 
     private void openVideoDialog() {
         if (this.ctx.media.player == null || this.ctx.media.player.error()) return;
@@ -774,7 +809,29 @@ public final class PlayerScreen extends Screen {
         this.ctx.requestRender();
     }
 
-    // ==== INNER ELEMENTS ====
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // A PICKABLE DIALOG ROW (QUALITY OR LOD); strong IS THE LOD LOOK: A HOVER TINT, A 2 px PICKED BORDER AND A
+    // RIGHT-ALIGNED DETAIL, WHERE QUALITY ROWS START IT 62 px FROM THE EDGE
+    private static ListRow pickRow(final String label, final String detail, final BooleanSupplier picked, final boolean strong) {
+        final ListRow row = new ListRow()
+                .fill(AppTheme.alpha(AppTheme.BG_1, 148), strong ? AppTheme.alpha(AppTheme.NEON_DARK, 44) : null, AppTheme.alpha(AppTheme.NEON_DARK, 88))
+                .outline(AppTheme.STROKE_BRIGHT, AppTheme.NEON_LIGHT, 1f, strong ? 2f : 1f)
+                .lead((canvas, r, x, y, w, h) -> canvas.fill(x + 8, y + Math.max(0, (h - 8) / 2), 8, 8, r.isPicked() ? AppTheme.AMBER : AppTheme.TEXT_FAINT))
+                .title(label.toUpperCase(Locale.ROOT))
+                .titleStyle(AppTheme.TEXT_BODY, true, AppTheme.TEXT_SOFT, AppTheme.NEON_LIGHT)
+                .textAt(28, ListRow.CENTER)
+                .detail(() -> detail, AppTheme.TEXT_FAINT, AppTheme.CYAN, 12);
+        if (!strong) row.detailColumn(62);
+        // A LOD ROW LIVES OUTSIDE A ListView, SO ITS SELECTION COMES FROM THE DIALOG STATE
+        return picked == null ? row : row.picked(picked);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     // DIALOG CONTENT ROW: CHILDREN GET EACH KEY FIRST, THEN THE HANDLER RUNS ON RELEASE;
     // THE HOSTING Dialog SWALLOWS WHATEVER IS LEFT
@@ -793,42 +850,6 @@ public final class PlayerScreen extends Screen {
         }
     }
 
-    // SOURCE ROW OF THE QUALITY DIALOG: THE ICON MARKS THE PLAYING SOURCE, THE MEDIA TYPE TAG SITS RIGHT
-    private ListRow sourceRow(final MRL.Source source, final int index) {
-        final int tagW = this.typeTagWidth(source.type());
-        return new ListRow()
-                .fill(AppTheme.alpha(AppTheme.BG_1, 150), null, AppTheme.alpha(AppTheme.NEON_DARK, 90))
-                .outline(AppTheme.STROKE_BRIGHT, AppTheme.NEON_LIGHT, 1f, 2f)
-                .selectedGlow(AppTheme.NEON, 0.20f, false)
-                .binder(row -> {
-                    final boolean active = index == this.ctx.media.selectedSourceIndex;
-                    row.icon(active ? "play" : "folder", 14, 12, 15, active ? AppTheme.GREEN : AppTheme.NEON_LIGHT, null);
-                })
-                .title(() -> this.sourceTitle(source, index).toUpperCase(Locale.ROOT))
-                .titleStyle(AppTheme.TEXT_BODY, true, AppTheme.TEXT_SOFT, AppTheme.TEXT)
-                .textAt(34, 10)
-                .textRight(tagW + 34, 0)
-                .subtitle(() -> "SOURCE " + (index + 1) + "/" + (this.ctx.media.availableSources != null ? this.ctx.media.availableSources.length : 1)
-                        + " - " + source.qualities().size() + " QUALITIES", AppTheme.TEXT_SUBTITLE, AppTheme.TEXT_FAINT, 32)
-                .trail((canvas, row, x, y, w, h) -> this.drawTypeTag(canvas, x + w - tagW - 12, y + Math.max(0, (h - 22) / 2), source.type()));
-    }
-
-    // A PICKABLE DIALOG ROW (QUALITY OR LOD); strong IS THE LOD LOOK: A HOVER TINT, A 2 px PICKED BORDER AND A
-    // RIGHT-ALIGNED DETAIL, WHERE QUALITY ROWS START IT 62 px FROM THE EDGE
-    private static ListRow pickRow(final String label, final String detail, final BooleanSupplier picked, final boolean strong) {
-        final ListRow row = new ListRow()
-                .fill(AppTheme.alpha(AppTheme.BG_1, 148), strong ? AppTheme.alpha(AppTheme.NEON_DARK, 44) : null, AppTheme.alpha(AppTheme.NEON_DARK, 88))
-                .outline(AppTheme.STROKE_BRIGHT, AppTheme.NEON_LIGHT, 1f, strong ? 2f : 1f)
-                .lead((canvas, r, x, y, w, h) -> canvas.fill(x + 8, y + Math.max(0, (h - 8) / 2), 8, 8, r.isPicked() ? AppTheme.AMBER : AppTheme.TEXT_FAINT))
-                .title(label.toUpperCase(Locale.ROOT))
-                .titleStyle(AppTheme.TEXT_BODY, true, AppTheme.TEXT_SOFT, AppTheme.NEON_LIGHT)
-                .textAt(28, ListRow.CENTER)
-                .detail(() -> detail, AppTheme.TEXT_FAINT, AppTheme.CYAN, 12);
-        if (!strong) row.detailColumn(62);
-        // A LOD ROW LIVES OUTSIDE A ListView, SO ITS SELECTION COMES FROM THE DIALOG STATE
-        return picked == null ? row : row.picked(picked);
-    }
-
     // DEBUG METRICS AND METADATA PANEL: A DRAW-ONLY LEAF THAT READS THE LIVE PLAYER EVERY FRAME
     private final class MetricsPanel extends Element<MetricsPanel> {
         // maxScroll IS THE PREVIOUS FRAME'S OVERFLOW, WHICH CLAMPS THE WHEEL OFFSET
@@ -844,6 +865,25 @@ public final class PlayerScreen extends Screen {
         private final WrapCache mrlWrap = new WrapCache();
         private final WrapCache titleWrap = new WrapCache();
         private final WrapCache descWrap = new WrapCache();
+
+        // ======================================================================
+        // PUBLIC API
+        // ======================================================================
+
+        @Override
+        public boolean dispatchScroll(final double mx, final double my, final double amount) {
+            if (!this.visible || this.maxScroll <= 0 || !this.contains(mx, my)) return false;
+            final int next = MathUtil.clamp(this.scroll - (int) (amount * METRIC_SCROLL_STEP), 0, this.maxScroll);
+            if (next != this.scroll) {
+                this.scroll = next;
+                this.invalidate();
+            }
+            return true;
+        }
+
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
 
         @Override
         protected void onUpdate() {
@@ -861,17 +901,6 @@ public final class PlayerScreen extends Screen {
                 this.speedKey = speedKey;
                 this.speedStr = String.format("%.2f", speed);
             }
-        }
-
-        @Override
-        public boolean dispatchScroll(final double mx, final double my, final double amount) {
-            if (!this.visible || this.maxScroll <= 0 || !this.contains(mx, my)) return false;
-            final int next = MathUtil.clamp(this.scroll - (int) (amount * METRIC_SCROLL_STEP), 0, this.maxScroll);
-            if (next != this.scroll) {
-                this.scroll = next;
-                this.invalidate();
-            }
-            return true;
         }
 
         @Override
@@ -944,6 +973,10 @@ public final class PlayerScreen extends Screen {
                 canvas.glow(px + pw - 18, thumbY, 3, thumbH, 0f, AppTheme.NEON, 0.35f);
             }
         }
+
+        // ======================================================================
+        // HELPERS
+        // ======================================================================
 
         private int metric(final Canvas canvas, final String label, final String value, final int x, final int y, final Color valueColor) {
             final TextRenderer text = PlayerScreen.this.text;
@@ -1060,6 +1093,10 @@ public final class PlayerScreen extends Screen {
             }
             return best > 4 ? best : limit;
         }
+
+        // ======================================================================
+        // NESTED TYPES
+        // ======================================================================
 
         // WRAPPED LINES OF ONE ROW, REBUILT ONLY WHEN ITS TEXT, WIDTH OR LINE CAP CHANGES; ONLY onDraw
         // TOUCHES IT, ON THE RENDER THREAD, SO IT NEEDS NO SYNCHRONIZATION
@@ -1194,17 +1231,21 @@ public final class PlayerScreen extends Screen {
                     .add(this.back);
         }
 
-        // ICON-ONLY TRANSPORT KEY WITH THE SHARED GUARD: NO-OP WITHOUT A HEALTHY PLAYER, CHIME ON HIT
-        private IconButton key(final String icon, final Color color, final int w, final Consumer<MediaPlayer> action) {
-            final IconButton button = new IconButton(icon).accent(color).iconColor(color);
-            button.size(w, 30).onClick(b -> {
-                final MediaPlayer p = PlayerScreen.this.ctx.media.player;
-                if (p == null || p.error()) return;
-                action.accept(p);
-                PlayerScreen.this.ctx.sound.play();
-            });
-            return button;
+        // ======================================================================
+        // PUBLIC API
+        // ======================================================================
+
+        @Override
+        public Element<?> dispatchPress(final double mx, final double my) {
+            final Element<?> hit = super.dispatchPress(mx, my);
+            // ONLY THE PRESS THAT GRABS A BAR CHIMES; DRAG MOVES STAY SILENT
+            if (hit == this.seek || hit == this.vol) PlayerScreen.this.ctx.sound.play();
+            return hit;
         }
+
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
 
         @Override
         protected void onUpdate() {
@@ -1407,12 +1448,20 @@ public final class PlayerScreen extends Screen {
             super.onDraw(canvas);
         }
 
-        @Override
-        public Element<?> dispatchPress(final double mx, final double my) {
-            final Element<?> hit = super.dispatchPress(mx, my);
-            // ONLY THE PRESS THAT GRABS A BAR CHIMES; DRAG MOVES STAY SILENT
-            if (hit == this.seek || hit == this.vol) PlayerScreen.this.ctx.sound.play();
-            return hit;
+        // ======================================================================
+        // HELPERS
+        // ======================================================================
+
+        // ICON-ONLY TRANSPORT KEY WITH THE SHARED GUARD: NO-OP WITHOUT A HEALTHY PLAYER, CHIME ON HIT
+        private IconButton key(final String icon, final Color color, final int w, final Consumer<MediaPlayer> action) {
+            final IconButton button = new IconButton(icon).accent(color).iconColor(color);
+            button.size(w, 30).onClick(b -> {
+                final MediaPlayer p = PlayerScreen.this.ctx.media.player;
+                if (p == null || p.error()) return;
+                action.accept(p);
+                PlayerScreen.this.ctx.sound.play();
+            });
+            return button;
         }
     }
 }

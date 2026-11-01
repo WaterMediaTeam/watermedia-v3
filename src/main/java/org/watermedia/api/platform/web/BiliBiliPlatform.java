@@ -29,6 +29,9 @@ import static org.watermedia.tools.JSONTool.*;
 public final class BiliBiliPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(BiliBiliPlatform.class.getSimpleName());
     public static final String NAME = "BiliBili";
+    private static final String[] HOSTS = { "www.bilibili.com", "bilibili.com", "m.bilibili.com", "live.bilibili.com", "b23.tv" };
+    private static final String LIVE_HOST = "live.bilibili.com";
+    private static final String SHORT_HOST = "b23.tv";
     private static final String REFERER = "https://www.bilibili.com/";
     private static final String FINGERPRINT_API = "https://api.bilibili.com/x/frontend/finger/spi";
     private static final String VIDEO_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid=%s";
@@ -49,9 +52,6 @@ public final class BiliBiliPlatform implements Platform {
     private static final Pattern EP_PATTERN = Pattern.compile("/ep(\\d+)");
     private static final Pattern SS_PATTERN = Pattern.compile("/ss(\\d+)");
     private static final Pattern LIVE_ROOM_PATTERN = Pattern.compile("live\\.bilibili\\.com/(\\d+)", Pattern.CASE_INSENSITIVE);
-    private static final String[] HOSTS = { "www.bilibili.com", "bilibili.com", "m.bilibili.com", "live.bilibili.com", "b23.tv" };
-    private static final String LIVE_HOST = "live.bilibili.com";
-    private static final String SHORT_HOST = "b23.tv";
     // LIVE STREAM URLS ROTATE QUICKLY; CDN LINKS OF A VIDEO LAST ROUGHLY TWO HOURS
     private static final Duration LIVE_TTL = Duration.ofMinutes(10);
     private static final Duration VIDEO_TTL = Duration.ofMinutes(90);
@@ -60,6 +60,10 @@ public final class BiliBiliPlatform implements Platform {
     // PER PROCESS AND SHARED BY EVERY HANDLER THREAD
     private static final Object FINGERPRINT_LOCK = new Object();
     private static volatile String fingerprint;
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -82,7 +86,10 @@ public final class BiliBiliPlatform implements Platform {
         }
     }
 
-    // VIDEO
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     private Resolution resolveVideo(final URI uri) throws IOException {
         final String url = uri.toString();
 
@@ -121,7 +128,6 @@ public final class BiliBiliPlatform implements Platform {
         return this.buildResult(playData, metadata, DataTool.uri(str(viewData, "pic")));
     }
 
-    // BANGUMI
     private Resolution resolveBangumi(final URI uri) throws IOException {
         final String url = uri.toString();
 
@@ -184,7 +190,6 @@ public final class BiliBiliPlatform implements Platform {
         return this.buildResult(playResult, metadata, thumbnail);
     }
 
-    // LIVE
     private Resolution resolveLive(final URI uri) throws IOException {
         final Matcher roomMatcher = LIVE_ROOM_PATTERN.matcher(uri.toString());
         if (!roomMatcher.find()) throw PlatformException.unsupported(NAME, uri);
@@ -235,7 +240,7 @@ public final class BiliBiliPlatform implements Platform {
         return new Resolution(Instant.now().plus(LIVE_TTL), entry);
     }
 
-    // DASH / DURL PARSING
+    // THE DASH LADDER WITH ITS FIRST AUDIO STREAM, ELSE THE MUXED DURL STREAM
     private Resolution buildResult(final JsonObject data, final Metadata metadata, final URI thumbnail) throws PlatformException {
         final JsonObject dash = obj(data, "dash");
         final JsonArray videoStreams = arr(dash, "video");
@@ -268,6 +273,10 @@ public final class BiliBiliPlatform implements Platform {
 
         throw new PlatformException(NAME, "API response carries no playable streams (neither DASH nor DURL) for '" + metadata.title() + "'");
     }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
 
     // WITH support_formats (THE BUCKET INDEX) ONE STREAM PER BUCKET IS PICKED BY CODEC, SO NO DUPLICATES; WITHOUT IT EVERY
     // STREAM IS EMITTED AND MRL COLLAPSES OVERLAPS. STREAM WIDTH/HEIGHT WIN, ELSE THE biliHeight FALLBACK
@@ -323,7 +332,7 @@ public final class BiliBiliPlatform implements Platform {
     }
 
     // NOMINAL VERTICAL RESOLUTION FOR A BILIBILI quality ID, USED ONLY AS A FALLBACK WHEN THE DASH
-    // STREAM OMITS ITS OWN height. THESE ARE BILIBILI'S DOCUMENTED BUCKETS, NOT MRL'S ENUM.
+    // STREAM OMITS ITS OWN height; THESE ARE BILIBILI'S DOCUMENTED BUCKETS, NOT MRL'S ENUM
     private static int biliHeight(final int biliQuality) {
         return switch (biliQuality) {
             case 127 -> 4_320;           // 8K
@@ -349,7 +358,7 @@ public final class BiliBiliPlatform implements Platform {
         return headers;
     }
 
-    // FETCH: THE BROWSER UA, REFERER, FINGERPRINT AND SESSION COOKIE THE API DEMANDS; A NON-ZERO code IS AN API ERROR
+    // AN API CALL WITH THE BROWSER UA, REFERER, FINGERPRINT AND SESSION COOKIE IT DEMANDS; A NON-ZERO code IS AN API ERROR
     private static JsonObject fetchJson(final String api, final String dataKey) throws PlatformException {
         final NetRequest request = new NetRequest(api).accept(NetRequest.ACCEPT_JSON)
                 .userAgent(NetRequest.UserAgent.GENERIC)

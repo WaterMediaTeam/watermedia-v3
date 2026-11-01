@@ -44,11 +44,39 @@ public class FFDecoderTest {
     private static final long OPEN_TIMEOUT_MS = 15_000L;
     private static final long ABORT_MS = 5_000L; // HALF THE 10 s I/O TIMEOUT AN OPEN THE ABORT MISSED WAITS FOR
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @BeforeEach
     void natives() {
         assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static FFDecoder decoder(final URI uri, final Recorder host) {
+        return new FFDecoder("FFThread-Test", uri, null, new HttpHeaders(), true, false, new Linear(true), host);
+    }
+
+    private static void assertProbePolicy(final AVFormatContext context, final String what) {
+        assertEquals(19_000_000, context.max_analyze_duration(), what + " analyzes for the configured duration");
+        assertEquals(23L * 1_024 * 1_024, context.probesize(), what + " probes the configured size");
+    }
+
+    // WHETHER THE NAMED THREAD IS INSIDE FFMPEG'S PACKET READ
+    private static boolean reading(final String name) {
+        for (final Map.Entry<Thread, StackTraceElement[]> entry: Thread.getAllStackTraces().entrySet()) {
+            if (!entry.getKey().getName().equals(name)) continue;
+            for (final StackTraceElement frame: entry.getValue())
+                if (frame.getMethodName().equals("av_read_frame")) return true;
+        }
+        return false;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Input options")
     class InputOptions {
@@ -166,27 +194,6 @@ public class FFDecoderTest {
                 }
             }
         }
-    }
-
-    // UTILITY
-
-    private static FFDecoder decoder(final URI uri, final Recorder host) {
-        return new FFDecoder("FFThread-Test", uri, null, new HttpHeaders(), true, false, new Linear(true), host);
-    }
-
-    private static void assertProbePolicy(final AVFormatContext context, final String what) {
-        assertEquals(19_000_000, context.max_analyze_duration(), what + " analyzes for the configured duration");
-        assertEquals(23L * 1_024 * 1_024, context.probesize(), what + " probes the configured size");
-    }
-
-    // WHETHER THE NAMED THREAD IS INSIDE FFMPEG'S PACKET READ
-    private static boolean reading(final String name) {
-        for (final Map.Entry<Thread, StackTraceElement[]> entry: Thread.getAllStackTraces().entrySet()) {
-            if (!entry.getKey().getName().equals(name)) continue;
-            for (final StackTraceElement frame: entry.getValue())
-                if (frame.getMethodName().equals("av_read_frame")) return true;
-        }
-        return false;
     }
 
     // A TIMELINE WITHOUT SEEKS THAT RECORDS WHETHER THE DEMUXER REPORTED THE END OF THE INPUT;

@@ -54,59 +54,12 @@ public final class ImageMetadata {
         for (final Map.Entry<String, Object> entry: source.values.entrySet()) this.values.put(entry.getKey(), freeze(entry.getValue()));
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Returns a read-only snapshot of this metadata; later changes to this instance never reach it. */
     public ImageMetadata frozen() {
         return new ImageMetadata(this);
-    }
-
-    /** Returns the trimmed image title, or null when absent. */
-    public String title() {
-        return clean(this.title);
-    }
-
-    /** Returns the trimmed image description, or null when absent. */
-    public String description() {
-        return clean(this.description);
-    }
-
-    /** Returns authors in insertion order; a nonempty result is an unmodifiable view of the stored list. */
-    public List<String> authors() {
-        return this.authors.isEmpty() ? List.of() : Collections.unmodifiableList(this.authors);
-    }
-
-    /** Returns the trimmed copyright notice, or null when absent. */
-    public String copyright() {
-        return clean(this.copyright);
-    }
-
-    /** Returns comments in insertion order; a nonempty result is an unmodifiable view of the stored list. */
-    public List<String> comments() {
-        return this.comments.isEmpty() ? List.of() : Collections.unmodifiableList(this.comments);
-    }
-
-    /** Returns the trimmed creation-time text as supplied by the decoder, without parsing its date format. */
-    public String creationTime() {
-        return clean(this.creationTime);
-    }
-
-    /** Returns the trimmed creating-software identifier, or null when absent. */
-    public String software() {
-        return clean(this.software);
-    }
-
-    /** Returns the trimmed source description, or null when absent. */
-    public String source() {
-        return clean(this.source);
-    }
-
-    /** Returns an unmodifiable custom-value map; nonempty results are live views and values are not copied. */
-    public Map<String, Object> values() {
-        return this.values.isEmpty() ? Map.of() : Collections.unmodifiableMap(this.values);
-    }
-
-    /** Returns the stored custom value, or null for a null, blank or unknown key; lookup does not trim keys. */
-    public Object value(final String key) {
-        return key == null || key.isBlank() ? null : this.values.get(key);
     }
 
     /** Returns whether all normalized fields, lists and the custom-value map are empty. */
@@ -122,6 +75,11 @@ public final class ImageMetadata {
                 && this.values.isEmpty();
     }
 
+    /** Returns the trimmed image title, or null when absent. */
+    public String title() {
+        return clean(this.title);
+    }
+
     /** Stores a trimmed title; null or blank clears it. Returns this instance. */
     public ImageMetadata title(final String value) {
         this.checkMutable();
@@ -129,11 +87,21 @@ public final class ImageMetadata {
         return this;
     }
 
+    /** Returns the trimmed image description, or null when absent. */
+    public String description() {
+        return clean(this.description);
+    }
+
     /** Stores a trimmed description; null or blank clears it. Returns this instance. */
     public ImageMetadata description(final String value) {
         this.checkMutable();
         this.description = clean(value);
         return this;
+    }
+
+    /** Returns authors in insertion order; a nonempty result is an unmodifiable view of the stored list. */
+    public List<String> authors() {
+        return this.authors.isEmpty() ? List.of() : Collections.unmodifiableList(this.authors);
     }
 
     /** Appends a trimmed nonblank author without deduplication; ignores null or blank. Returns this instance. */
@@ -144,11 +112,21 @@ public final class ImageMetadata {
         return this;
     }
 
+    /** Returns the trimmed copyright notice, or null when absent. */
+    public String copyright() {
+        return clean(this.copyright);
+    }
+
     /** Stores a trimmed copyright notice; null or blank clears it. Returns this instance. */
     public ImageMetadata copyright(final String value) {
         this.checkMutable();
         this.copyright = clean(value);
         return this;
+    }
+
+    /** Returns comments in insertion order; a nonempty result is an unmodifiable view of the stored list. */
+    public List<String> comments() {
+        return this.comments.isEmpty() ? List.of() : Collections.unmodifiableList(this.comments);
     }
 
     /** Appends a trimmed nonblank comment without deduplication; ignores null or blank. Returns this instance. */
@@ -159,11 +137,21 @@ public final class ImageMetadata {
         return this;
     }
 
+    /** Returns the trimmed creation-time text as supplied by the decoder, without parsing its date format. */
+    public String creationTime() {
+        return clean(this.creationTime);
+    }
+
     /** Stores trimmed creation-time text without date parsing; null or blank clears it. Returns this instance. */
     public ImageMetadata creationTime(final String value) {
         this.checkMutable();
         this.creationTime = clean(value);
         return this;
+    }
+
+    /** Returns the trimmed creating-software identifier, or null when absent. */
+    public String software() {
+        return clean(this.software);
     }
 
     /** Stores a trimmed creating-software identifier; null or blank clears it. Returns this instance. */
@@ -173,11 +161,26 @@ public final class ImageMetadata {
         return this;
     }
 
+    /** Returns the trimmed source description, or null when absent. */
+    public String source() {
+        return clean(this.source);
+    }
+
     /** Stores a trimmed source description; null or blank clears it. Returns this instance. */
     public ImageMetadata source(final String value) {
         this.checkMutable();
         this.source = clean(value);
         return this;
+    }
+
+    /** Returns an unmodifiable custom-value map; nonempty results are live views and values are not copied. */
+    public Map<String, Object> values() {
+        return this.values.isEmpty() ? Map.of() : Collections.unmodifiableMap(this.values);
+    }
+
+    /** Returns the stored custom value, or null for a null, blank or unknown key; lookup does not trim keys. */
+    public Object value(final String key) {
+        return key == null || key.isBlank() ? null : this.values.get(key);
     }
 
     /**
@@ -195,10 +198,16 @@ public final class ImageMetadata {
         return this;
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private void checkMutable() {
         if (this.readOnly) throw new UnsupportedOperationException("This ImageMetadata is read-only");
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // READERS PUBLISH LIVE VIEWS OVER THEIR OWN MAPS AND LISTS; A SNAPSHOT COPIES THEM SO NEITHER SIDE CAN CHANGE THE OTHER
     private static Object freeze(final Object value) {
         if (value instanceof final Map<?, ?> map) {

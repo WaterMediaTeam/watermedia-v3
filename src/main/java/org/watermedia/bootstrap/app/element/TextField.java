@@ -58,6 +58,10 @@ public final class TextField extends Element<TextField> {
         this.padding = Spacing.hv(10, 8);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public TextField value(final String v) {
         this.value = v == null ? "" : v;
         return this;
@@ -168,40 +172,6 @@ public final class TextField extends Element<TextField> {
     }
 
     @Override
-    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-        this.contentWidth = 0;
-        this.contentHeight = this.ctx != null && this.ctx.text != null ? this.ctx.text.glyphHeight(this.scale) : 0;
-    }
-
-    @Override
-    protected void onDraw(final Canvas canvas) {
-        final int x = this.left;
-        final int y = this.top;
-        final int w = this.measuredWidth;
-        final int h = this.measuredHeight;
-        if (this.focused && this.glowUnder) canvas.glow(x, y, w, h, 0f, this.accent, this.glowAlpha);
-        if (this.fill != null) canvas.fill(x, y, w, h, this.fill);
-        canvas.stroke(x, y, w, h, this.focused ? this.focusStroke == null ? this.accent : this.focusStroke : this.stroke,
-                this.focused ? this.focusStrokeWidth : this.strokeWidth);
-        if (this.focused && !this.glowUnder) canvas.glow(x, y, w, h, 0f, this.accent, this.glowAlpha);
-        if (this.icon != null) canvas.icon(this.icon, x + this.iconX, y + (h - 14) / 2, 14, this.iconColor);
-
-        final int avail = this.innerWidth();
-        final boolean empty = this.value.isEmpty();
-        final String text = empty ? this.placeholder : this.value;
-        final String draw = text.isEmpty() || canvas.textWidth(text, this.scale, false) <= avail
-                ? text : canvas.text().truncateToWidth(text, avail, this.scale, Font.PLAIN);
-        final int th = canvas.textHeight(this.scale, false);
-        final int ty = this.innerTop() + Math.max(0, (this.innerHeight() - th) / 2);
-        if (!draw.isEmpty()) canvas.text(draw, this.innerLeft(), ty, empty ? AppTheme.TEXT_FAINT : AppTheme.TEXT, this.scale, false);
-        if (this.focused && (System.currentTimeMillis() / BLINK_MS) % 2 == 0) {
-            final int end = this.innerLeft() + (empty ? 0 : canvas.textWidth(draw, this.scale, false));
-            final int caretX = this.caretGap ? Math.min(this.innerLeft() + avail, end + (empty ? -5 : 1)) : end;
-            canvas.fill(caretX, ty, this.caretWidth, th, this.caretColor == null ? this.accent : this.caretColor);
-        }
-    }
-
-    @Override
     public boolean dispatchHover(final double mx, final double my) {
         if (!this.focusOnHover) return super.dispatchHover(mx, my);
         final boolean inside = this.visible && this.enabled && this.contains(mx, my);
@@ -267,12 +237,56 @@ public final class TextField extends Element<TextField> {
         return true;
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
+    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+        this.contentWidth = 0;
+        this.contentHeight = this.ctx != null && this.ctx.text != null ? this.ctx.text.glyphHeight(this.scale) : 0;
+    }
+
+    @Override
+    protected void onDraw(final Canvas canvas) {
+        final int x = this.left;
+        final int y = this.top;
+        final int w = this.measuredWidth;
+        final int h = this.measuredHeight;
+        if (this.focused && this.glowUnder) canvas.glow(x, y, w, h, 0f, this.accent, this.glowAlpha);
+        if (this.fill != null) canvas.fill(x, y, w, h, this.fill);
+        canvas.stroke(x, y, w, h, this.focused ? this.focusStroke == null ? this.accent : this.focusStroke : this.stroke,
+                this.focused ? this.focusStrokeWidth : this.strokeWidth);
+        if (this.focused && !this.glowUnder) canvas.glow(x, y, w, h, 0f, this.accent, this.glowAlpha);
+        if (this.icon != null) canvas.icon(this.icon, x + this.iconX, y + (h - 14) / 2, 14, this.iconColor);
+
+        final int avail = this.innerWidth();
+        final boolean empty = this.value.isEmpty();
+        final String text = empty ? this.placeholder : this.value;
+        final String draw = text.isEmpty() || canvas.textWidth(text, this.scale, false) <= avail
+                ? text : canvas.text().truncateToWidth(text, avail, this.scale, Font.PLAIN);
+        final int th = canvas.textHeight(this.scale, false);
+        final int ty = this.innerTop() + Math.max(0, (this.innerHeight() - th) / 2);
+        if (!draw.isEmpty()) canvas.text(draw, this.innerLeft(), ty, empty ? AppTheme.TEXT_FAINT : AppTheme.TEXT, this.scale, false);
+        if (this.focused && (System.currentTimeMillis() / BLINK_MS) % 2 == 0) {
+            final int end = this.innerLeft() + (empty ? 0 : canvas.textWidth(draw, this.scale, false));
+            final int caretX = this.caretGap ? Math.min(this.innerLeft() + avail, end + (empty ? -5 : 1)) : end;
+            canvas.fill(caretX, ty, this.caretWidth, th, this.caretColor == null ? this.accent : this.caretColor);
+        }
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     private void changed() {
         this.invalidate();
         if (this.onChange != null) this.onChange.accept(this.value);
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
 
     private static String withoutLastWord(final String value) {
         // DROPS TRAILING SPACES, THEN THE LAST WORD, THEN ONE BREAK CHARACTER BEFORE IT

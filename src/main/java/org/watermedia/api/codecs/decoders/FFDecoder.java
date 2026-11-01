@@ -68,13 +68,13 @@ public final class FFDecoder {
     private static final int VIDEO_FRAME_QUEUE_SLOTS = 3;
     private static final int AUDIO_FRAME_QUEUE_SLOTS = 9;
 
-    // HW DECODE HEALTH — FALL BACK TO SOFTWARE WHEN THE GPU PATH MISBEHAVES.
-    // SOME DRIVERS (NOTABLY AMD D3D11VA) DECODE FINE BUT STALL ON THE GPU→CPU
-    // FRAME TRANSFER, MAKING HW DECODE SLOWER THAN SOFTWARE.
+    // HW DECODE HEALTH: FALL BACK TO SOFTWARE WHEN THE GPU PATH MISBEHAVES; SOME DRIVERS (NOTABLY AMD D3D11VA) DECODE FINE
+    // BUT STALL ON THE GPU→CPU FRAME TRANSFER, MAKING HW DECODE SLOWER THAN SOFTWARE
     private static final int HW_TRANSFER_FAIL_LIMIT = 30;       // CONSECUTIVE av_hwframe_transfer_data FAILURES
     private static final int HW_TRANSFER_PERF_WINDOW = 120;     // FRAMES PER PERFORMANCE EVALUATION
     private static final double HW_TRANSFER_BUDGET_RATIO = 0.75; // MAX AVG TRANSFER TIME VS FRAME DURATION
 
+    // HARDWARE DEVICE TYPES, TRIED IN THIS ORDER WHEN THE ENGINE'S VULKAN DEVICE DOES NOT TAKE THE STREAM
     private static final int[] VIDEO_HW_CODECS = {
             AV_HWDEVICE_TYPE_CUDA,          // NVIDIA
             AV_HWDEVICE_TYPE_QSV,           // INTEL
@@ -92,53 +92,6 @@ public final class FFDecoder {
             // GENERIC GPU PATH, KEPT LAST ON PURPOSE AS THE LAST RESORT
             AV_HWDEVICE_TYPE_VULKAN         // VULKAN
     };
-
-    /** Playback timeline the decoder follows: seeks, pause, queue serials and the end of the input; the player's clock. */
-    public interface Timeline {
-        /** Takes the pending seek, or returns null when none is pending. */
-        Seek consumeSeek();
-        /** Returns whether a seek is pending. */
-        boolean seekPending();
-        /** Returns whether playback is held paused, so the demuxer parks. */
-        boolean holding();
-        /** Waits until the status changes or a seek arrives, at most {@code timeoutMs} (0 waits for it). */
-        void awaitChange(final long timeoutMs) throws InterruptedException;
-        /** Adopts the serial the queues carry after a reset, so frames of that serial count. */
-        void serial(final int serial);
-        /** Starts the clock once the input is open. */
-        void start();
-        /** Records that the demuxer resumed after the end of the input. */
-        void signalDemuxResumed();
-        /** Records that the demuxer reached the end of the input. */
-        void signalDemuxFinished();
-        /** Returns the duration of one video frame in seconds. */
-        double frameDurationSec();
-    }
-
-    /** Player side of the decoder: the cache, the Vulkan device, the audio format and the open and failure reports. */
-    public interface Host {
-        /** Returns the cached copy of {@code uri}, or null to open it remotely; runs on the demux thread, so it may block. */
-        Path cached(final URI uri) throws IOException;
-        /** Returns the player engine's Vulkan device for {@code codecId}, whose reference the decoder then owns, or null. */
-        Device vulkan(final int codecId);
-        /** Formats the player's audio engine for a source and returns the PCM it takes, or null to drop the audio. */
-        Pcm audio(final SampleType type, final int channels, final int rate);
-        /** Reports the duration of the input in milliseconds (0 when unknown, as live) each time it is probed, on the demux thread. */
-        void duration(final long ms);
-        /** Reports the open input before the clock starts, on the demux thread. */
-        void opened(final FFDecoder decoder);
-        /** Reports why the input could not open or keep playing; never called for an abort. */
-        void failed(final Throwable cause);
-    }
-
-    /** A seek to {@code targetMs}, frame-exact when {@code precise}. */
-    public record Seek(long targetMs, boolean precise) {}
-
-    /** A Vulkan device reference and whether libplacebo runs on it. */
-    public record Device(AVBufferRef ref, boolean filters) {}
-
-    /** Interleaved PCM layout an audio engine takes. */
-    public record Pcm(SampleType type, int channels) {}
 
     // INPUT
     private final String group;
@@ -235,7 +188,7 @@ public final class FFDecoder {
     }
 
     // ==========================================================================
-    // CONTROL
+    // PUBLIC API: CONTROL
     // ==========================================================================
     /** Spawns the demux thread, which opens the input, reports it to the host, starts the clock and the decoders. */
     public void start() {
@@ -285,17 +238,15 @@ public final class FFDecoder {
     }
 
     // ==========================================================================
-    // STATE
+    // PUBLIC API: STATE
     // ==========================================================================
     /** Returns the queue of decoded video frames, read by one consumer thread. */
     public FrameQueue videoFrames() { return this.videoFrameQueue; }
-
     /** Returns the queue of decoded audio frames, read by one consumer thread. */
     public FrameQueue audioFrames() { return this.audioFrameQueue; }
 
     /** Returns whether a video stream decodes. */
     public boolean video() { return this.videoStreamIndex >= 0; }
-
     /** Returns whether an audio stream decodes. */
     public boolean audio() { return this.audioStreamIndex >= 0; }
 
@@ -329,10 +280,8 @@ public final class FFDecoder {
 
     /** Returns whether a hardware decoder is in use. */
     public boolean hardware() { return !FFTool.isNull(this.hwDeviceCtx); }
-
     /** Returns whether the frames stay on the player's Vulkan device. */
     public boolean vulkan() { return this.vulkanFrames; }
-
     /** Returns whether libplacebo converts the frames on that device. */
     public boolean filters() { return this.vulkanFrames && this.filters; }
 
@@ -341,12 +290,83 @@ public final class FFDecoder {
 
     /** Returns the input the decoder opened. */
     public URI uri() { return this.uri; }
-
     /** Returns the plausible frame rate of the video stream, or 0 when it reports none. */
     public float fps() { return this.fps; }
-
     /** Returns whether the input is an HLS playlist. */
     public boolean hls() { return this.hls; }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    // MAIN AND SEPARATE AUDIO INPUTS SHARE TRANSPORT AND PROBING POLICY; FFMPEG EXPECTS MICROSECONDS/BYTES WHERE THE CONFIG
+    // USES MILLISECONDS/MEBIBYTES
+    void applyInputOptions(final AVDictionary options) {
+        FFTool.configureTLS(options);
+        av_dict_set(options, "headers", this.headers.toRawString(), 0);
+        final long analyzeMs = WaterMediaConfig.codecs.ffmpeg.analyzeDuration;
+        if (analyzeMs > 0) av_dict_set(options, "analyzeduration", String.valueOf(analyzeMs * 1_000L), 0);
+        av_dict_set(options, "probesize", String.valueOf(DataTool.megabytes(WaterMediaConfig.codecs.ffmpeg.probeSize)), 0);
+        av_dict_set(options, "buffer_size", "33554432", 0);
+        av_dict_set(options, "rtbufsize", "15000000", 0);
+        av_dict_set(options, "http_persistent", "1", 0);
+        av_dict_set(options, "multiple_requests", "0", 0);
+        av_dict_set(options, "reconnect", "1", 0);
+        av_dict_set(options, "reconnect_streamed", "1", 0);
+        av_dict_set(options, "reconnect_delay_max", "5", 0);
+        av_dict_set(options, "timeout", "10000000", 0);
+        av_dict_set(options, "rtsp_transport", "tcp", 0);
+        av_dict_set(options, "max_delay", "5000000", 0);
+    }
+
+    // OPENS THE SEPARATE AUDIO TRACK AND TAKES ITS FIRST AUDIO STREAM; FALSE WHEN IT CANNOT PLAY OR AN ABORT CUT THE OPEN SHORT
+    boolean initAudioTrack(final Track track) {
+        final URI trackUri = track.uri();
+        if (trackUri == null) {
+            LOGGER.error(IT, "Audio track {} has no URI", track.name());
+            return false;
+        }
+
+        final String trackUrl = this.url(trackUri);
+        if (trackUrl == null) return false;
+
+        this.trackFormatContext = avformat.avformat_alloc_context();
+        this.trackFormatContext.interrupt_callback().callback(INTERRUPT).opaque(this.abortFlag);
+        final AVDictionary trackOptions = new AVDictionary();
+
+        try {
+            this.applyInputOptions(trackOptions);
+
+            if (avformat.avformat_open_input(this.trackFormatContext, trackUrl, null, trackOptions) < 0) {
+                if (!this.aborted) LOGGER.error(IT, "Failed to open audio track input: {}", trackUrl);
+                this.trackFormatContext = null;
+                return false;
+            }
+        } finally {
+            av_dict_free(trackOptions);
+        }
+
+        if (avformat.avformat_find_stream_info(this.trackFormatContext, (PointerPointer<?>) null) < 0) {
+            if (!this.aborted) LOGGER.error(IT, "Failed to find stream info for audio track");
+            avformat.avformat_close_input(this.trackFormatContext);
+            this.trackFormatContext = null;
+            return false;
+        }
+
+        for (int i = 0; i < this.trackFormatContext.nb_streams(); i++) {
+            final AVStream stream = this.trackFormatContext.streams(i);
+            if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO) {
+                this.audioStreamIndex = i;
+                this.audioTimeBase = av_q2d(stream.time_base());
+                LOGGER.debug(IT, "Audio track opened: {}", trackUrl);
+                return true;
+            }
+        }
+
+        LOGGER.error(IT, "No audio stream found in audio track: {}", trackUrl);
+        avformat.avformat_close_input(this.trackFormatContext);
+        this.trackFormatContext = null;
+        return false;
+    }
 
     // ==========================================================================
     // DEMUX THREAD
@@ -380,7 +400,7 @@ public final class FFDecoder {
         boolean mainEof = false;
         boolean trackEof = false;
 
-        LOGGER.debug(IT, "Demux loop starting — videoIdx={}, audioIdx={}, useAudioTrack={}, nb_streams={}",
+        LOGGER.debug(IT, "Demux loop starting: videoIdx={}, audioIdx={}, useAudioTrack={}, nb_streams={}",
                 this.videoStreamIndex, this.audioStreamIndex, this.useAudioTrack,
                 this.formatContext != null ? this.formatContext.nb_streams() : -1);
 
@@ -435,10 +455,10 @@ public final class FFDecoder {
                         this.audioPacketQueue.reset();
                         this.timeline.serial(this.videoPacketQueue.serial());
                         if (!reopenOk) {
-                            // reopenFormat ALREADY CLOSED THE OLD CONTEXT — THERE IS NOTHING LEFT TO READ FROM, THE
-                            // PIPELINE CANNOT RECOVER; A REOPEN CUT SHORT BY stop() IS THE CALLER'S OWN DOING, NOT A FAILURE
+                            // reopenFormat ALREADY CLOSED THE OLD CONTEXT: WITH NOTHING LEFT TO READ FROM, THE PIPELINE CANNOT RECOVER;
+                            // A REOPEN CUT SHORT BY stop() IS THE CALLER'S OWN DOING, NOT A FAILURE
                             if (this.aborted) return;
-                            LOGGER.error(IT, "Seek to {}ms failed and the input could not be reopened — stopping pipeline", targetMs);
+                            LOGGER.error(IT, "Seek to {}ms failed and the input could not be reopened; stopping pipeline", targetMs);
                             this.host.failed(new IOException("Seek to " + targetMs + "ms failed and the input could not be reopened"));
                             return;
                         }
@@ -509,8 +529,7 @@ public final class FFDecoder {
                         mainEof = true;
                         LOGGER.debug(IT, "Main context EOF after {} video packets", demuxVideoPackets);
                         this.videoPacketQueue.finish();
-                        // WITHOUT A SEPARATE TRACK, AUDIO PACKETS COME FROM THE SAME FORMAT
-                        // CONTEXT — FINISH THE AUDIO QUEUE SO DECODE THREADS DRAIN CLEANLY.
+                        // WITHOUT A SEPARATE TRACK THE AUDIO PACKETS COME FROM THIS CONTEXT TOO, SO THE AUDIO QUEUE FINISHES AND DRAINS CLEANLY
                         if (!this.useAudioTrack) this.audioPacketQueue.finish();
                     }
                 }
@@ -570,7 +589,7 @@ public final class FFDecoder {
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            LOGGER.debug(IT, "Demux loop exiting — video: {}, audio: {}, interrupted: {}",
+            LOGGER.debug(IT, "Demux loop exiting (video: {}, audio: {}, interrupted: {})",
                     demuxVideoPackets, demuxAudioPackets, Thread.currentThread().isInterrupted());
 
             this.videoPacketQueue.finish();
@@ -631,8 +650,7 @@ public final class FFDecoder {
 
                     if (!eof && packetSerial != this.videoPacketQueue.serial()) continue;
 
-                    // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE
-                    // SKIPS ONLY THAT PACKET.
+                    // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE SKIPS ONLY THAT PACKET
                     final int sent = avcodec.avcodec_send_packet(this.videoCodecContext, packet);
                     if (sent < 0 && sent != again && sent != AVERROR_EOF && ++sendFailures == 1)
                         logCodecError("video", "send packet", this.videoCodecContext, this.videoStreamIndex, sent);
@@ -652,7 +670,7 @@ public final class FFDecoder {
                             if (av_hwframe_transfer_data(hwTransfer, tempFrame, 0) < 0) {
                                 if (hwFailStreak++ == 0) LOGGER.warn(IT, "Failed to transfer frame from GPU");
                                 if (hwFailStreak >= HW_TRANSFER_FAIL_LIMIT) {
-                                    LOGGER.error(IT, "GPU frame transfer failed {} times in a row — falling back to software decoding", hwFailStreak);
+                                    LOGGER.error(IT, "GPU frame transfer failed {} times in a row; falling back to software decoding", hwFailStreak);
                                     hwGaveUp = this.reinitVideoCodecSoftware();
                                     hwFailStreak = 0;
                                 }
@@ -665,15 +683,14 @@ public final class FFDecoder {
                                     .chroma_location(tempFrame.chroma_location()).color_trc(tempFrame.color_trc())
                                     .color_primaries(tempFrame.color_primaries());
 
-                            // SOME DRIVERS (NOTABLY AMD D3D11VA) DECODE FINE BUT STALL ON
-                            // THE GPU→CPU COPY — IF THE TRANSFER ALONE EATS THE FRAME
-                            // BUDGET, SOFTWARE DECODING IS FASTER. EVALUATE PERIODICALLY.
+                            // SOME DRIVERS (NOTABLY AMD D3D11VA) DECODE FINE BUT STALL ON THE GPU→CPU COPY: WHEN THE TRANSFER ALONE
+                            // EATS THE FRAME BUDGET, SOFTWARE DECODING IS FASTER, SO EVERY WINDOW OF FRAMES IS EVALUATED
                             hwTransferNs += System.nanoTime() - transferStart;
                             if (++hwTransferCount >= HW_TRANSFER_PERF_WINDOW) {
                                 final double avgSec = hwTransferNs / 1_000_000_000.0 / hwTransferCount;
                                 final double frameSec = this.timeline.frameDurationSec();
                                 if (avgSec > frameSec * HW_TRANSFER_BUDGET_RATIO) {
-                                    LOGGER.warn(IT, "GPU frame transfer too slow (avg {}ms vs {}ms frame budget) — falling back to software decoding",
+                                    LOGGER.warn(IT, "GPU frame transfer too slow (avg {}ms vs {}ms frame budget); falling back to software decoding",
                                             String.format("%.1f", avgSec * 1_000.0), (long) (frameSec * 1_000.0));
                                     hwGaveUp = this.reinitVideoCodecSoftware();
                                 }
@@ -736,13 +753,13 @@ public final class FFDecoder {
                     if (packet != null) avcodec.av_packet_free(packet);
                 }
 
-                if (eof) break; // DECODER FULLY DRAINED — NOTHING MORE TO PRODUCE
+                if (eof) break; // DECODER FULLY DRAINED, NOTHING MORE TO PRODUCE
             }
         } finally {
             if (sendFailures > 1 || receiveFailures > 1)
                 LOGGER.warn(IT, "Video decoder suppressed repeated errors: send={}, receive={}, stream={}",
                         Math.max(0L, sendFailures - 1), Math.max(0L, receiveFailures - 1), this.videoStreamIndex);
-            LOGGER.debug(IT, "Video decode exiting — packets: {}, frames produced: {}, interrupted: {}",
+            LOGGER.debug(IT, "Video decode exiting (packets: {}, frames produced: {}, interrupted: {})",
                     packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
             // RESET THE CODEC FOR THE NEXT RUN: A CLEAN EOF LEAVES IT DRAINED, REJECTING NEW PACKETS, AND A repeat() RESTARTS THIS
             // THREAD WITH lastSerial=-1, WHICH SKIPS THE PER-SEEK FLUSH; UNFLUSHED, THE REPEAT WOULD EMIT ZERO FRAMES, TRIP THE
@@ -809,8 +826,7 @@ public final class FFDecoder {
             while (!Thread.currentThread().isInterrupted()) {
                 final AVPacket packet = this.audioPacketQueue.get(serialOut);
 
-                // SEE videoDecodeLoop: a null PACKET IS A CLEAN EOF (FLUSH THE DECODER'S
-                // BUFFERED BACKLOG) OR AN abort() TEARDOWN (DROP IT).
+                // SEE videoDecodeLoop: A null PACKET IS A CLEAN EOF (FLUSH THE DECODER'S BUFFERED BACKLOG) OR AN abort() TEARDOWN (DROP IT)
                 final boolean eof = packet == null;
                 if (eof && (lastSerial < 0 || !this.audioPacketQueue.endOfFile())) break;
 
@@ -820,8 +836,7 @@ public final class FFDecoder {
                     if (!eof && packetSerial != lastSerial) {
                         if (lastSerial >= 0) {
                             avcodec.avcodec_flush_buffers(this.audioCodecContext);
-                            // DROP SAMPLES BUFFERED INSIDE THE RESAMPLER — THEY BELONG
-                            // TO THE PRE-SEEK POSITION AND WOULD LEAK INTO POST-SEEK AUDIO
+                            // DROP SAMPLES BUFFERED INSIDE THE RESAMPLER: THEY BELONG TO THE PRE-SEEK POSITION AND WOULD LEAK INTO POST-SEEK AUDIO
                             if (!this.audioPassthrough && this.swrContext != null) {
                                 swresample.swr_close(this.swrContext);
                                 swresample.swr_init(this.swrContext);
@@ -835,8 +850,7 @@ public final class FFDecoder {
 
                     if (!eof && packetSerial != this.audioPacketQueue.serial()) continue;
 
-                    // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE
-                    // SKIPS ONLY THAT PACKET.
+                    // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE SKIPS ONLY THAT PACKET
                     final int sent = avcodec.avcodec_send_packet(this.audioCodecContext, packet);
                     if (sent < 0 && sent != again && sent != AVERROR_EOF && ++sendFailures == 1)
                         logCodecError("audio", "send packet", this.audioCodecContext, this.audioStreamIndex, sent);
@@ -849,8 +863,7 @@ public final class FFDecoder {
                                 logCodecError("audio", "receive frame", this.audioCodecContext, this.audioStreamIndex, received);
                             break;
                         }
-                        // MID-STREAM PARAMETER CHANGES (CHAINED OGG / ICECAST) NEED A NEW
-                        // RESAMPLER — FEEDING THE OLD ONE PLAYS AUDIO AT THE WRONG SPEED
+                        // MID-STREAM PARAMETER CHANGES (CHAINED OGG / ICECAST) NEED A NEW RESAMPLER: FEEDING THE OLD ONE PLAYS AUDIO AT THE WRONG SPEED
                         if (!this.ensureAudioInputConfig(tempFrame)) continue;
 
                         // PREFER BEST-EFFORT TIMESTAMPS; SYNTHESIZE CONTINUITY WHEN MISSING
@@ -892,13 +905,13 @@ public final class FFDecoder {
                     if (packet != null) avcodec.av_packet_free(packet);
                 }
 
-                if (eof) break; // DECODER FULLY DRAINED — NOTHING MORE TO PRODUCE
+                if (eof) break; // DECODER FULLY DRAINED, NOTHING MORE TO PRODUCE
             }
         } finally {
             if (sendFailures > 1 || receiveFailures > 1)
                 LOGGER.warn(IT, "Audio decoder suppressed repeated errors: send={}, receive={}, stream={}",
                         Math.max(0L, sendFailures - 1), Math.max(0L, receiveFailures - 1), this.audioStreamIndex);
-            LOGGER.debug(IT, "Audio decode exiting — packets: {}, frames produced: {}, interrupted: {}",
+            LOGGER.debug(IT, "Audio decode exiting (packets: {}, frames produced: {}, interrupted: {})",
                     packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
             // RESET THE CODEC FOR THE NEXT RUN, AS THE VIDEO DECODER DOES: A repeat() RESTARTS THIS THREAD WITH lastSerial=-1,
             // SKIPPING THE PER-SEEK FLUSH, AND A DECODER DRAINED AT EOF WOULD REJECT NEW PACKETS. AUDIO RARELY BUFFERS, BUT IT
@@ -990,9 +1003,8 @@ public final class FFDecoder {
             return true;
         }
 
-        // THE FLUSHED SAMPLES CONTINUE THE LAST ENQUEUED FRAME — STAMPING THEM
-        // WITH THE CONSUMER CLOCK (WHICH LAGS DECODE BY THE QUEUE DEPTH) WOULD
-        // YANK THE CLOCK BACKWARD ON UPLOAD AND STALL PLAYBACK
+        // THE FLUSHED SAMPLES CONTINUE THE LAST ENQUEUED FRAME: STAMPING THEM WITH THE CONSUMER CLOCK (WHICH LAGS DECODE BY THE
+        // QUEUE DEPTH) WOULD YANK THE CLOCK BACKWARD ON UPLOAD AND STALL PLAYBACK
         final double ptsSec = Double.isNaN(this.audioNextPtsSec) ? 0.0 : this.audioNextPtsSec;
         final double durationSec = (double) flushed / this.audioOutputSampleRate;
         slot.frame.nb_samples(flushed);
@@ -1019,7 +1031,7 @@ public final class FFDecoder {
         }
 
         if (!this.audioChangeWarned)
-            LOGGER.warn(IT, "Audio parameters changed mid-stream: {}ch {}Hz fmt={} -> {}ch {}Hz fmt={} — rebuilding resampler",
+            LOGGER.warn(IT, "Audio parameters changed mid-stream: {}ch {}Hz fmt={} -> {}ch {}Hz fmt={}; rebuilding resampler",
                     this.audioInputChannels, this.audioInputSampleRate, this.audioInputAvFormat, channels, rate, format);
         this.audioChangeWarned = true;
 
@@ -1060,8 +1072,15 @@ public final class FFDecoder {
     }
 
     // ==========================================================================
-    // DECODE THREADS
+    // PIPELINE THREADS
     // ==========================================================================
+    // AN UNSTARTED PIPELINE THREAD OF THE PLAYER'S GROUP, SO A CALLER CAN PUBLISH IT IN ITS FIELD BEFORE IT RUNS
+    private Thread thread(final String role, final Runnable task) {
+        final Thread thread = THREADS.newThread(task);
+        thread.setName(this.group + "-" + role);
+        return thread;
+    }
+
     private void stopDecodeThreads() {
         this.videoPacketQueue.abort();
         this.audioPacketQueue.abort();
@@ -1122,7 +1141,7 @@ public final class FFDecoder {
                             videoReached = this.drainDecode(this.videoCodecContext, packet, drainFrame,
                                     this.videoTimeBase, threshold);
                         } else {
-                            // THRESHOLD ALREADY MET — STILL FEED THE CODEC TO KEEP THE DPB INTACT
+                            // THRESHOLD ALREADY MET: STILL FEED THE CODEC TO KEEP THE DPB INTACT
                             avcodec.avcodec_send_packet(this.videoCodecContext, packet);
                             while (avcodec.avcodec_receive_frame(this.videoCodecContext, drainFrame) >= 0) { }
                         }
@@ -1178,8 +1197,8 @@ public final class FFDecoder {
             if (this.aborted) return null;
             LOGGER.debug(IT, "Cache bypass for {}", uri, e);
         }
-        // FILE URIS MUST GO THROUGH Path — STRIPPING THE LEADING SLASH ONLY WORKS
-        // FOR WINDOWS DRIVE PATHS (/C:/x) AND BREAKS UNIX ABSOLUTE PATHS (/home/x)
+        // FILE URIS GO THROUGH Path: STRIPPING THE LEADING SLASH WORKS ONLY FOR WINDOWS DRIVE PATHS (/C:/x) AND BREAKS UNIX
+        // ABSOLUTE PATHS (/home/x)
         if ("file".equalsIgnoreCase(uri.getScheme())) {
             try {
                 return Path.of(uri).toString();
@@ -1190,8 +1209,8 @@ public final class FFDecoder {
         return uri.toString();
     }
 
-    // OPENS THE ALREADY-ALLOCATED MAIN INPUT; FFMPEG FREES THE CONTEXT WHEN OPENING FAILS.
-    // CLEAR ITS JAVA REFERENCE SO CLEANUP AND READS CANNOT TOUCH FREED MEMORY.
+    // OPENS THE ALREADY-ALLOCATED MAIN INPUT; FFMPEG FREES THE CONTEXT WHEN OPENING FAILS, SO ITS JAVA REFERENCE IS CLEARED
+    // AND CLEANUP AND READS NEVER TOUCH FREED MEMORY
     private boolean openInput(final String url) {
         final AVDictionary options = new AVDictionary();
         try {
@@ -1236,9 +1255,8 @@ public final class FFDecoder {
         final long duration = this.formatContext.duration();
         this.host.duration(duration == AV_NOPTS_VALUE || duration < 0 ? 0 : duration / 1_000);
 
-        // RE-RESOLVE STREAM INDICES — A REOPENED INPUT MAY EXPOSE STREAMS IN A
-        // DIFFERENT ORDER (COMMON WITH HLS). THE CODEC CONTEXTS ARE KEPT, SO THE
-        // NEW STREAMS MUST MATCH THE CODECS THEY WERE OPENED FOR.
+        // RE-RESOLVE STREAM INDICES: A REOPENED INPUT MAY EXPOSE STREAMS IN A DIFFERENT ORDER (COMMON WITH HLS), AND THE CODEC
+        // CONTEXTS ARE KEPT, SO THE NEW STREAMS MUST MATCH THE CODECS THEY WERE OPENED FOR
         int newVideoIndex = -1;
         int newAudioIndex = -1;
         for (int i = 0; i < this.formatContext.nb_streams(); i++) {
@@ -1268,26 +1286,6 @@ public final class FFDecoder {
         if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
 
         return true;
-    }
-
-    // MAIN AND SEPARATE AUDIO INPUTS SHARE TRANSPORT AND PROBING POLICY.
-    // FFMPEG EXPECTS MICROSECONDS/BYTES WHERE CONFIG USES MILLISECONDS/MEBIBYTES.
-    void applyInputOptions(final AVDictionary options) {
-        FFTool.configureTLS(options);
-        av_dict_set(options, "headers", this.headers.toRawString(), 0);
-        final long analyzeMs = WaterMediaConfig.codecs.ffmpeg.analyzeDuration;
-        if (analyzeMs > 0) av_dict_set(options, "analyzeduration", String.valueOf(analyzeMs * 1_000L), 0);
-        av_dict_set(options, "probesize", String.valueOf(DataTool.megabytes(WaterMediaConfig.codecs.ffmpeg.probeSize)), 0);
-        av_dict_set(options, "buffer_size", "33554432", 0);
-        av_dict_set(options, "rtbufsize", "15000000", 0);
-        av_dict_set(options, "http_persistent", "1", 0);
-        av_dict_set(options, "multiple_requests", "0", 0);
-        av_dict_set(options, "reconnect", "1", 0);
-        av_dict_set(options, "reconnect_streamed", "1", 0);
-        av_dict_set(options, "reconnect_delay_max", "5", 0);
-        av_dict_set(options, "timeout", "10000000", 0);
-        av_dict_set(options, "rtsp_transport", "tcp", 0);
-        av_dict_set(options, "max_delay", "5000000", 0);
     }
 
     // ==========================================================================
@@ -1390,55 +1388,6 @@ public final class FFDecoder {
         }
     }
 
-    boolean initAudioTrack(final Track track) {
-        final URI trackUri = track.uri();
-        if (trackUri == null) {
-            LOGGER.error(IT, "Audio track {} has no URI", track.name());
-            return false;
-        }
-
-        final String trackUrl = this.url(trackUri);
-        if (trackUrl == null) return false;
-
-        this.trackFormatContext = avformat.avformat_alloc_context();
-        this.trackFormatContext.interrupt_callback().callback(INTERRUPT).opaque(this.abortFlag);
-        final AVDictionary trackOptions = new AVDictionary();
-
-        try {
-            this.applyInputOptions(trackOptions);
-
-            if (avformat.avformat_open_input(this.trackFormatContext, trackUrl, null, trackOptions) < 0) {
-                if (!this.aborted) LOGGER.error(IT, "Failed to open audio track input: {}", trackUrl);
-                this.trackFormatContext = null;
-                return false;
-            }
-        } finally {
-            av_dict_free(trackOptions);
-        }
-
-        if (avformat.avformat_find_stream_info(this.trackFormatContext, (PointerPointer<?>) null) < 0) {
-            if (!this.aborted) LOGGER.error(IT, "Failed to find stream info for audio track");
-            avformat.avformat_close_input(this.trackFormatContext);
-            this.trackFormatContext = null;
-            return false;
-        }
-
-        for (int i = 0; i < this.trackFormatContext.nb_streams(); i++) {
-            final AVStream stream = this.trackFormatContext.streams(i);
-            if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO) {
-                this.audioStreamIndex = i;
-                this.audioTimeBase = av_q2d(stream.time_base());
-                LOGGER.debug(IT, "Audio track opened: {}", trackUrl);
-                return true;
-            }
-        }
-
-        LOGGER.error(IT, "No audio stream found in audio track: {}", trackUrl);
-        avformat.avformat_close_input(this.trackFormatContext);
-        this.trackFormatContext = null;
-        return false;
-    }
-
     private boolean initVideo() {
         // AUDIO-ONLY INPUTS AND PLAYERS WITHOUT A VIDEO ENGINE ARE ROUTINE, NOT AN ANOMALY
         if (!this.videoWanted || this.videoStreamIndex < 0) {
@@ -1454,7 +1403,7 @@ public final class FFDecoder {
         final double avgFps = av_q2d(videoStream.avg_frame_rate());
         final double rFps = av_q2d(videoStream.r_frame_rate());
         this.fps = avgFps >= 1.0 && avgFps <= 1_000.0 ? (float) avgFps : rFps >= 1.0 && rFps <= 1_000.0 ? (float) rFps : 0f;
-        if (this.fps == 0f) LOGGER.warn(IT, "No plausible frame rate (avg={}, r={}) — the clock keeps its default", avgFps, rFps);
+        if (this.fps == 0f) LOGGER.warn(IT, "No plausible frame rate (avg={}, r={}); the clock keeps its default", avgFps, rFps);
 
         final AVCodecParameters codecpar = videoStream.codecpar();
         final int codecId = codecpar.codec_id();
@@ -1474,9 +1423,8 @@ public final class FFDecoder {
         if (decoder == null)
             LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}", codecId, this.videoStreamIndex);
 
-        // REPORT THE ACTUAL DECODER (e.g. libdav1d vs libaom-av1 vs THE NATIVE av1 DECODER):
-        // THE SAME CODEC ID RESOLVES TO DIFFERENT DECODERS PER PLATFORM BUILD, AND THEY DIFFER
-        // IN REORDER DELAY AND STREAM SUPPORT — KEY CONTEXT WHEN A DECODE YIELDS NO FRAMES.
+        // REPORT THE ACTUAL DECODER (libdav1d, libaom-av1 OR THE NATIVE av1 ONE): THE SAME CODEC ID RESOLVES TO DIFFERENT DECODERS
+        // PER PLATFORM BUILD, WHICH DIFFER IN REORDER DELAY AND STREAM SUPPORT (KEY CONTEXT WHEN A DECODE YIELDS NO FRAMES)
         LOGGER.debug(IT, "Video codec: {} ({}) via {}, bitrate: {} kbps, profile: {}, level: {}, pixel format: {}",
                 codecName, codecLongName, decoder != null ? FFTool.string(decoder.name(), codecName) : "no decoder",
                 bitrate > 0 ? bitrate / 1_000 : "N/A", FFTool.string(profilePointer, profile), level, FFTool.string(fmtNamePointer, pixFmt));
@@ -1486,7 +1434,7 @@ public final class FFDecoder {
         // softwareVideoDecoder. A NULL decoder SKIPS THE HARDWARE PATH, WHOSE avcodec_get_hw_config WOULD DEREFERENCE IT
         // NATIVELY AND SEGFAULT THE JVM, SO THE SOFTWARE PATH FAILS CLEANLY
         if (!hwAllowed || decoder == null || !this.initHwDecoder(decoder, videoStream)) {
-            if (!hwAllowed) LOGGER.debug(IT, "Hardware acceleration disabled by config — using software decoding");
+            if (!hwAllowed) LOGGER.debug(IT, "Hardware acceleration disabled by config; using software decoding");
 
             final AVCodec swDecoder = softwareVideoDecoder(codecId, decoder);
             if (swDecoder == null) {
@@ -1540,15 +1488,6 @@ public final class FFDecoder {
         return false;
     }
 
-    // THE DECODER'S CONFIGURATION THAT TAKES A DEVICE CONTEXT OF TYPE hw, OR NULL
-    private static AVCodecHWConfig hwConfig(final AVCodec decoder, final int hw) {
-        for (int i = 0; ; i++) {
-            final AVCodecHWConfig config = avcodec.avcodec_get_hw_config(decoder, i);
-            if (config == null) return null;
-            if (config.device_type() == hw && (config.methods() & avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) return config;
-        }
-    }
-
     // OPENS THE DECODER ON device, A REFERENCE THIS DECODER OWNS FROM HERE ON; FALSE LEAVES NOTHING OPEN
     private boolean openHw(final AVCodec decoder, final AVStream videoStream, final AVCodecHWConfig config, final AVBufferRef device) {
         this.hwDeviceCtx = device;
@@ -1582,45 +1521,14 @@ public final class FFDecoder {
         this.vulkanFrames = false;
     }
 
-    // A SOFTWARE-CAPABLE VIDEO DECODER: THE NATIVE av1 DECODER avcodec_find_decoder RETURNS IS A HWACCEL HOST THAT EMITS NO
-    // FRAMES WITHOUT AN ACCELERATOR, SO AV1 PREFERS libdav1d, THEN libaom-av1, THEN THE DEFAULT. EVERY OTHER CODEC OF THE
-    // BUNDLED FFMPEG DEFAULTS TO A NATIVE SOFTWARE DECODER; THE PLAYER'S ZERO-FRAME → ERROR CHECK BACKS ANY FUTURE STUB
-    private static AVCodec softwareVideoDecoder(final int codecId, final AVCodec fallback) {
-        if (codecId == AV_CODEC_ID_AV1) {
-            final AVCodec dav1d = avcodec_find_decoder_by_name("libdav1d");
-            if (dav1d != null) return dav1d;
-            final AVCodec aom = avcodec_find_decoder_by_name("libaom-av1");
-            if (aom != null) return aom;
-        }
-        return fallback;
-    }
-
-    // SIZES THE SOFTWARE DECODER THREAD POOL TO THE FRAME AREA
-    private static void configureSwDecoderThreads(final AVCodecContext ctx) {
-        final int width = ctx.width();
-        final int height = ctx.height();
-        final int pixels = width * height;
-
-        final int threads = pixels <= 921_600
-                ? Math.min(2, MAX_DECODE_THREADS) : pixels <= 2_073_600
-                ? Math.min(4, MAX_DECODE_THREADS) : pixels <= 3_686_400
-                ? Math.min(6, MAX_DECODE_THREADS) : MAX_DECODE_THREADS;
-
-        ctx.thread_count(threads);
-        ctx.thread_type(AVCodecContext.FF_THREAD_FRAME | AVCodecContext.FF_THREAD_SLICE);
-
-        LOGGER.debug(IT, "Decoder threading: {} threads for {}x{}", threads, width, height);
-    }
-
     // REPLACES A MISBEHAVING HARDWARE DECODER WITH A SOFTWARE ONE IN PLACE, ON THE VIDEO DECODE THREAD; videoCodecContext IS
     // SWAPPED ONLY ON FULL SUCCESS, SO A FAILURE KEEPS THE HW CONTEXT USABLE. THE CURRENT GOP IS LOST UNTIL THE NEXT
     // KEYFRAME, ACCEPTABLE ON AN ALREADY-FAILING PIPELINE
     private boolean reinitVideoCodecSoftware() {
         final AVStream stream = this.videoStream;
         final int codecId = stream.codecpar().codec_id();
-        // ROUTE AROUND THE HWACCEL-ONLY NATIVE av1 DECODER ON THIS SOFTWARE FALLBACK — SEE
-        // softwareVideoDecoder. WITHOUT THIS A FAILED AV1 HWACCEL WOULD FALL BACK TO A
-        // DECODER THAT PRODUCES NO FRAMES.
+        // ROUTE AROUND THE HWACCEL-ONLY NATIVE av1 DECODER (SEE softwareVideoDecoder): A FAILED AV1 HWACCEL WOULD OTHERWISE FALL
+        // BACK TO A DECODER THAT PRODUCES NO FRAMES
         final AVCodec decoder = softwareVideoDecoder(codecId, avcodec_find_decoder(codecId));
         if (decoder == null) return false;
 
@@ -1711,8 +1619,8 @@ public final class FFDecoder {
         final Pcm target = this.host.audio(srcType, srcChannels, this.audioOutputSampleRate);
         if (target == null) return false;
         this.audioOutputChannels = target.channels();
-        // KEPT EVEN IN PASSTHROUGH — A MID-STREAM PARAMETER CHANGE DEMOTES PASSTHROUGH TO THE RESAMPLE
-        // PATH, WHICH CONVERTS TOWARD THIS FORMAT (THE ENGINE FORMAT CANNOT CHANGE)
+        // KEPT EVEN IN PASSTHROUGH: A MID-STREAM PARAMETER CHANGE DEMOTES PASSTHROUGH TO THE RESAMPLE PATH, WHICH CONVERTS TOWARD
+        // THIS FORMAT (THE ENGINE FORMAT CANNOT CHANGE)
         this.audioOutputAvFormat = FFTool.avSampleFormat(target.type());
 
         // PASSTHROUGH: AN INTERLEAVED SOURCE THE ENGINE TAKES AS IT IS
@@ -1822,11 +1730,43 @@ public final class FFDecoder {
     // ==========================================================================
     // UTILITY
     // ==========================================================================
-    // AN UNSTARTED PIPELINE THREAD OF THE PLAYER'S GROUP, SO A CALLER CAN PUBLISH IT IN ITS FIELD BEFORE IT RUNS
-    private Thread thread(final String role, final Runnable task) {
-        final Thread thread = THREADS.newThread(task);
-        thread.setName(this.group + "-" + role);
-        return thread;
+    // THE DECODER'S CONFIGURATION THAT TAKES A DEVICE CONTEXT OF TYPE hw, OR NULL
+    private static AVCodecHWConfig hwConfig(final AVCodec decoder, final int hw) {
+        for (int i = 0; ; i++) {
+            final AVCodecHWConfig config = avcodec.avcodec_get_hw_config(decoder, i);
+            if (config == null) return null;
+            if (config.device_type() == hw && (config.methods() & avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) return config;
+        }
+    }
+
+    // A SOFTWARE-CAPABLE VIDEO DECODER: THE NATIVE av1 DECODER avcodec_find_decoder RETURNS IS A HWACCEL HOST THAT EMITS NO
+    // FRAMES WITHOUT AN ACCELERATOR, SO AV1 PREFERS libdav1d, THEN libaom-av1, THEN THE DEFAULT. EVERY OTHER CODEC OF THE
+    // BUNDLED FFMPEG DEFAULTS TO A NATIVE SOFTWARE DECODER; THE PLAYER'S ZERO-FRAME → ERROR CHECK BACKS ANY FUTURE STUB
+    private static AVCodec softwareVideoDecoder(final int codecId, final AVCodec fallback) {
+        if (codecId == AV_CODEC_ID_AV1) {
+            final AVCodec dav1d = avcodec_find_decoder_by_name("libdav1d");
+            if (dav1d != null) return dav1d;
+            final AVCodec aom = avcodec_find_decoder_by_name("libaom-av1");
+            if (aom != null) return aom;
+        }
+        return fallback;
+    }
+
+    // SIZES THE SOFTWARE DECODER THREAD POOL TO THE FRAME AREA
+    private static void configureSwDecoderThreads(final AVCodecContext ctx) {
+        final int width = ctx.width();
+        final int height = ctx.height();
+        final int pixels = width * height;
+
+        final int threads = pixels <= 921_600
+                ? Math.min(2, MAX_DECODE_THREADS) : pixels <= 2_073_600
+                ? Math.min(4, MAX_DECODE_THREADS) : pixels <= 3_686_400
+                ? Math.min(6, MAX_DECODE_THREADS) : MAX_DECODE_THREADS;
+
+        ctx.thread_count(threads);
+        ctx.thread_type(AVCodecContext.FF_THREAD_FRAME | AVCodecContext.FF_THREAD_SLICE);
+
+        LOGGER.debug(IT, "Decoder threading: {} threads for {}x{}", threads, width, height);
     }
 
     // LOGS THE FIRST UNEXPECTED send/receive FAILURE OF A DECODE LOOP WITH ITS CODEC AND NATIVE DETAIL
@@ -1834,4 +1774,54 @@ public final class FFDecoder {
         LOGGER.warn(IT, "{} decoder {} failed: codec={}, stream={}, code={} ({})",
                 media, operation, FFTool.string(avcodec_get_name(codec.codec_id()), "unknown"), stream, code, FFTool.error(code));
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /** Playback timeline the decoder follows: seeks, pause, queue serials and the end of the input; the player's clock. */
+    public interface Timeline {
+        /** Takes the pending seek, or returns null when none is pending. */
+        Seek consumeSeek();
+        /** Returns whether a seek is pending. */
+        boolean seekPending();
+        /** Returns whether playback is held paused, so the demuxer parks. */
+        boolean holding();
+        /** Waits until the status changes or a seek arrives, at most {@code timeoutMs} (0 waits for it). */
+        void awaitChange(final long timeoutMs) throws InterruptedException;
+        /** Adopts the serial the queues carry after a reset, so frames of that serial count. */
+        void serial(final int serial);
+        /** Starts the clock once the input is open. */
+        void start();
+        /** Records that the demuxer resumed after the end of the input. */
+        void signalDemuxResumed();
+        /** Records that the demuxer reached the end of the input. */
+        void signalDemuxFinished();
+        /** Returns the duration of one video frame in seconds. */
+        double frameDurationSec();
+    }
+
+    /** Player side of the decoder: the cache, the Vulkan device, the audio format and the open and failure reports. */
+    public interface Host {
+        /** Returns the cached copy of {@code uri}, or null to open it remotely; runs on the demux thread, so it may block. */
+        Path cached(final URI uri) throws IOException;
+        /** Returns the player engine's Vulkan device for {@code codecId}, whose reference the decoder then owns, or null. */
+        Device vulkan(final int codecId);
+        /** Formats the player's audio engine for a source and returns the PCM it takes, or null to drop the audio. */
+        Pcm audio(final SampleType type, final int channels, final int rate);
+        /** Reports the duration of the input in milliseconds (0 when unknown, as live) each time it is probed, on the demux thread. */
+        void duration(final long ms);
+        /** Reports the open input before the clock starts, on the demux thread. */
+        void opened(final FFDecoder decoder);
+        /** Reports why the input could not open or keep playing; never called for an abort. */
+        void failed(final Throwable cause);
+    }
+
+    /** A seek to {@code targetMs}, frame-exact when {@code precise}. */
+    public record Seek(long targetMs, boolean precise) {}
+
+    /** A Vulkan device reference and whether libplacebo runs on it. */
+    public record Device(AVBufferRef ref, boolean filters) {}
+
+    /** Interleaved PCM layout an audio engine takes. */
+    public record Pcm(SampleType type, int channels) {}
 }

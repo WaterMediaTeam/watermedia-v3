@@ -75,6 +75,9 @@ public final class BcReader implements Closeable {
         }
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Returns the encoded frame width in pixels. */
     public int width() { return this.width; }
     /** Returns the encoded frame height in pixels. */
@@ -121,6 +124,9 @@ public final class BcReader implements Closeable {
         this.cursor = this.frames.length;
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     /** One frame's compressed blocks and its display delay in milliseconds. */
     public record Block(ByteBuffer blocks, long delayMs) {}
 }

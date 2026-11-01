@@ -97,7 +97,7 @@ public final class JpegReader extends ImageReader {
             53, 60, 61, 54, 47, 55, 62, 63
     };
 
-    // INTEGER IDCT CONSTANTS (libjpeg "islow" style, 13-bit fixed-point)
+    // INTEGER IDCT CONSTANTS (libjpeg "islow" STYLE, 13-BIT FIXED POINT)
     private static final int CONST_BITS = 13;
     private static final int PASS1_BITS = 2;
     private static final int PASS1_SHIFT = CONST_BITS - PASS1_BITS;
@@ -170,14 +170,28 @@ public final class JpegReader extends ImageReader {
         this.buildFrame();
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     @Override public int width() { return this.width; }
     @Override public int height() { return this.height; }
-    @Override protected PixelFormat decodedFormat() { return this.outputFormat; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.EMPTY; }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    @Override protected PixelFormat decodedFormat() { return this.outputFormat; }
 
     @Override
     protected boolean hasMore() {
         return !this.delivered;
+    }
+
+    @Override
+    protected ByteBuffer decode() throws IOException {
+        this.delivered = true;
+        this.directOut.position(0).limit(this.directOut.capacity());
+        return this.directOut;
     }
 
     @Override
@@ -194,13 +208,9 @@ public final class JpegReader extends ImageReader {
         this.directOut = null;
     }
 
-    @Override
-    protected ByteBuffer decode() throws IOException {
-        this.delivered = true;
-        this.directOut.position(0).limit(this.directOut.capacity());
-        return this.directOut;
-    }
-
+    // ==========================================================================
+    // MARKER PARSING
+    // ==========================================================================
     private void parse() throws IOException {
         int marker = -1;
         while (this.data.hasRemaining()) {
@@ -296,13 +306,6 @@ public final class JpegReader extends ImageReader {
             }
             default -> { }
         }
-    }
-
-    // COPIES THE SEGMENT BODY THAT FOLLOWS A SIGNATURE
-    private static byte[] tail(final ByteBuffer segment, final int from) {
-        final byte[] bytes = new byte[segment.remaining() - from];
-        segment.get(from, bytes);
-        return bytes;
     }
 
     private void readFrame(final int marker) throws CodecException {
@@ -458,6 +461,31 @@ public final class JpegReader extends ImageReader {
         return new Scan(scanComponents, ss, se, approximation >>> 4, approximation & 0x0F);
     }
 
+    private Component component(final int id) throws CodecException {
+        for (final Component component: this.components) {
+            if (component.id == id) return component;
+        }
+        throw new CodecException("JPEG scan references unknown component " + id);
+    }
+
+    // READS THE SEGMENT LENGTH AND RETURNS A VIEW BOUNDED TO ITS BODY, LEAVING THE PARENT BUFFER POSITIONED
+    // ON THE NEXT MARKER. EVERY SUB-READ IS THEN CONFINED TO ITS OWN SEGMENT: A SHORT DECLARED LENGTH FAILS
+    // INSIDE THE SLICE INSTEAD OF QUIETLY CONSUMING THE BYTES OF WHATEVER FOLLOWS.
+    private ByteBuffer segment() throws CodecException {
+        final int length = readU16(this.data);
+        if (length < 2) throw new CodecException("Invalid JPEG segment length " + length);
+        final int body = length - 2;
+        if (this.data.remaining() < body)
+            throw new CodecException("Truncated JPEG segment: " + body + " bytes declared, "
+                    + this.data.remaining() + " available");
+        final ByteBuffer segment = this.data.slice(this.data.position(), body);
+        this.data.position(this.data.position() + body);
+        return segment;
+    }
+
+    // ==========================================================================
+    // SCAN DECODING
+    // ==========================================================================
     private void decodeScan(final Scan scan, final EntropyReader entropy) throws IOException {
         this.eobRun = 0;
         if (!this.progressive) {
@@ -719,6 +747,9 @@ public final class JpegReader extends ImageReader {
         }
     }
 
+    // ==========================================================================
+    // FRAME OUTPUT
+    // ==========================================================================
     private void buildFrame() throws IOException {
         if (this.components == null) throw new CodecException("JPEG frame header not found");
         for (final Component component: this.components) this.buildComponent(component);
@@ -800,6 +831,62 @@ public final class JpegReader extends ImageReader {
         }
     }
 
+    private void writeColorBgra(final boolean rgb) {
+        final Component yc = this.components[0];
+        final Component cbc = this.components[1];
+        final Component crc = this.components[2];
+        final byte[] ySrc = yc.samples;
+        final byte[] cbSrc = cbc.samples;
+        final byte[] crSrc = crc.samples;
+        final int yStride = yc.blocksX * 8;
+        final int cbStride = cbc.blocksX * 8;
+        final int crStride = crc.blocksX * 8;
+
+        // PRECOMPUTE PER-DESTINATION-COLUMN SAMPLE INDICES (REMOVES MUL/DIV/MIN PER PIXEL). EVERY COMPONENT, LUMA
+        // INCLUDED, IS RESAMPLED ONTO THE MAX SAMPLING GRID WITH CLAMPED INDEXES, SO ANY T.81 LAYOUT (4:4:4, 4:2:2,
+        // 4:2:0, 4:1:1, 4:4:0 OR CHROMA SAMPLED ABOVE LUMA) STAYS IN BOUNDS AT THE COST OF ONE TABLE LOOKUP.
+        final int[] yX = new int[this.width];
+        final int[] cbX = new int[this.width];
+        final int[] crX = new int[this.width];
+        final int ySampleW = yc.blocksX * 8;
+        final int cbSampleW = cbc.blocksX * 8;
+        final int crSampleW = crc.blocksX * 8;
+        for (int x = 0; x < this.width; x++) {
+            yX[x] = Math.min(ySampleW - 1, (x * yc.h) / this.maxH);
+            cbX[x] = Math.min(cbSampleW - 1, (x * cbc.h) / this.maxH);
+            crX[x] = Math.min(crSampleW - 1, (x * crc.h) / this.maxH);
+        }
+
+        final ByteBuffer out = this.directOut;
+        final int ySampleH = yc.blocksY * 8;
+        final int cbSampleH = cbc.blocksY * 8;
+        final int crSampleH = crc.blocksY * 8;
+        for (int y = 0; y < this.height; y++) {
+            final int yRow = Math.min(ySampleH - 1, (y * yc.v) / this.maxV) * yStride;
+            final int cbRow = Math.min(cbSampleH - 1, (y * cbc.v) / this.maxV) * cbStride;
+            final int crRow = Math.min(crSampleH - 1, (y * crc.v) / this.maxV) * crStride;
+            for (int x = 0; x < this.width; x++) {
+                final int c0 = ySrc[yRow + yX[x]] & 0xFF;
+                final int c1 = cbSrc[cbRow + cbX[x]] & 0xFF;
+                final int c2 = crSrc[crRow + crX[x]] & 0xFF;
+                final int r, g, b;
+                if (rgb) {
+                    r = c0;
+                    g = c1;
+                    b = c2;
+                } else {
+                    r = MathUtil.clip255(c0 + CR_TO_R[c2]);
+                    g = MathUtil.clip255(c0 + ((CB_TO_G[c1] + CR_TO_G[c2]) >> 16));
+                    b = MathUtil.clip255(c0 + CB_TO_B[c1]);
+                }
+                out.putInt(0xFF000000 | (r << 16) | (g << 8) | b);
+            }
+        }
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // INTEGER IDCT (libjpeg "islow"): ROW PASS THEN COLUMN PASS WITH INLINED DEQUANTIZATION.
     // ROW PASS WRITES TO 64-INT SCRATCH; COLUMN PASS LEVEL-SHIFTS BY 128, CLAMPS, AND WRITES BYTES DIRECTLY.
     private static void idct(final int[] coef, final int block, final int[] quant,
@@ -946,81 +1033,6 @@ public final class JpegReader extends ImageReader {
         }
     }
 
-    private void writeColorBgra(final boolean rgb) {
-        final Component yc = this.components[0];
-        final Component cbc = this.components[1];
-        final Component crc = this.components[2];
-        final byte[] ySrc = yc.samples;
-        final byte[] cbSrc = cbc.samples;
-        final byte[] crSrc = crc.samples;
-        final int yStride = yc.blocksX * 8;
-        final int cbStride = cbc.blocksX * 8;
-        final int crStride = crc.blocksX * 8;
-
-        // PRECOMPUTE PER-DESTINATION-COLUMN SAMPLE INDICES (REMOVES MUL/DIV/MIN PER PIXEL). EVERY COMPONENT, LUMA
-        // INCLUDED, IS RESAMPLED ONTO THE MAX SAMPLING GRID WITH CLAMPED INDEXES, SO ANY T.81 LAYOUT (4:4:4, 4:2:2,
-        // 4:2:0, 4:1:1, 4:4:0 OR CHROMA SAMPLED ABOVE LUMA) STAYS IN BOUNDS AT THE COST OF ONE TABLE LOOKUP.
-        final int[] yX = new int[this.width];
-        final int[] cbX = new int[this.width];
-        final int[] crX = new int[this.width];
-        final int ySampleW = yc.blocksX * 8;
-        final int cbSampleW = cbc.blocksX * 8;
-        final int crSampleW = crc.blocksX * 8;
-        for (int x = 0; x < this.width; x++) {
-            yX[x] = Math.min(ySampleW - 1, (x * yc.h) / this.maxH);
-            cbX[x] = Math.min(cbSampleW - 1, (x * cbc.h) / this.maxH);
-            crX[x] = Math.min(crSampleW - 1, (x * crc.h) / this.maxH);
-        }
-
-        final ByteBuffer out = this.directOut;
-        final int ySampleH = yc.blocksY * 8;
-        final int cbSampleH = cbc.blocksY * 8;
-        final int crSampleH = crc.blocksY * 8;
-        for (int y = 0; y < this.height; y++) {
-            final int yRow = Math.min(ySampleH - 1, (y * yc.v) / this.maxV) * yStride;
-            final int cbRow = Math.min(cbSampleH - 1, (y * cbc.v) / this.maxV) * cbStride;
-            final int crRow = Math.min(crSampleH - 1, (y * crc.v) / this.maxV) * crStride;
-            for (int x = 0; x < this.width; x++) {
-                final int c0 = ySrc[yRow + yX[x]] & 0xFF;
-                final int c1 = cbSrc[cbRow + cbX[x]] & 0xFF;
-                final int c2 = crSrc[crRow + crX[x]] & 0xFF;
-                final int r, g, b;
-                if (rgb) {
-                    r = c0;
-                    g = c1;
-                    b = c2;
-                } else {
-                    r = MathUtil.clip255(c0 + CR_TO_R[c2]);
-                    g = MathUtil.clip255(c0 + ((CB_TO_G[c1] + CR_TO_G[c2]) >> 16));
-                    b = MathUtil.clip255(c0 + CB_TO_B[c1]);
-                }
-                out.putInt(0xFF000000 | (r << 16) | (g << 8) | b);
-            }
-        }
-    }
-
-    private Component component(final int id) throws CodecException {
-        for (final Component component: this.components) {
-            if (component.id == id) return component;
-        }
-        throw new CodecException("JPEG scan references unknown component " + id);
-    }
-
-    // READS THE SEGMENT LENGTH AND RETURNS A VIEW BOUNDED TO ITS BODY, LEAVING THE PARENT BUFFER POSITIONED
-    // ON THE NEXT MARKER. EVERY SUB-READ IS THEN CONFINED TO ITS OWN SEGMENT: A SHORT DECLARED LENGTH FAILS
-    // INSIDE THE SLICE INSTEAD OF QUIETLY CONSUMING THE BYTES OF WHATEVER FOLLOWS.
-    private ByteBuffer segment() throws CodecException {
-        final int length = readU16(this.data);
-        if (length < 2) throw new CodecException("Invalid JPEG segment length " + length);
-        final int body = length - 2;
-        if (this.data.remaining() < body)
-            throw new CodecException("Truncated JPEG segment: " + body + " bytes declared, "
-                    + this.data.remaining() + " available");
-        final ByteBuffer segment = this.data.slice(this.data.position(), body);
-        this.data.position(this.data.position() + body);
-        return segment;
-    }
-
     private static int readMarker(final ByteBuffer input) throws CodecException {
         while (input.hasRemaining()) {
             if (readU8(input) != 0xFF) continue;
@@ -1064,6 +1076,16 @@ public final class JpegReader extends ImageReader {
         return String.format("%02X", value);
     }
 
+    // COPIES THE SEGMENT BODY THAT FOLLOWS A SIGNATURE
+    private static byte[] tail(final ByteBuffer segment, final int from) {
+        final byte[] bytes = new byte[segment.remaining() - from];
+        segment.get(from, bytes);
+        return bytes;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @FunctionalInterface
     private interface BlockConsumer {
         void accept(Component component, int block) throws IOException;
@@ -1128,7 +1150,7 @@ public final class JpegReader extends ImageReader {
                 if (count > 0) {
                     // REJECT AN OVERSUBSCRIBED (NON-CANONICAL) CODE: MORE CODES AT THIS LENGTH THAN THE
                     // CODE SPACE ALLOWS OVERFLOWS THE LUT PREFIX ((code+n) << (LUT_BITS-length)) PAST 255
-                    // AND THE values[] INDEXING — AN AIOOBE THAT WOULD ESCAPE THE IOException CONTRACT
+                    // AND THE values[] INDEXING: AN AIOOBE THAT WOULD ESCAPE THE IOException CONTRACT
                     if (code + count > (1 << length)) throw new CodecException("Oversubscribed JPEG Huffman table");
                     this.maxCode[length] = code + count - 1;
                     this.valueOffset[length] = index - code;

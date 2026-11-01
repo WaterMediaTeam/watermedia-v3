@@ -22,6 +22,9 @@ public record MDCV(
     public static final int SIGNATURE = 0x6D_44_43_76; // "mDCv"
     public static final int LENGTH = 24;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Reads a complete mDCv chunk (length, type, data and CRC) from the buffer. */
     public static MDCV read(final ByteBuffer buffer) throws IOException {
         return convert(PngChunk.read(buffer, SIGNATURE));

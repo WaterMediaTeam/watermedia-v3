@@ -23,15 +23,15 @@ final class PacketQueue {
     private long totalBytes;
     private final long maxBytes;
 
-    // THE PACKET IS OWNED: CLONED IN put() AND FREED WHEN THE ENTRY LEAVES THE QUEUE
-    private record Entry(AVPacket packet, int serial) {}
-
     /** Creates a queue whose {@link #put(AVPacket)} blocks once {@code maxBytes} are queued; {@code Long.MAX_VALUE} lifts the limit. */
     public PacketQueue(final long maxBytes) {
         if (maxBytes <= 0) throw new IllegalArgumentException("Packet queue byte limit must be positive");
         this.maxBytes = maxBytes;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /**
      * Enqueues a clone of the packet, blocking while the byte limit is reached (backpressure to the demux thread); the
      * caller keeps its packet. Returns false when the queue was aborted or finished, the wait was interrupted or the clone failed.
@@ -48,7 +48,7 @@ final class PacketQueue {
             }
             if (this.aborted || this.finished) return false;
 
-            // CLONE ONLY ONCE THE ENTRY WILL ACTUALLY BE ENQUEUED — NO NATIVE ALLOC ON REJECTION
+            // CLONE ONLY ONCE THE ENTRY WILL ACTUALLY BE ENQUEUED, SO A REJECTION ALLOCATES NOTHING NATIVE
             final AVPacket clone = avcodec.av_packet_clone(packet);
             if (clone == null) return false;
             this.packets.addLast(new Entry(clone, this.serial));
@@ -158,4 +158,10 @@ final class PacketQueue {
             this.lock.notifyAll();
         }
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    // THE PACKET IS OWNED: CLONED IN put() AND FREED WHEN THE ENTRY LEAVES THE QUEUE
+    private record Entry(AVPacket packet, int serial) {}
 }

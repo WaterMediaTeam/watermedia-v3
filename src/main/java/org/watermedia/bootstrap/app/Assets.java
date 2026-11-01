@@ -40,6 +40,9 @@ public final class Assets {
     public int duckFrameWidth;
     public int duckFrameHeight;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Creates the icon, duck and banner textures on the active render engine and sets the window icon. */
     public void load(final AppContext ctx) {
         // ImageIO DECODES THEM BECAUSE THE LOADING SCREEN SHOWS THEM BEFORE THE CODECS API LOADS
@@ -57,8 +60,11 @@ public final class Assets {
         this.duckFrameIds = new int[0];
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private void loadIcon(final long window) {
-        // WINDOW/TASKBAR ICON — THE OS SCALES IT DOWN SMALL, SO USE THE DEDICATED icon.png
+        // WINDOW/TASKBAR ICON: THE OS SCALES IT DOWN SMALL, SO USE THE DEDICATED icon.png
         try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
             if (in != null) {
                 final BufferedImage img = ImageIO.read(in);
@@ -78,7 +84,7 @@ public final class Assets {
             WaterMedia.LOGGER.warn(IT, "Failed to load window icon", e);
         }
 
-        // ON-SCREEN LOGO (TITLE BAR, LOADING SPLASH, HOME HERO) — RENDERED LARGE, SO USE THE HIGHER-RES pack.png
+        // ON-SCREEN LOGO (TITLE BAR, LOADING SPLASH, HOME HERO), RENDERED LARGE, SO USE THE HIGHER-RES pack.png
         try (final InputStream in = IOTool.jarOpenFile("pack.png")) {
             if (in == null) return;
             final BufferedImage img = ImageIO.read(in);
@@ -154,6 +160,9 @@ public final class Assets {
         }
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static TextureData createGlowTexture(final BufferedImage source, final Color color,
                                                  final int radius, final float strength) {
         final BufferedImage glow = createAlphaGlow(source, color, radius, strength);
@@ -242,5 +251,8 @@ public final class Assets {
         return buffer;
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     private record TextureData(int textureId, int width, int height) {}
 }

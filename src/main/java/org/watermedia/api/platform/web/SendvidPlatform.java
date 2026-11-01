@@ -24,6 +24,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class SendvidPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(SendvidPlatform.class.getSimpleName());
     public static final String NAME = "Sendvid";
+    private static final String[] HOSTS = { "sendvid.com", "www.sendvid.com" };
     private static final String STATUS_API = "https://sendvid.com/api/v1/videos/%s/status.json";
     private static final Pattern PATTERN_SOURCE = Pattern.compile("var\\s+video_source\\s*=\\s*\"([^\"]+)\"");
     private static final Pattern PATTERN_POSTER = Pattern.compile("var\\s+video_poster\\s*=\\s*\"([^\"]+)\"");
@@ -32,7 +33,10 @@ public final class SendvidPlatform implements Platform {
     // A QUEUED UPLOAD IS POLLED UNTIL IT IS READY OR THE ATTEMPTS RUN OUT (ONE MINUTE IN TOTAL)
     private static final int MAX_POLLS = 30;
     private static final long POLL_DELAY_MS = 2_000L;
-    private static final String[] HOSTS = { "sendvid.com", "www.sendvid.com" };
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -95,6 +99,10 @@ public final class SendvidPlatform implements Platform {
         }
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     private void waitForReady(final String statusUrl, final String videoId) throws PlatformException {
         for (int i = 0; i < MAX_POLLS; i++) {
             // THE SLEEP RESTORES THE INTERRUPT FLAG ITSELF; A CANCELLED RESOLUTION STOPS POLLING AT ONCE
@@ -107,6 +115,10 @@ public final class SendvidPlatform implements Platform {
         }
         throw new PlatformException(NAME, "Video '" + videoId + "' did not become ready after " + MAX_POLLS * POLL_DELAY_MS / 1_000L + " seconds");
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     private record StatusResponse(int progress, @SerializedName("place_in_queue") int placeInQueue, String state, double duration) {}
 }

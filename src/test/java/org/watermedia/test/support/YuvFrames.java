@@ -15,6 +15,10 @@ public final class YuvFrames {
 
     private YuvFrames() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /** A direct plane holding exactly the given unsigned bytes, at position 0. */
     public static ByteBuffer direct(final int... bytes) {
         final ByteBuffer buffer = BufferUtils.createByteBuffer(bytes.length);
@@ -93,7 +97,9 @@ public final class YuvFrames {
         }
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
 
     private static int byteOf(final double value) {
         return (int) Math.round(Math.max(0.0, Math.min(1.0, value)) * 255.0);

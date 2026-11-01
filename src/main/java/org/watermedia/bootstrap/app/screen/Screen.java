@@ -26,8 +26,9 @@ public abstract class Screen extends Group<Screen> {
         this.height = MAX_PARENT;
     }
 
-    /** Builds this screen's content tree. Called once, lazily, before the first measure. */
-    protected abstract Element<?> build();
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** The content slot built by {@link #build()}, or {@code null} before the first build. */
     public final Element<?> body() {
@@ -81,18 +82,12 @@ public abstract class Screen extends Group<Screen> {
     /** Releases any media resources this screen holds (hot-swap hook). Default: no-op. */
     public void releaseMedia() {}
 
-    private void ensureBuilt() {
-        if (this.built) return;
-        this.built = true;
-        this.body = this.build();
-        // THE OVERLAY IS ADDED LAST SO ITS DIALOGS PAINT ABOVE THE BODY
-        if (this.body != null) {
-            this.body.size(MAX_PARENT, MAX_PARENT);
-            this.add(this.body);
-        }
-        this.overlay.size(MAX_PARENT, MAX_PARENT);
-        this.add(this.overlay);
-    }
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    /** Builds this screen's content tree. Called once, lazily, before the first measure. */
+    protected abstract Element<?> build();
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
@@ -110,4 +105,28 @@ public abstract class Screen extends Group<Screen> {
             if (child.visible()) child.layout(this.innerLeft(), this.innerTop());
         }
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
+    private void ensureBuilt() {
+        if (this.built) return;
+        this.built = true;
+        this.body = this.build();
+        // THE OVERLAY IS ADDED LAST SO ITS DIALOGS PAINT ABOVE THE BODY
+        if (this.body != null) {
+            this.body.size(MAX_PARENT, MAX_PARENT);
+            this.add(this.body);
+        }
+        this.overlay.size(MAX_PARENT, MAX_PARENT);
+        this.add(this.overlay);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    /** A footer shortcut: the key cap text such as {@code "ESC"}, empty for a plain hint, and its action label. */
+    public record Keybind(String key, String label) {}
 }

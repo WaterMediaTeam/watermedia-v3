@@ -14,22 +14,28 @@ final class HuffmanDecoder {
 
     private HuffmanDecoder() {}
 
-    // READS ONE SIMPLE OR LENGTH-CODED TABLE FOR THE DECLARED ALPHABET SIZE
-    public static HuffmanTable readTable(final BitReader reader, final int alphabetSize) throws CodecException {
-        final boolean isSimple = reader.readBool();
-        LOGGER.trace(IT, "readTable: alphabetSize={}, isSimple={}", alphabetSize, isSimple);
-        return isSimple ? readSimpleCode(reader, alphabetSize) : readNormalCode(reader, alphabetSize);
-    }
-
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // READS THE GREEN, RED, BLUE, ALPHA AND DISTANCE TABLES OF ONE GROUP. GREEN HOLDS 256 LITERALS, 24 LENGTH
     // CODES AND THE COLOR CACHE; RED, BLUE AND ALPHA 256 SYMBOLS; DISTANCE 40
-    public static HuffmanGroup readGroup(final BitReader reader, final int colorCacheSize) throws CodecException {
+    static VP8LosslessDecoder.HuffmanGroup readGroup(final BitReader reader, final int colorCacheSize) throws CodecException {
         final HuffmanTable green = readTable(reader, 256 + 24 + colorCacheSize);
         final HuffmanTable red = readTable(reader, 256);
         final HuffmanTable blue = readTable(reader, 256);
         final HuffmanTable alpha = readTable(reader, 256);
         final HuffmanTable dist = readTable(reader, 40);
-        return new HuffmanGroup(green, red, blue, alpha, dist);
+        return new VP8LosslessDecoder.HuffmanGroup(green, red, blue, alpha, dist);
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // READS ONE SIMPLE OR LENGTH-CODED TABLE FOR THE DECLARED ALPHABET SIZE
+    private static HuffmanTable readTable(final BitReader reader, final int alphabetSize) throws CodecException {
+        final boolean isSimple = reader.readBool();
+        LOGGER.trace(IT, "readTable: alphabetSize={}, isSimple={}", alphabetSize, isSimple);
+        return isSimple ? readSimpleCode(reader, alphabetSize) : readNormalCode(reader, alphabetSize);
     }
 
     private static HuffmanTable readSimpleCode(final BitReader reader, final int alphabetSize) throws CodecException {

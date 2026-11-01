@@ -90,6 +90,83 @@ public final class MRLSelectorScreen extends Screen {
         this.navigator = navigator;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
+    @Override
+    public void onEnter() {
+        super.onEnter();
+        this.stopLoad();
+        this.groupSubscriptions.clear();
+        this.thumbSubscribed.clear();
+        this.search.value("").focused(false);
+        this.applyFilter();
+        this.list.selection(0);
+        this.subscribeGroupMRLs();
+    }
+
+    @Override
+    public void onExit() {
+        this.stopLoad();
+        this.releaseThumbs();
+    }
+
+    @Override
+    public void releaseMedia() {
+        // RENDER BACKEND HOT-SWAP: THE NEXT FRAME REBUILDS THE THUMBNAIL PLAYERS ON THE NEW ENGINE
+        this.releaseThumbs();
+    }
+
+    @Override
+    public List<Keybind> keybinds() {
+        return this.loading ? KEYS_LOADING : KEYS_DEFAULT;
+    }
+
+    @Override
+    public boolean continuous() {
+        // CARET BLINK, LOADING DOTS AND ANIMATED THUMBNAILS
+        return this.loading || this.textInputActive() || Previews.animating(this.thumbPlayers.values());
+    }
+
+    @Override
+    public boolean dispatchKey(final int key, final int action) {
+        // THE TREE FIRST: A FOCUSED FILTER FIELD OR THE LOADING MODAL CONSUMES ITS OWN KEYS
+        if (super.dispatchKey(key, action)) return true;
+        if (action != GLFW_RELEASE) return false;
+        switch (key) {
+            case GLFW_KEY_SLASH -> this.search.focused(true).invalidate();
+            case GLFW_KEY_UP -> {
+                this.list.moveSelection(-1);
+                this.ctx.sound.play();
+            }
+            case GLFW_KEY_DOWN -> {
+                this.list.moveSelection(1);
+                this.ctx.sound.play();
+            }
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
+                final MediaCatalog.TestURI uri = this.selectedUri();
+                if (uri != null) {
+                    final MRL mrl = this.mrlFor(uri);
+                    if (regenerable(mrl)) this.reloadMRL(uri);
+                    else this.handleSelect(uri);
+                }
+            }
+            case GLFW_KEY_ESCAPE -> {
+                this.ctx.media.clearGroupState();
+                this.navigator.accept(HomeScreen.Action.BACK);
+            }
+            default -> {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @Override
     protected Element<?> build() {
         // THE FILTER FOCUSES ON HOVER, BLURS ON ENTER, ESC OR AN OPENED ROW, AND CLEARS ON ESC; BLURRED, THOSE KEYS DRIVE
@@ -163,41 +240,6 @@ public final class MRLSelectorScreen extends Screen {
     }
 
     @Override
-    public void onEnter() {
-        super.onEnter();
-        this.stopLoad();
-        this.groupSubscriptions.clear();
-        this.thumbSubscribed.clear();
-        this.search.value("").focused(false);
-        this.applyFilter();
-        this.list.selection(0);
-        this.subscribeGroupMRLs();
-    }
-
-    @Override
-    public void onExit() {
-        this.stopLoad();
-        this.releaseThumbs();
-    }
-
-    @Override
-    public void releaseMedia() {
-        // RENDER BACKEND HOT-SWAP: THE NEXT FRAME REBUILDS THE THUMBNAIL PLAYERS ON THE NEW ENGINE
-        this.releaseThumbs();
-    }
-
-    @Override
-    public List<Keybind> keybinds() {
-        return this.loading ? KEYS_LOADING : KEYS_DEFAULT;
-    }
-
-    @Override
-    public boolean continuous() {
-        // CARET BLINK, LOADING DOTS AND ANIMATED THUMBNAILS
-        return this.loading || this.textInputActive() || Previews.animating(this.thumbPlayers.values());
-    }
-
-    @Override
     protected void onUpdate() {
         if (this.search == null || this.ctx == null || this.ctx.media.selectedGroup == null) return;
         if (this.loading) {
@@ -217,39 +259,9 @@ public final class MRLSelectorScreen extends Screen {
         this.headerFailed.label(failed + " FAILED").color(failed > 0 ? AppTheme.RED : AppTheme.TEXT_FAINT);
     }
 
-    @Override
-    public boolean dispatchKey(final int key, final int action) {
-        // THE TREE FIRST: A FOCUSED FILTER FIELD OR THE LOADING MODAL CONSUMES ITS OWN KEYS
-        if (super.dispatchKey(key, action)) return true;
-        if (action != GLFW_RELEASE) return false;
-        switch (key) {
-            case GLFW_KEY_SLASH -> this.search.focused(true).invalidate();
-            case GLFW_KEY_UP -> {
-                this.list.moveSelection(-1);
-                this.ctx.sound.play();
-            }
-            case GLFW_KEY_DOWN -> {
-                this.list.moveSelection(1);
-                this.ctx.sound.play();
-            }
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
-                final MediaCatalog.TestURI uri = this.selectedUri();
-                if (uri != null) {
-                    final MRL mrl = this.mrlFor(uri);
-                    if (regenerable(mrl)) this.reloadMRL(uri);
-                    else this.handleSelect(uri);
-                }
-            }
-            case GLFW_KEY_ESCAPE -> {
-                this.ctx.media.clearGroupState();
-                this.navigator.accept(HomeScreen.Action.BACK);
-            }
-            default -> {
-                return false;
-            }
-        }
-        return true;
-    }
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     // KEEPS THE SAME ITEM SELECTED WHEN IT SURVIVES THE FILTER
     private void applyFilter() {
@@ -313,27 +325,25 @@ public final class MRLSelectorScreen extends Screen {
         });
     }
 
-    private void releaseInactiveThumbs(final Set<String> activeNames) {
+    // KEEPS THUMBNAIL PLAYERS ONLY FOR THE ENTRIES ON SCREEN
+    private void updateThumbs(final Set<String> activeNames) {
+        if (this.ctx.media.selectedGroup == null) return;
+
+        // RELEASE THE PLAYERS OF ROWS THAT LEFT THE SCREEN; Previews.release NEEDS THEM OUT OF THE MAP BEFORE IT FREES
+        // THEM OFF-THREAD
         List<MediaPlayer> evicted = null;
         final Iterator<Map.Entry<String, MediaPlayer>> it = this.thumbPlayers.entrySet().iterator();
         while (it.hasNext()) {
             final Map.Entry<String, MediaPlayer> entry = it.next();
             if (activeNames.contains(entry.getKey())) continue;
-            // Previews.release NEEDS THE PLAYERS OUT OF THE MAP BEFORE IT FREES THEM OFF-THREAD
             if (evicted == null) evicted = new ArrayList<>();
             evicted.add(entry.getValue());
             it.remove();
             this.thumbAttempted.remove(entry.getKey());
         }
         if (evicted != null) Previews.release(this.ctx, evicted);
-    }
 
-    // KEEPS THUMBNAIL PLAYERS ONLY FOR THE ENTRIES ON SCREEN
-    private void updateThumbs(final Set<String> activeNames) {
-        if (this.ctx.media.selectedGroup == null) return;
-
-        this.releaseInactiveThumbs(activeNames);
-
+        // CREATE THE MISSING ONES
         for (final MediaCatalog.TestURI uri: this.ctx.media.selectedGroup.uris()) {
             final String name = uri.name();
             if (!activeNames.contains(name)) continue;
@@ -520,41 +530,26 @@ public final class MRLSelectorScreen extends Screen {
         return active;
     }
 
-    // ==== SHARED CANVAS PRIMITIVES ====
-
-    // TV FRAME: OUTER PLATE, FOCUS BORDER AND GLOW, INNER SCREEN WELL AND AMBER FOOT CUBES
-    private static void tvFrame(final Canvas canvas, final int x, final int y, final int w, final int h, final boolean focused) {
-        canvas.fill(x, y, w, h, AppTheme.BG_2);
-        canvas.stroke(x, y, w, h, focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 2f);
-        if (focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.48f);
-        canvas.fill(x + 6, y + 6, w - 12, h - 12, AppTheme.BG_0);
-        canvas.stroke(x + 6, y + 6, w - 12, h - 12, AppTheme.STROKE, 1f);
-        canvas.cube(x + 2, y + h - 12, 10);
-        canvas.cube(x + w - 12, y + h - 12, 10);
-    }
-
-    // AMBER CORNER TRIANGLE, RASTERIZED AS 1 PX ROWS BECAUSE Canvas HAS NO TRIANGLE PRIMITIVE
-    private static void triangle(final Canvas canvas, final int x, final int y, final boolean left) {
-        canvas.glow(x, y, CORNER, CORNER, 0f, AppTheme.AMBER, 0.32f);
-        for (int i = 0; i < CORNER; i++) {
-            if (left) canvas.fill(x, y + i, CORNER - i, 1f, AppTheme.AMBER);
-            else canvas.fill(x + CORNER - 1 - i, y + i, i + 1, 1f, AppTheme.AMBER);
-        }
-    }
-
-    // STATUS PIP; THE CIRCLE IS RASTERIZED AS 1 PX ROWS BECAUSE Canvas HAS NO CIRCLE PRIMITIVE
-    private static void pip(final Canvas canvas, final int x, final int y, final int size, final Color color, final boolean circle) {
-        if (circle) {
-            final float r = size / 2f;
-            for (int i = 0; i < size; i++) {
-                final float dy = i + 0.5f - r;
-                final float half = (float) Math.sqrt(Math.max(0f, r * r - dy * dy));
-                canvas.fill(x + r - half, y + i, half * 2f, 1f, color);
-            }
-        } else {
-            canvas.fill(x, y, size, size, color);
-        }
-        canvas.glow(x, y, size, size, 0f, color, 0.5f);
+    // ONE MEDIA ROW: A TV FRAME WITH THE THUMBNAIL AND ITS MINI CRT, THE NAME OVER THE URI, AND THE STATUS PIP RIGHT
+    private ListRow mediaRow(final MediaCatalog.TestURI uri) {
+        final String name = uri.name().toUpperCase(Locale.ROOT);
+        return new ListRow()
+                .fill(null, null, AppTheme.alpha(AppTheme.NEON, 26))
+                .outline(null, AppTheme.NEON, 1f, 1f)
+                .selectedGlow(AppTheme.NEON, 0.20f, false)
+                .lead((canvas, row, x, y, w, h) -> {
+                    tvFrame(canvas, x + 6, y + 8, 70, 46, row.isPicked());
+                    this.drawThumb(canvas, uri, x + 12, y + 14, 58, 34, true);
+                })
+                .title(name)
+                .titleStyle(AppTheme.TEXT_BUTTON, true, AppTheme.TEXT, AppTheme.NEON_LIGHT)
+                .textAt(88, 12)
+                // THE TEXTS STOP 14 PX BEFORE THE PIP, WHICH SITS 19 PX FROM THE RIGHT EDGE
+                .textRight(33, 40)
+                .subtitle(uri::uri, AppTheme.TEXT_SUBTITLE, AppTheme.TEXT_FAINT, 34)
+                .trail((canvas, row, x, y, w, h) -> pip(canvas, x + w - 19, y + 25, 8, Previews.color(this.mrlOf(uri)), false))
+                .place(new CrtOverlay().size(58, 34), 12, 14)
+                .tag(uri);
     }
 
     // LIVE FRAME (COVER-FIT AND CLIPPED) OR A STATUS FALLBACK; THE CALLER'S CrtOverlay CHILD PAINTS OVER IT
@@ -605,9 +600,46 @@ public final class MRLSelectorScreen extends Screen {
         canvas.text(label, x + (w - canvas.textWidth(label, scale, false)) / 2, textY, color, scale, false);
     }
 
-    // ==== MRL STATUS HELPERS ====
-    // NULL-SAFE UI WRAPPERS OVER THE MRL.Status PREDICATES
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
 
+    // TV FRAME: OUTER PLATE, FOCUS BORDER AND GLOW, INNER SCREEN WELL AND AMBER FOOT CUBES
+    private static void tvFrame(final Canvas canvas, final int x, final int y, final int w, final int h, final boolean focused) {
+        canvas.fill(x, y, w, h, AppTheme.BG_2);
+        canvas.stroke(x, y, w, h, focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 2f);
+        if (focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.48f);
+        canvas.fill(x + 6, y + 6, w - 12, h - 12, AppTheme.BG_0);
+        canvas.stroke(x + 6, y + 6, w - 12, h - 12, AppTheme.STROKE, 1f);
+        canvas.cube(x + 2, y + h - 12, 10);
+        canvas.cube(x + w - 12, y + h - 12, 10);
+    }
+
+    // AMBER CORNER TRIANGLE, RASTERIZED AS 1 PX ROWS BECAUSE Canvas HAS NO TRIANGLE PRIMITIVE
+    private static void triangle(final Canvas canvas, final int x, final int y, final boolean left) {
+        canvas.glow(x, y, CORNER, CORNER, 0f, AppTheme.AMBER, 0.32f);
+        for (int i = 0; i < CORNER; i++) {
+            if (left) canvas.fill(x, y + i, CORNER - i, 1f, AppTheme.AMBER);
+            else canvas.fill(x + CORNER - 1 - i, y + i, i + 1, 1f, AppTheme.AMBER);
+        }
+    }
+
+    // STATUS PIP; THE CIRCLE IS RASTERIZED AS 1 PX ROWS BECAUSE Canvas HAS NO CIRCLE PRIMITIVE
+    private static void pip(final Canvas canvas, final int x, final int y, final int size, final Color color, final boolean circle) {
+        if (circle) {
+            final float r = size / 2f;
+            for (int i = 0; i < size; i++) {
+                final float dy = i + 0.5f - r;
+                final float half = (float) Math.sqrt(Math.max(0f, r * r - dy * dy));
+                canvas.fill(x + r - half, y + i, half * 2f, 1f, color);
+            }
+        } else {
+            canvas.fill(x, y, size, size, color);
+        }
+        canvas.glow(x, y, size, size, 0f, color, 0.5f);
+    }
+
+    // regenerable AND statusLabel ARE NULL-SAFE UI WRAPPERS OVER THE MRL.Status PREDICATES
     private static boolean regenerable(final MRL mrl) {
         return mrl != null && mrl.status().regenerable();
     }
@@ -627,6 +659,10 @@ public final class MRLSelectorScreen extends Screen {
         }
         return best.name();
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     // SPLITS THE CONTENT BAND INTO THE FILTER AND LIST COLUMN AND THE PREVIEW STACK, WITH 10 PX GAPS ABOVE
     // AND BELOW AND A LEFT COLUMN A THIRD OF THE WIDTH, CLAMPED TO 320-380 PX
@@ -797,27 +833,5 @@ public final class MRLSelectorScreen extends Screen {
                     pipY + (10 - MRLSelectorScreen.this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, sc, AppTheme.TEXT_BODY, false);
             super.onDraw(canvas); // CRT OVER THE THUMBNAIL, THEN THE COPY/PLAY BUTTONS
         }
-    }
-
-    // ONE MEDIA ROW: A TV FRAME WITH THE THUMBNAIL AND ITS MINI CRT, THE NAME OVER THE URI, AND THE STATUS PIP RIGHT
-    private ListRow mediaRow(final MediaCatalog.TestURI uri) {
-        final String name = uri.name().toUpperCase(Locale.ROOT);
-        return new ListRow()
-                .fill(null, null, AppTheme.alpha(AppTheme.NEON, 26))
-                .outline(null, AppTheme.NEON, 1f, 1f)
-                .selectedGlow(AppTheme.NEON, 0.20f, false)
-                .lead((canvas, row, x, y, w, h) -> {
-                    tvFrame(canvas, x + 6, y + 8, 70, 46, row.isPicked());
-                    this.drawThumb(canvas, uri, x + 12, y + 14, 58, 34, true);
-                })
-                .title(name)
-                .titleStyle(AppTheme.TEXT_BUTTON, true, AppTheme.TEXT, AppTheme.NEON_LIGHT)
-                .textAt(88, 12)
-                // THE TEXTS STOP 14 PX BEFORE THE PIP, WHICH SITS 19 PX FROM THE RIGHT EDGE
-                .textRight(33, 40)
-                .subtitle(uri::uri, AppTheme.TEXT_SUBTITLE, AppTheme.TEXT_FAINT, 34)
-                .trail((canvas, row, x, y, w, h) -> pip(canvas, x + w - 19, y + 25, 8, Previews.color(this.mrlOf(uri)), false))
-                .place(new CrtOverlay().size(58, 34), 12, 14)
-                .tag(uri);
     }
 }

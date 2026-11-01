@@ -32,7 +32,7 @@ import java.util.Objects;
 public final class WaterMedia {
     private static final Marker IT = MarkerManager.getMarker(WaterMedia.class.getSimpleName());
 
-    // ==== IDENTITY ====
+    // IDENTITY
     public static final String ID = "watermedia";
     public static final String NAME = "WaterMedia";
     public static final String VERSION = IOTool.jarVersion();
@@ -40,20 +40,20 @@ public final class WaterMedia {
     public static final String BROWSER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + (152 + Math.max(0L, (ChronoUnit.DAYS.between(LocalDate.of(2026, 9, 8), LocalDate.now()) / 14))) + ".0.0.0 Safari/537.36";
     public static final Logger LOGGER = logger(ID);
 
-    // ==== DEFAULT PATHS ====
+    // DEFAULT PATHS
     private static final Path DEFAULT_TMP = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().resolve(ID);
     private static final Path DEFAULT_CWD = Path.of("").toAbsolutePath();
 
     // THE INSTANCE OF THIS PROCESS: CREATED BY start(), NEVER REPLACED AND NEVER RELEASED
     private static volatile WaterMedia instance;
 
-    // ==== ENVIRONMENT ====
+    // ENVIRONMENT
     public final String name;
     public final Path tmp;
     public final Path cwd;
     public final boolean clientSide;
 
-    // ==== LOAD STATE ====
+    // LOAD STATE
     // THE APP SPLASH POLLS THESE FROM ITS RENDER THREAD WHILE THE HOST THREAD WALKS THE MODULES
     private final List<WaterMediaModule> modules;
     private volatile WaterMediaModule loading;
@@ -77,6 +77,9 @@ public final class WaterMedia {
         this.modules = List.copyOf(modules);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /**
      * Loads every module, once for the life of the process; nothing is ever unloaded. Each module decides by
      * itself whether this side needs it and handles the parts it can live without (the file server, FFmpeg);
@@ -185,10 +188,8 @@ public final class WaterMedia {
 
     /** Returns the process's absolute working directory; throws before {@link #start}. */
     public static Path cwd() { return instance().cwd; }
-
     /** Returns the process's absolute temporary directory; throws before {@link #start}. */
     public static Path tmp() { return instance().tmp; }
-
     /** Whether WaterMedia runs on a client; throws before {@link #start}. */
     public static boolean clientSide() { return instance().clientSide; }
 
@@ -197,6 +198,9 @@ public final class WaterMedia {
         if (!instance().clientSide) throw new IllegalStateException("Called " + type.getSimpleName() + " in a server environment");
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // THE INSTANCE, OR THE ONE FAILURE EVERY ACCESSOR GIVES BEFORE start()
     private static WaterMedia instance() {
         final WaterMedia watermedia = instance;

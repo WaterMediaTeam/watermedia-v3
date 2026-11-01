@@ -43,6 +43,10 @@ public final class Spinner extends Element<Spinner> {
         this.height = Theme.CONTROL;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public Spinner value(final double v) {
         this.value = MathUtil.clamp(v, this.min, this.max);
         return this;
@@ -88,69 +92,6 @@ public final class Spinner extends Element<Spinner> {
     public void clearFocus() {
         // A CONSUMED CLICK LANDED ELSEWHERE: COMMIT THE BUFFER, EXACTLY LIKE A CLICK OUTSIDE THE CONTROL
         if (this.editing) this.commit();
-    }
-
-    @Override
-    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-        this.contentHeight = Theme.CONTROL;
-        final int valueW = this.ctx != null && this.ctx.text != null ? this.ctx.text.width(this.label(), this.scale) : 0;
-        this.contentWidth = BUTTON + BUTTON + Math.max(48, valueW);
-    }
-
-    @Override
-    protected void onDraw(final Canvas canvas) {
-        final int y = this.innerTop();
-        final int h = this.innerHeight();
-        final int leftX = this.innerLeft();
-        final int w = this.innerWidth();
-        final int rightX = leftX + w - BUTTON;
-        final int th = canvas.textHeight(this.scale, false);
-        final int ty = y + (h - th) / 2;
-
-        if (this.editing) canvas.glow(leftX, y, w, h, 0f, AppTheme.AMBER, Theme.GLOW_WEAK);
-        canvas.fill(leftX, y, w, h, AppTheme.alpha(AppTheme.BG_1, 210));
-
-        final double mxp = this.ctx != null ? this.ctx.mouseX : -1d;
-        final double myp = this.ctx != null ? this.ctx.mouseY : -1d;
-        final boolean inRow = this.enabled && myp >= y && myp < y + h;
-        this.stepZone(canvas, leftX, y, h, "-", inRow && mxp >= leftX && mxp < leftX + BUTTON, this.pressZone == 1);
-        this.stepZone(canvas, rightX, y, h, "+", inRow && mxp >= rightX && mxp < rightX + BUTTON, this.pressZone == 2);
-
-        canvas.fill(leftX + BUTTON, y, 1, h, AppTheme.STROKE);
-        canvas.fill(rightX, y, 1, h, AppTheme.STROKE);
-
-        final int midX = leftX + BUTTON;
-        final int midW = w - BUTTON * 2;
-        final String shown = this.editing ? this.editText : this.label();
-        final int tw = canvas.textWidth(shown, this.scale, false);
-        final int textX = midX + Math.max(0, (midW - tw) / 2);
-        canvas.text(shown, textX, ty, AppTheme.TEXT, this.scale, false);
-        if (this.editing && (System.currentTimeMillis() / 500) % 2 == 0) canvas.fill(textX + tw + 1, ty, 1, th, AppTheme.AMBER);
-
-        canvas.stroke(leftX, y, w, h, this.editing ? AppTheme.AMBER : AppTheme.STROKE_BRIGHT,
-                this.editing ? Theme.BORDER_ACTIVE : Theme.BORDER_HAIRLINE);
-    }
-
-    @Override
-    protected boolean onPress(final double mx, final double my) {
-        // +/- ACT ON PRESS (SNAPPY) AND HOLD THE AMBER HIGHLIGHT UNTIL RELEASE; THE CENTER FALLS THROUGH TO
-        // dispatchClick, WHICH FOCUSES THE EDITOR
-        if (!this.enabled || !this.contains(mx, my)) return false;
-        final int leftX = this.innerLeft();
-        final int rightX = this.innerLeft() + this.innerWidth() - BUTTON;
-        if (mx >= leftX && mx < leftX + BUTTON) {
-            if (this.editing) this.commit();
-            this.pressZone = 1;
-            this.apply(this.value - this.step);
-            return true;
-        }
-        if (mx >= rightX && mx < rightX + BUTTON) {
-            if (this.editing) this.commit();
-            this.pressZone = 2;
-            this.apply(this.value + this.step);
-            return true;
-        }
-        return false;
     }
 
     @Override
@@ -221,6 +162,77 @@ public final class Spinner extends Element<Spinner> {
         this.invalidate();
         return true;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
+    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+        this.contentHeight = Theme.CONTROL;
+        final int valueW = this.ctx != null && this.ctx.text != null ? this.ctx.text.width(this.label(), this.scale) : 0;
+        this.contentWidth = BUTTON + BUTTON + Math.max(48, valueW);
+    }
+
+    @Override
+    protected void onDraw(final Canvas canvas) {
+        final int y = this.innerTop();
+        final int h = this.innerHeight();
+        final int leftX = this.innerLeft();
+        final int w = this.innerWidth();
+        final int rightX = leftX + w - BUTTON;
+        final int th = canvas.textHeight(this.scale, false);
+        final int ty = y + (h - th) / 2;
+
+        if (this.editing) canvas.glow(leftX, y, w, h, 0f, AppTheme.AMBER, Theme.GLOW_WEAK);
+        canvas.fill(leftX, y, w, h, AppTheme.alpha(AppTheme.BG_1, 210));
+
+        final double mxp = this.ctx != null ? this.ctx.mouseX : -1d;
+        final double myp = this.ctx != null ? this.ctx.mouseY : -1d;
+        final boolean inRow = this.enabled && myp >= y && myp < y + h;
+        this.stepZone(canvas, leftX, y, h, "-", inRow && mxp >= leftX && mxp < leftX + BUTTON, this.pressZone == 1);
+        this.stepZone(canvas, rightX, y, h, "+", inRow && mxp >= rightX && mxp < rightX + BUTTON, this.pressZone == 2);
+
+        canvas.fill(leftX + BUTTON, y, 1, h, AppTheme.STROKE);
+        canvas.fill(rightX, y, 1, h, AppTheme.STROKE);
+
+        final int midX = leftX + BUTTON;
+        final int midW = w - BUTTON * 2;
+        final String shown = this.editing ? this.editText : this.label();
+        final int tw = canvas.textWidth(shown, this.scale, false);
+        final int textX = midX + Math.max(0, (midW - tw) / 2);
+        canvas.text(shown, textX, ty, AppTheme.TEXT, this.scale, false);
+        if (this.editing && (System.currentTimeMillis() / 500) % 2 == 0) canvas.fill(textX + tw + 1, ty, 1, th, AppTheme.AMBER);
+
+        canvas.stroke(leftX, y, w, h, this.editing ? AppTheme.AMBER : AppTheme.STROKE_BRIGHT,
+                this.editing ? Theme.BORDER_ACTIVE : Theme.BORDER_HAIRLINE);
+    }
+
+    @Override
+    protected boolean onPress(final double mx, final double my) {
+        // +/- ACT ON PRESS (SNAPPY) AND HOLD THE AMBER HIGHLIGHT UNTIL RELEASE; THE CENTER FALLS THROUGH TO
+        // dispatchClick, WHICH FOCUSES THE EDITOR
+        if (!this.enabled || !this.contains(mx, my)) return false;
+        final int leftX = this.innerLeft();
+        final int rightX = this.innerLeft() + this.innerWidth() - BUTTON;
+        if (mx >= leftX && mx < leftX + BUTTON) {
+            if (this.editing) this.commit();
+            this.pressZone = 1;
+            this.apply(this.value - this.step);
+            return true;
+        }
+        if (mx >= rightX && mx < rightX + BUTTON) {
+            if (this.editing) this.commit();
+            this.pressZone = 2;
+            this.apply(this.value + this.step);
+            return true;
+        }
+        return false;
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private void stepZone(final Canvas canvas, final int x, final int y, final int h, final String glyph,
                           final boolean hover, final boolean press) {

@@ -11,7 +11,7 @@ import java.nio.ByteBuffer;
  * WATERMeDIA creates the texture, uploads pixel data, and exposes a handle.
  * The developer binds that handle in their rendering pipeline.
  * <p>
- * Engines are created through {@link PlayerAPI} factory methods and are client-side only —
+ * Engines are created through {@link PlayerAPI} factory methods and are client-side only:
  * construction throws on a server-side environment, headless capture included. Backends are
  * OpenGL, Vulkan, software surfaces and headless capture. The owning {@link MediaPlayer} drives
  * formats and uploads from one producer thread; the public surface only queries the engine.
@@ -37,10 +37,60 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     // A FRAME IS PRESENT ON A BACKEND WITHOUT A GPU HANDLE (SEE texture); GPU BACKENDS PUBLISH THEIR OWN HANDLE INSTEAD
     volatile boolean framed;
 
-    // SINGLE ENFORCEMENT POINT: EVERY ENGINE CONSTRUCTION PASSES THROUGH HERE, HEADLESS CAPTURE INCLUDED.
+    // SINGLE ENFORCEMENT POINT: EVERY ENGINE CONSTRUCTION PASSES THROUGH HERE, HEADLESS CAPTURE INCLUDED
     GFXEngine() {
         WaterMedia.checkIsClientSideOrThrow(this.getClass());
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
+    /** Frame width in pixels, or 0 if no format has been set. */
+    public int width() { return this.width; }
+
+    /** Frame height in pixels, or 0 if no format has been set. */
+    public int height() { return this.height; }
+
+    /** Pixel layout the engine is configured for, or null before the player configures the first format. */
+    public PixelFormat format() { return this.format; }
+
+    /** Sample precision in bits per component (8, 10, 12, 16, or 32 for float); 8 before the first format. */
+    public int bits() { return this.bits; }
+
+    /** Whether {@link #release()} already ran; a released engine refuses formats and drops uploads. */
+    public final boolean released() { return this.released; }
+
+    /** Returns the RGBA texture handle (a GL name, a {@code VkImageView} or a non-zero sentinel without a GPU), 0 before the first frame or after release. */
+    public long texture() { return this.released || !this.framed ? 0L : SENTINEL_TEXTURE; }
+
+    /** Whether the engine consumes 8-bit frames in {@code format} directly; see {@link #supports(PixelFormat, int)}. */
+    public final boolean supports(final PixelFormat format) { return this.supports(format, 8); }
+
+    /** Whether the engine consumes this layout at this sample precision directly; the producer pre-converts declined layouts, usually to 8-bit BGRA. */
+    public boolean supports(final PixelFormat format, final int bits) {
+        // RAW LAYOUTS AT 8, 10, 12, 16 OR 32 (FLOAT) BITS; COMPRESSED ONES FALL BACK TO THE DECODE PATH UNLESS A BACKEND OPTS IN
+        return format != null && !format.compressed() && (bits == 8 || bits == 10 || bits == 12 || bits == 16 || bits == 32);
+    }
+
+    /** Whether this engine can keep a small animated image as one texture per frame instead of one upload per frame. */
+    public boolean preload() { return false; }
+
+    /** Releases all GPU resources; later calls are no-ops. Never call it concurrently with an upload or a format change. */
+    public final void release() {
+        // THE TEST-AND-SET IS ATOMIC SO TWO CONCURRENT RELEASES NEVER TEAR DOWN TWICE
+        synchronized (this) {
+            if (this.released) return;
+            this.released = true;
+        }
+        this.destroy();
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    // THE OWNING PLAYER DRIVES EVERY MEMBER OF THIS SECTION FROM ONE PRODUCER THREAD
 
     // RECONFIGURES FOR AN 8-BIT FORMAT; SEE THE FIVE-ARGUMENT OVERLOAD
     final boolean format(final PixelFormat format, final int width, final int height) {
@@ -75,35 +125,19 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
         this.color = color;
     }
 
-    /** Frame width in pixels, or 0 if no format has been set. */
-    public int width() { return this.width; }
-
-    /** Frame height in pixels, or 0 if no format has been set. */
-    public int height() { return this.height; }
-
-    /** Pixel layout the engine is configured for, or null before the player configures the first format. */
-    public PixelFormat format() { return this.format; }
-
-    /** Sample precision in bits per component (8, 10, 12, 16, or 32 for float); 8 before the first format. */
-    public int bits() { return this.bits; }
-
-    /** Whether {@link #release()} already ran; a released engine refuses formats and drops uploads. */
-    public final boolean released() { return this.released; }
-
-    /** Returns the RGBA texture handle (a GL name, a {@code VkImageView} or a non-zero sentinel without a GPU), 0 before the first frame or after release. */
-    public long texture() { return this.released || !this.framed ? 0L : SENTINEL_TEXTURE; }
-
-    /** Whether the engine consumes 8-bit frames in {@code format} directly; see {@link #supports(PixelFormat, int)}. */
-    public final boolean supports(final PixelFormat format) { return this.supports(format, 8); }
-
-    /** Whether the engine consumes this layout at this sample precision directly; the producer pre-converts declined layouts, usually to 8-bit BGRA. */
-    public boolean supports(final PixelFormat format, final int bits) {
-        // RAW LAYOUTS AT 8, 10, 12, 16 OR 32 (FLOAT) BITS; COMPRESSED ONES FALL BACK TO THE DECODE PATH UNLESS A BACKEND OPTS IN
-        return format != null && !format.compressed() && (bits == 8 || bits == 10 || bits == 12 || bits == 16 || bits == 32);
+    // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(), EACH OF minBytes; STRIDES IN BYTES, 0 = TIGHT), READING [position, limit)
+    // UNMOVED UNTIL THE SECOND LATER upload RETURNS (CALLERS PASS FRESH ARRAYS). AN EMPTY SET, A NULL OR HEAP PLANE OR A MISSING STRIDE IS A CALLER BUG
+    final void upload(final ByteBuffer[] planes, final int[] strides) {
+        if (planes == null || planes.length == 0 || strides == null || strides.length < planes.length)
+            throw new IllegalArgumentException("A frame needs at least one plane and a stride per plane");
+        for (final ByteBuffer plane: planes)
+            if (plane == null || !plane.isDirect()) throw new IllegalArgumentException("Plane buffers must be direct and non-null");
+        if (this.released) return;
+        this.push(planes, strides);
     }
 
-    /** Whether this engine can keep a small animated image as one texture per frame instead of one upload per frame. */
-    public boolean preload() { return false; }
+    // BACKEND UPLOAD (SEE upload); IMPLEMENTATIONS LOG AND DROP ON FAILURE INSTEAD OF THROWING
+    abstract void push(final ByteBuffer[] planes, final int[] strides);
 
     // OPTIONAL FAST PATH: ONE TEXTURE PER TIGHTLY PACKED FRAME OF THE SET, IN format() (RAW PIXELS OR BCn BLOCKS); THE BUFFERS
     // MUST OUTLIVE THE NEXT preload/format/release AND A PROGRESSIVE ENGINE CLAMPS frame() TO THE UPLOADED PREFIX. FALSE = UNSUPPORTED
@@ -120,34 +154,12 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     // SINCE DESTROYING AN IMPORT AFTER ITS HOST MEMORY IS GONE CRASHES THE DRIVER. NEVER CONCURRENT WITH upload
     void release(final ByteBuffer buffer) {}
 
-    // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(), EACH OF minBytes; STRIDES IN BYTES, 0 = TIGHT), READING [position, limit)
-    // UNMOVED UNTIL THE SECOND LATER upload RETURNS (CALLERS PASS FRESH ARRAYS). AN EMPTY SET, A NULL OR HEAP PLANE OR A MISSING STRIDE IS A CALLER BUG
-    final void upload(final ByteBuffer[] planes, final int[] strides) {
-        if (planes == null || planes.length == 0 || strides == null || strides.length < planes.length)
-            throw new IllegalArgumentException("A frame needs at least one plane and a stride per plane");
-        for (final ByteBuffer plane: planes)
-            if (plane == null || !plane.isDirect()) throw new IllegalArgumentException("Plane buffers must be direct and non-null");
-        if (this.released) return;
-        this.push(planes, strides);
-    }
-
-    // BACKEND UPLOAD (SEE upload); IMPLEMENTATIONS LOG AND DROP ON FAILURE INSTEAD OF THROWING
-    abstract void push(final ByteBuffer[] planes, final int[] strides);
-
-    /** Releases all GPU resources; later calls are no-ops. Never call it concurrently with an upload or a format change. */
-    public final void release() {
-        // THE TEST-AND-SET IS ATOMIC SO TWO CONCURRENT RELEASES NEVER TEAR DOWN TWICE
-        synchronized (this) {
-            if (this.released) return;
-            this.released = true;
-        }
-        this.destroy();
-    }
-
     // BACKEND TEARDOWN, RUN EXACTLY ONCE AFTER released IS SET; GL DEFERS ITS GPU WORK TO THE RENDER THREAD
     abstract void destroy();
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
 
     // BYTES A PLANE OF rows ROWS OF rowBytes EACH NEEDS WHEN ITS ROWS START stride APART (0 = TIGHT): THE LAST ROW
     // CARRIES NO PADDING. -1 WHEN THE STRIDE CANNOT HOLD ONE ROW

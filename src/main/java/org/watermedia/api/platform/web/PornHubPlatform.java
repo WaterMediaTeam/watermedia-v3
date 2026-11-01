@@ -16,7 +16,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -26,18 +25,20 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class PornHubPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(PornHubPlatform.class.getSimpleName());
     public static final String NAME = "PornHub";
+    // HOST SUFFIXES, MATCHED WITH A DOT BOUNDARY SO EVERY SUBDOMAIN IS COVERED
+    private static final String[] HOSTS = { "pornhub.com" };
     private static final Pattern FLASHVARS_PATTERN = Pattern.compile("\\bvar\\s+flashvars_\\d+\\s*=\\s*(\\{[\\s\\S]*?\\});");
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
 
     @Override
     public Resolution resolve(final URI uri) throws PlatformException {
-        // THE HOST MATCH KEEPS A DOT BOUNDARY (pornhub.com OR *.pornhub.com) SO LOOKALIKES LIKE "notpornhub.com"
-        // STAY FOREIGN; A NULL HOST (file:// URIs) IS NOT OURS
-        final String raw = uri.getHost();
-        final String host = raw == null ? null : raw.toLowerCase(Locale.ROOT);
-        if (host == null || !(host.equals("pornhub.com") || host.endsWith(".pornhub.com"))) return null;
+        if (!WebRequests.hostMatches(uri.getHost(), HOSTS)) return null;
 
         // ONLY A VIDEO PAGE CARRIES A viewkey (e.g. ?viewkey=6a159015e4470)
         final String viewkey = NetRequest.query(uri).get("viewkey");
@@ -100,6 +101,10 @@ public final class PornHubPlatform implements Platform {
             throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     private record FlashVars(
             @SerializedName("video_title") String title,

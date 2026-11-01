@@ -15,6 +15,9 @@ public final class Xmp {
 
     private Xmp() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Adds the title, description, copyright, label comment, creation time, software and authors found in the packet. */
     public static void read(final ImageMetadata metadata, final byte[] packet) {
         if (packet == null || packet.length == 0) return;
@@ -33,6 +36,9 @@ public final class Xmp {
         for (final String author: texts(xml, "dc:creator", "rdf:li")) metadata.author(author);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static String first(final String xml, final String outerTag, final String innerTag) {
         final List<String> values = texts(xml, outerTag, innerTag);
         return values.isEmpty() ? null : values.get(0);

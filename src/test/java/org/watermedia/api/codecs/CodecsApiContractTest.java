@@ -29,6 +29,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("CodecsAPI contract")
 public class CodecsApiContractTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // HEAP COPY OF A FRAME, SO IT SURVIVES THE READER REUSING ITS BUFFER
+    private static byte[] copy(final ByteBuffer frame) {
+        final byte[] out = new byte[frame.remaining()];
+        frame.duplicate().get(out);
+        return out;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Format detection")
     class FormatDetection {
@@ -172,12 +185,5 @@ public class CodecsApiContractTest {
             assertTrue(Container.PNG.audio().isEmpty() && Container.GIF.audio().isEmpty());
             assertTrue(Container.OGG.video().isEmpty() && !Container.OGG.audio().isEmpty());
         }
-    }
-
-    // HEAP COPY OF A FRAME, SO IT SURVIVES THE READER REUSING ITS BUFFER
-    private static byte[] copy(final ByteBuffer frame) {
-        final byte[] out = new byte[frame.remaining()];
-        frame.duplicate().get(out);
-        return out;
     }
 }

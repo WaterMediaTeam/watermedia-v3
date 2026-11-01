@@ -15,7 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /** Verifies {@link MediaQuality} classification from dimensions and the closest-available lookup. */
 @DisplayName("MediaQuality")
 public class MediaQualityTest {
-
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("of(width, height)")
     class OfDimensionsTests {

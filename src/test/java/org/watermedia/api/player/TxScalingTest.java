@@ -28,8 +28,32 @@ public class TxScalingTest {
     private static final int CAP_WIDTH = 32;
     private static final int CAP_HEIGHT = 20;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeAll
     static void boot() { MediaBootstrap.client(); }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // BUILDS A STATIC-IMAGE PLAYER, APPLIES THE SCALING CONFIG, STARTS IT AND WAITS UNTIL THE FIRST FRAME IS LIVE SO
+    // width()/height() REFLECT THE UPLOAD SIZE
+    private static TxMediaPlayer startStatic(final HeadlessGFXEngine gfx, final Consumer<TxMediaPlayer> config) {
+        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
+        config.accept(player);
+        assertTrue(player.start());
+        assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
+        return player;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Static image")
@@ -109,19 +133,5 @@ public class TxScalingTest {
                 player.release();
             }
         }
-    }
-
-    // UTILITY
-
-    // BUILDS A STATIC-IMAGE PLAYER, APPLIES THE SCALING CONFIG, STARTS IT AND WAITS UNTIL THE FIRST FRAME IS LIVE SO
-    // width()/height() REFLECT THE UPLOAD SIZE
-    private static TxMediaPlayer startStatic(final HeadlessGFXEngine gfx, final Consumer<TxMediaPlayer> config) {
-        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
-        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
-        config.accept(player);
-        assertTrue(player.start());
-        assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
-        return player;
     }
 }

@@ -28,6 +28,9 @@ final class Path {
     private double[] coord = new double[64];
     private int cmdN, coordN;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     void moveTo(final double x, final double y) throws CodecException { this.pushCmd(MOVE); this.pushCoord(x, y); }
     void lineTo(final double x, final double y) throws CodecException { this.pushCmd(LINE); this.pushCoord(x, y); }
 
@@ -43,9 +46,6 @@ final class Path {
 
     boolean isEmpty() { return this.cmdN == 0; }
 
-    // ==========================================================================
-    // BASIC SHAPE BUILDERS (CUBIC APPROXIMATION FOR ROUND PARTS)
-    // ==========================================================================
     void rect(final double x, final double y, final double w, final double h, final double rx, final double ry) throws CodecException {
         if (rx <= 0 || ry <= 0) {
             this.moveTo(x, y);
@@ -104,12 +104,7 @@ final class Path {
         return new double[] { minX, minY, maxX, maxY };
     }
 
-    // ==========================================================================
-    // FLATTENING TO DEVICE-SPACE POLYLINES
-    // ==========================================================================
-    // ONE FLATTENED DEVICE-SPACE SUBPATH: THE [x0,y0,x1,y1,...] POINTS AND WHETHER IT WAS CLOSED
-    record Subpath(double[] pts, boolean closed) {}
-
+    // FLATTENS INTO DEVICE-SPACE POLYLINES UNDER m, SUBDIVIDING CURVES UNTIL FLAT WITHIN tol PIXELS
     List<Subpath> flatten(final Affine m, final double tol) throws CodecException {
         final List<Subpath> out = new ArrayList<>();
         final Builder b = new Builder(out, m, tol * tol);
@@ -126,6 +121,55 @@ final class Path {
         b.flush();
         return out;
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+    private void pushCmd(final byte c) throws CodecException {
+        // ONE BUDGET COVERS BOTH ARRAYS: EVERY COORDINATE PAIR BELONGS TO A COMMAND, AND NO COMMAND
+        // CARRIES MORE THAN THREE OF THEM, SO coordN CAN NEVER EXCEED 6 * MAX_SEGMENTS
+        if (this.cmdN == MAX_SEGMENTS) throw new CodecException("SVG path exceeds " + MAX_SEGMENTS + " segments");
+        if (this.cmdN == this.cmd.length) {
+            final byte[] grown = new byte[this.cmd.length * 2];
+            System.arraycopy(this.cmd, 0, grown, 0, this.cmdN);
+            this.cmd = grown;
+        }
+        this.cmd[this.cmdN++] = c;
+    }
+
+    private void pushCoord(final double x, final double y) throws CodecException {
+        // SINGLE CHOKE POINT FOR THE "NO NON-FINITE GEOMETRY" INVARIANT: THE PATH PARSER, THE SHAPE
+        // BUILDERS AND THE GENERATED STROKE OUTLINE ALL FUNNEL THROUGH HERE
+        if (!Double.isFinite(x) || !Double.isFinite(y)) throw new CodecException("Non-finite path coordinate");
+        if (this.coordN + 2 > this.coord.length) {
+            final double[] grown = new double[this.coord.length * 2];
+            System.arraycopy(this.coord, 0, grown, 0, this.coordN);
+            this.coord = grown;
+        }
+        this.coord[this.coordN++] = x;
+        this.coord[this.coordN++] = y;
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static double distSqToLine(final double px, final double py,
+                                       final double ax, final double ay, final double bx, final double by) {
+        final double dx = bx - ax, dy = by - ay;
+        final double lenSq = dx * dx + dy * dy;
+        if (lenSq < 1e-12) {
+            final double ex = px - ax, ey = py - ay;
+            return ex * ex + ey * ey;
+        }
+        final double cross = (px - ax) * dy - (py - ay) * dx;
+        return (cross * cross) / lenSq;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    // ONE FLATTENED DEVICE-SPACE SUBPATH: THE [x0,y0,x1,y1,...] POINTS AND WHETHER IT WAS CLOSED
+    record Subpath(double[] pts, boolean closed) {}
 
     // ACCUMULATES DEVICE-SPACE VERTICES, SUBDIVIDING CURVES UNTIL FLAT WITHIN tolSq
     private static final class Builder {
@@ -183,6 +227,16 @@ final class Path {
             this.curY = this.startY;
         }
 
+        void flush() {
+            if (this.n >= 4) {
+                final double[] line = new double[this.n];
+                System.arraycopy(this.buf, 0, line, 0, this.n);
+                this.out.add(new Subpath(line, this.pendingClose));
+            }
+            this.n = 0;
+            this.pendingClose = false;
+        }
+
         // SEED A FRESH SUBPATH FROM THE CURRENT POINT WHEN A DRAW FOLLOWS A close()/START
         private void ensureStarted() throws CodecException {
             if (this.n == 0) this.add(this.curX, this.curY);
@@ -234,52 +288,5 @@ final class Path {
             this.buf[this.n++] = x;
             this.buf[this.n++] = y;
         }
-
-        void flush() {
-            if (this.n >= 4) {
-                final double[] line = new double[this.n];
-                System.arraycopy(this.buf, 0, line, 0, this.n);
-                this.out.add(new Subpath(line, this.pendingClose));
-            }
-            this.n = 0;
-            this.pendingClose = false;
-        }
-    }
-
-    private static double distSqToLine(final double px, final double py,
-                                       final double ax, final double ay, final double bx, final double by) {
-        final double dx = bx - ax, dy = by - ay;
-        final double lenSq = dx * dx + dy * dy;
-        if (lenSq < 1e-12) {
-            final double ex = px - ax, ey = py - ay;
-            return ex * ex + ey * ey;
-        }
-        final double cross = (px - ax) * dy - (py - ay) * dx;
-        return (cross * cross) / lenSq;
-    }
-
-    private void pushCmd(final byte c) throws CodecException {
-        // ONE BUDGET COVERS BOTH ARRAYS: EVERY COORDINATE PAIR BELONGS TO A COMMAND, AND NO COMMAND
-        // CARRIES MORE THAN THREE OF THEM, SO coordN CAN NEVER EXCEED 6 * MAX_SEGMENTS
-        if (this.cmdN == MAX_SEGMENTS) throw new CodecException("SVG path exceeds " + MAX_SEGMENTS + " segments");
-        if (this.cmdN == this.cmd.length) {
-            final byte[] grown = new byte[this.cmd.length * 2];
-            System.arraycopy(this.cmd, 0, grown, 0, this.cmdN);
-            this.cmd = grown;
-        }
-        this.cmd[this.cmdN++] = c;
-    }
-
-    private void pushCoord(final double x, final double y) throws CodecException {
-        // SINGLE CHOKE POINT FOR THE "NO NON-FINITE GEOMETRY" INVARIANT — THE PATH PARSER, THE SHAPE
-        // BUILDERS AND THE GENERATED STROKE OUTLINE ALL FUNNEL THROUGH HERE
-        if (!Double.isFinite(x) || !Double.isFinite(y)) throw new CodecException("Non-finite path coordinate");
-        if (this.coordN + 2 > this.coord.length) {
-            final double[] grown = new double[this.coord.length * 2];
-            System.arraycopy(this.coord, 0, grown, 0, this.coordN);
-            this.coord = grown;
-        }
-        this.coord[this.coordN++] = x;
-        this.coord[this.coordN++] = y;
     }
 }

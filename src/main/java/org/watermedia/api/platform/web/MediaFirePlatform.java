@@ -24,9 +24,9 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class MediaFirePlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(MediaFirePlatform.class.getSimpleName());
     public static final String NAME = "MediaFire";
+    private static final String[] HOSTS = { "mediafire.com", "www.mediafire.com" };
     private static final Pattern PATTERN_POPSOK = Pattern.compile("<a\\s+class=\"input\\s+popsok\"\\s+aria-label=\"Download\\s+file\"\\s+href=\"([^\"]+)\"[^>]*>");
     private static final Pattern PATTERN_DATA_SCRAMBLED = Pattern.compile("data-scrambled-url=\"([^\"]+)\"");
-    private static final String[] HOSTS = { "mediafire.com", "www.mediafire.com" };
     // DIRECT LINKS ARE ISSUED PER VISIT AND STOP WORKING AFTER A WHILE; THE LIFETIME IS NOT PUBLISHED
     private static final Duration TTL = Duration.ofMinutes(30);
 

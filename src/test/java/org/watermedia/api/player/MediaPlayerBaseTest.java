@@ -16,6 +16,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("MediaPlayer base surface")
 public class MediaPlayerBaseTest {
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("volume")
     class VolumeTests {
@@ -79,7 +83,7 @@ public class MediaPlayerBaseTest {
         @Test
         @DisplayName("live source cannot change speed")
         void liveLocksSpeed() {
-            // AN UNKNOWN DURATION ONLY HOLDS THE CLOCK — ONLY AN EXPLICIT LIVE FLAG LOCKS THE RATE
+            // AN UNKNOWN DURATION ONLY HOLDS THE CLOCK; ONLY AN EXPLICIT LIVE FLAG LOCKS THE RATE
             final ServerMediaPlayer player = new ServerMediaPlayer();
             assertTrue(player.canSpeed(), "unknown duration must not lock speed");
             player.live(true);
@@ -98,7 +102,7 @@ public class MediaPlayerBaseTest {
             assertEquals(2.0f, player.speed());
             assertTrue(player.speed(4.0f));
 
-            // OUT OF RANGE — REJECTED, SPEED UNCHANGED
+            // OUT OF RANGE: REJECTED, SPEED UNCHANGED
             assertFalse(player.speed(0f));
             assertFalse(player.speed(-1f));
             assertFalse(player.speed(4.1f));

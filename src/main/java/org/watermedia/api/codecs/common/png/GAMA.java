@@ -14,7 +14,7 @@ import java.nio.ByteOrder;
 public record GAMA(int gamma) implements IChunk {
     public static final int SIGNATURE = 0x67_41_4D_41; // "gAMA"
     public static final int LENGTH = 4;
-    // GAMMA 100.0 — ORDERS OF MAGNITUDE ABOVE ANY REAL ENCODER (0.45455 AND 1.0 ARE THE COMMON ONES)
+    // GAMMA 100.0: ORDERS OF MAGNITUDE ABOVE ANY REAL ENCODER (0.45455 AND 1.0 ARE THE COMMON ONES)
     public static final int MAX_GAMMA = 10_000_000;
 
     /** Reads a complete gAMA chunk (length, type, data and CRC) from the buffer. */

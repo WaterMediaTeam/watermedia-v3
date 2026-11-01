@@ -7,11 +7,6 @@ import java.util.Map;
 /** Colors and text scales of the app UI. */
 public final class AppTheme {
 
-    private static final float FONT_BASE_PX = 20f;
-    // alpha() RUNS MANY TIMES PER FRAME: ONE 256-SLOT ROW PER BASE COLOR AVOIDS BOTH A NEW Color AND A BOXED
-    // INT KEY ON EVERY CALL. ONLY THE RENDER THREAD CALLS IT
-    private static final Map<Color, Color[]> ALPHA_CACHE = new HashMap<>();
-
     public static final Color BG_0 = hex(0x04061A);
     public static final Color BG_1 = hex(0x0A0E1F);
     public static final Color BG_2 = hex(0x11172E);
@@ -36,6 +31,7 @@ public final class AppTheme {
 
     // TEXT SCALES BY ROLE; TINY, SUBTITLE AND BODY SHARE A SIZE ON PURPOSE SO EACH CAN BE RETUNED WITHOUT
     // TOUCHING ITS CALLERS
+    private static final float FONT_BASE_PX = 20f;
     public static final float TEXT_TINY = textScale(12);
     public static final float TEXT_SUBTITLE = textScale(12);
     public static final float TEXT_BODY = textScale(12);
@@ -43,8 +39,15 @@ public final class AppTheme {
     public static final float TEXT_SECTION = textScale(16);
     public static final float TEXT_DISPLAY = textScale(18);
 
+    // alpha() RUNS MANY TIMES PER FRAME: ONE 256-SLOT ROW PER BASE COLOR AVOIDS BOTH A NEW Color AND A BOXED
+    // INT KEY ON EVERY CALL. ONLY THE RENDER THREAD CALLS IT
+    private static final Map<Color, Color[]> ALPHA_CACHE = new HashMap<>();
+
     private AppTheme() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     public static Color hex(final int rgb) {
         return new Color(rgb);
     }
@@ -63,6 +66,9 @@ public final class AppTheme {
         return made;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static float textScale(final int px) {
         return px / FONT_BASE_PX;
     }

@@ -22,9 +22,6 @@ import static org.lwjgl.glfw.GLFWVulkan.glfwVulkanSupported;
 public final class RenderSystem {
     private static final Marker IT = MarkerManager.getMarker(RenderSystem.class.getSimpleName());
 
-    /** The render backends the app can run on. */
-    public enum Engine { OPENGL, VULKAN }
-
     // A GL DEBUG CONTEXT ADDS PER-CALL DRIVER VALIDATION OVERHEAD: OFF BY DEFAULT, OPT IN WITH -Dwatermedia.gldebug=true
     public static final boolean GL_DEBUG = Boolean.getBoolean("watermedia.gldebug");
 
@@ -36,6 +33,9 @@ public final class RenderSystem {
 
     private RenderSystem() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Selects the engine for the next window, downgrading Vulkan to OpenGL when no Vulkan loader is present. */
     public static void chooseEngine(final Engine requested) {
         final boolean missing = requested == Engine.VULKAN && !glfwVulkanSupported();
@@ -147,6 +147,13 @@ public final class RenderSystem {
         if (current != null) current.releaseCache();
     }
 
+    public static void viewport(final int width, final int height) {
+        // NULL-SAFE: WinFrame'S SWP_FRAMECHANGED FIRES THE SIZE CALLBACK DURING WINDOW CREATION, BEFORE attach();
+        // GL TAKES ITS FIRST VIEWPORT FROM THE FRAMEBUFFER AND THE SWAP PATH CALLS viewport() AGAIN
+        final RenderEngine current = engine;
+        if (current != null) current.viewport(width, height);
+    }
+
     public static boolean beginCache(final float r, final float g, final float b, final float a) { return engine.beginCache(r, g, b, a); }
     public static void raiseCache() { engine.raiseCache(); }
     public static void endCache() { engine.endCache(); }
@@ -154,13 +161,6 @@ public final class RenderSystem {
     public static void drawCache(final boolean top) { engine.drawCache(top); }
     public static void configureFrameState() { engine.configureFrameState(); }
     public static void clear(final float r, final float g, final float b, final float a) { engine.clear(r, g, b, a); }
-
-    public static void viewport(final int width, final int height) {
-        // NULL-SAFE: WinFrame'S SWP_FRAMECHANGED FIRES THE SIZE CALLBACK DURING WINDOW CREATION, BEFORE attach();
-        // GL TAKES ITS FIRST VIEWPORT FROM THE FRAMEBUFFER AND THE SWAP PATH CALLS viewport() AGAIN
-        final RenderEngine current = engine;
-        if (current != null) current.viewport(width, height);
-    }
     public static int createTexture(final int width, final int height, final ByteBuffer rgba) { return engine.createTexture(width, height, rgba); }
     public static void deleteTexture(final int textureId) { engine.deleteTexture(textureId); }
     public static void setupOrtho(final int width, final int height) { engine.setupOrtho(width, height); }
@@ -195,4 +195,10 @@ public final class RenderSystem {
     public static void blit(final float x, final float y, final float w, final float h, final float u0, final float v0, final float u1, final float v1) { engine.blit(x, y, w, h, u0, v0, u1, v1); }
     public static void glowRect(final float x, final float y, final float w, final float h, final float radius, final Color glow, final float alpha) { engine.glowRect(x, y, w, h, radius, glow, alpha); }
     public static void shadowRect(final float x, final float y, final float w, final float h, final float radius, final float alpha) { engine.shadowRect(x, y, w, h, radius, alpha); }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /** The render backends the app can run on. */
+    public enum Engine { OPENGL, VULKAN }
 }

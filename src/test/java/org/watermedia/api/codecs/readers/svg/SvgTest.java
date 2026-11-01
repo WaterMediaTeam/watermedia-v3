@@ -52,6 +52,9 @@ public class SvgTest {
     private static final double REFERENCE_MAX_MEAN_DIFF = 4.0;
     private static final double REFERENCE_MAX_PERCENT = 6.0;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @TestFactory
     @DisplayName("Decode contract")
     Iterable<DynamicTest> contract() throws IOException {
@@ -133,6 +136,24 @@ public class SvgTest {
         return tests;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static byte[] svg(final String viewBox, final String body) {
+        return ("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\""
+                + viewBox + "\">" + body + "</svg>").getBytes(StandardCharsets.UTF_8);
+    }
+
+    // READS A PIXEL FROM THE DEFAULT BGRA FRAME AND RETURNS {r, g, b, a}
+    private static int[] rgba(final ImageData img, final int x, final int y) {
+        final ByteBuffer bgra = img.frames()[0];
+        final int i = (y * img.width() + x) * 4;
+        return new int[] { bgra.get(i + 2) & 0xFF, bgra.get(i + 1) & 0xFF, bgra.get(i) & 0xFF, bgra.get(i + 3) & 0xFF };
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Paint and colour")
     class Paint {
@@ -379,18 +400,5 @@ public class SvgTest {
                 assertEquals(cap, second.remaining(), "the whole frame must be readable again");
             }
         }
-    }
-
-    // UTILITY
-    private static byte[] svg(final String viewBox, final String body) {
-        return ("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\""
-                + viewBox + "\">" + body + "</svg>").getBytes(StandardCharsets.UTF_8);
-    }
-
-    // READS A PIXEL FROM THE DEFAULT BGRA FRAME AND RETURNS {r, g, b, a}
-    private static int[] rgba(final ImageData img, final int x, final int y) {
-        final ByteBuffer bgra = img.frames()[0];
-        final int i = (y * img.width() + x) * 4;
-        return new int[] { bgra.get(i + 2) & 0xFF, bgra.get(i + 1) & 0xFF, bgra.get(i) & 0xFF, bgra.get(i + 3) & 0xFF };
     }
 }

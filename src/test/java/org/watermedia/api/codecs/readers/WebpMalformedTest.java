@@ -23,13 +23,37 @@ import static org.watermedia.test.support.ImageBytes.webpChunk;
 
 /**
  * Verifies crafted and corrupted WebP files: every malformed input surfaces as a clean
- * {@link CodecException} (or completes harmlessly) — never as an unchecked exception, an
- * {@link OutOfMemoryError} or a hang — while valid features the decoder lacks surface as
+ * {@link CodecException} (or completes harmlessly), never as an unchecked exception, an
+ * {@link OutOfMemoryError} or a hang, while valid features the decoder lacks surface as
  * {@link UnsupportedFormatException}.
  */
 @DisplayName("WebP malformed inputs")
 public class WebpMalformedTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // A SQUARE ANIMATED VP8X CANVAS WITH ITS ANIM CHUNK, THEN ONE ANMF CHUNK REPEATED; THE CHUNKS ONLY, NO RIFF PREAMBLE
+    private static byte[] animation(final byte[] frame, final int size, final int count) {
+        final ImageBytes out = new ImageBytes().raw(webpChunk("VP8X", vp8x(0x02, size, size))).raw(webpChunk("ANIM", new byte[6]));
+        for (int i = 0; i < count; i++) out.raw(frame);
+        return out.bytes();
+    }
+
+    // 16-BYTE ANMF HEADER FOR A FRAME AT THE ORIGIN: MINUS-ONE 24-BIT SIZES, A 10 MS DURATION AND BLEND WITHOUT DISPOSAL
+    private static byte[] anmfHeader(final int width, final int height) {
+        return new ImageBytes().le24(0).le24(0).le24(width - 1).le24(height - 1).le24(10).u8(0).bytes();
+    }
+
+    // CHUNK STREAM OF A REAL FIXTURE (EVERYTHING PAST THE 12-BYTE RIFF????WEBP PREAMBLE)
+    private static byte[] fixtureChunks(final Path path) {
+        final byte[] file = Fixtures.readAll(path);
+        return Arrays.copyOfRange(file, 12, file.length);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Geometry")
     class Geometry {
@@ -135,27 +159,5 @@ public class WebpMalformedTest {
             assertThrows(UnsupportedFormatException.class, () -> new WebPReader(ByteBuffer.wrap(webpChunk("VP8L", body))));
             assertThrows(CodecException.class, () -> new WebPReader(ByteBuffer.wrap(webpChunk("VP8L", new byte[] { 0x2E, 0, 0, 0, 0 }))));
         }
-    }
-
-    // ==========================================================================
-    // UTILITY
-    // ==========================================================================
-
-    // A SQUARE ANIMATED VP8X CANVAS WITH ITS ANIM CHUNK, THEN ONE ANMF CHUNK REPEATED; THE CHUNKS ONLY, NO RIFF PREAMBLE
-    private static byte[] animation(final byte[] frame, final int size, final int count) {
-        final ImageBytes out = new ImageBytes().raw(webpChunk("VP8X", vp8x(0x02, size, size))).raw(webpChunk("ANIM", new byte[6]));
-        for (int i = 0; i < count; i++) out.raw(frame);
-        return out.bytes();
-    }
-
-    // 16-BYTE ANMF HEADER FOR A FRAME AT THE ORIGIN: MINUS-ONE 24-BIT SIZES, A 10 MS DURATION AND BLEND WITHOUT DISPOSAL
-    private static byte[] anmfHeader(final int width, final int height) {
-        return new ImageBytes().le24(0).le24(0).le24(width - 1).le24(height - 1).le24(10).u8(0).bytes();
-    }
-
-    // CHUNK STREAM OF A REAL FIXTURE (EVERYTHING PAST THE 12-BYTE RIFF????WEBP PREAMBLE)
-    private static byte[] fixtureChunks(final Path path) {
-        final byte[] file = Fixtures.readAll(path);
-        return Arrays.copyOfRange(file, 12, file.length);
     }
 }

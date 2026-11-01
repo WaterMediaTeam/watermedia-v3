@@ -77,6 +77,10 @@ public class NewgroundsPlatformTest {
 
     private boolean previousMature;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeEach
     void rememberConfig() {
         this.previousMature = WaterMediaConfig.platforms.allowMatureContent;
@@ -87,6 +91,10 @@ public class NewgroundsPlatformTest {
     void restoreConfig() {
         WaterMediaConfig.platforms.allowMatureContent = this.previousMature;
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Claims")

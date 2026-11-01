@@ -127,7 +127,7 @@ public class ColorimetryTest {
         @Test
         @DisplayName("Tags map to matrix, range, siting, curve and primaries; untagged gray and YUVJ frames are full range")
         void tagsMap() throws Exception {
-            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
+            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable, skipping");
             final Method map = FFMediaPlayer.class.getDeclaredMethod("colorimetry", int.class, int.class, int.class, int.class, int.class, int.class, int.class, int.class);
             map.setAccessible(true);
             final Colorimetry hdr = (Colorimetry) map.invoke(null, AV_PIX_FMT_YUV420P10LE, 3_840, 2_160, AVCOL_SPC_BT2020_NCL, AVCOL_RANGE_MPEG,
@@ -152,7 +152,7 @@ public class ColorimetryTest {
         @Test
         @DisplayName("A WebM tagged BT.709 limited reaches the engine as BT.709 even at an SD size, with BT.709 luma")
         void webmTagsReachTheEngine(@TempDir final Path directory) throws Exception {
-            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
+            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable, skipping");
             // A MAGENTA WHOSE LUMA DIFFERS BY ABOUT 23 CODES BETWEEN BT.601 AND BT.709
             final int r = 230, g = 20, b = 230;
             final ByteArrayOutputStream out = new ByteArrayOutputStream();

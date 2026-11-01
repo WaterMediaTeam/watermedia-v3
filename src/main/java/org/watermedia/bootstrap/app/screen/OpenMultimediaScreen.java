@@ -73,8 +73,6 @@ public class OpenMultimediaScreen extends Screen {
     private static final int ROW_RECENT = 3;
     private static final int ROW_HISTORY = 4;
 
-    private record Row(int kind, PlatformResult result, String text) {}
-
     // CONSTANT LISTS SO keybinds() ALLOCATES NOTHING PER FRAME
     private static final List<Keybind> KEYS_LOADING = List.of(new Keybind("ESC", "Cancel"));
     private static final List<Keybind> KEYS_SEARCH = List.of(
@@ -137,11 +135,107 @@ public class OpenMultimediaScreen extends Screen {
         this.navigator = navigator;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     // THE SHELL KEEPS THE HOME SCREEN MOUNTED UNDER THIS ONE IN THE CENTER SLOT
     @Override
     public String under() {
         return "home";
     }
+
+    @Override
+    public void onEnter() {
+        super.onEnter(); // BUILDS THE TREE ON FIRST ENTRY
+        this.loading = false;
+        this.loadGeneration++;
+        this.previewGeneration++;
+        this.previewMRL = null;
+        this.previewUrl = "";
+        this.animPreviewTarget = -1; // SNAP THE PREVIEW SIZE ON ENTRY INSTEAD OF EASING
+        this.clearSearch();
+        this.field.focused(true);
+        this.syncLoadDialog();
+    }
+
+    @Override
+    public void onExit() {
+        this.loading = false;
+        this.loadGeneration++;
+        this.previewGeneration++;
+        this.previewMRL = null;
+        this.previewUrl = "";
+        this.clearSearch();
+        this.syncLoadDialog();
+    }
+
+    // RENDER BACKEND HOT-SWAP: THE ROWS REBUILD THEIR THUMBNAIL PLAYERS ON THE NEW ENGINE AS THEY DRAW
+    @Override
+    public void releaseMedia() {
+        this.releaseThumbs();
+    }
+
+    @Override
+    public List<Keybind> keybinds() {
+        if (this.loading) return KEYS_LOADING;
+        return this.searchMode() ? KEYS_SEARCH : KEYS_DEFAULT;
+    }
+
+    @Override
+    public boolean continuous() {
+        // CARET BLINK, LOADING DOTS, SEARCH POLLING, PREVIEW EASE AND ANIMATED THUMBNAILS
+        return this.textInputActive() || this.loading
+                || (this.search != null && !this.searchRenderedDone)
+                || System.currentTimeMillis() - this.animPreviewStart < PREVIEW_ANIM_MS
+                || Previews.animating(this.thumbPlayers.values());
+    }
+
+    // ==========================================================================
+    // PUBLIC API: INPUT
+    // ==========================================================================
+
+    // THE TREE HANDLES POINTERS; ONLY THE SCREEN SHORTCUTS LIVE HERE
+
+    @Override
+    public boolean dispatchKey(final int key, final int action) {
+        // TREE FIRST: THE LOADING DIALOG (FULLY MODAL) AND THE FOCUSED FIELD (BACKSPACE/DELETE) CONSUME THEIRS
+        if (super.dispatchKey(key, action)) return true;
+        if (action == GLFW_RELEASE) {
+            final String url = this.field.value();
+            switch (key) {
+                // ONLY WHILE THE FIELD IS BLURRED: A TYPED SPACE IS INPUT, NOT THE SAVE SHORTCUT
+                case GLFW_KEY_SPACE -> {
+                    if (!this.field.textInputActive() && !this.searchMode() && !url.isEmpty()) this.saveCustomUrl();
+                }
+                case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
+                    if (!url.isEmpty()) {
+                        if (this.searchMode()) this.doSearch(true);
+                        else this.playCustomUrl();
+                    }
+                }
+                case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
+                case GLFW_KEY_V -> {
+                    if (this.ctx.ctrlDown && !this.ctx.altDown) this.pasteFromClipboard();
+                }
+                // ONLY WHILE THE FIELD IS BLURRED: AN R TYPED INTO A URL MUST NOT TRIGGER A NETWORK RELOAD
+                case GLFW_KEY_R -> {
+                    if (!this.field.textInputActive() && !this.searchMode() && !url.isEmpty()) this.reloadPreviewMRL();
+                }
+            }
+        }
+        return true; // MODAL: THE HOME SCREEN UNDERNEATH MUST NEVER SEE KEYS
+    }
+
+    @Override
+    public boolean dispatchScroll(final double mx, final double my, final double amount) {
+        if (super.dispatchScroll(mx, my, amount)) return true; // DROPDOWN / LOADING DIALOG
+        return this.contains(mx, my); // SWALLOWED INSIDE THE SLOT SO THE HOME SCREEN DOES NOT SCROLL
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected Element<?> build() {
@@ -244,56 +338,8 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     @Override
-    public void onEnter() {
-        super.onEnter(); // BUILDS THE TREE ON FIRST ENTRY
-        this.loading = false;
-        this.loadGeneration++;
-        this.previewGeneration++;
-        this.previewMRL = null;
-        this.previewUrl = "";
-        this.animPreviewTarget = -1; // SNAP THE PREVIEW SIZE ON ENTRY INSTEAD OF EASING
-        this.clearSearch();
-        this.field.focused(true);
-        this.syncLoadDialog();
-    }
-
-    @Override
-    public void onExit() {
-        this.loading = false;
-        this.loadGeneration++;
-        this.previewGeneration++;
-        this.previewMRL = null;
-        this.previewUrl = "";
-        this.clearSearch();
-        this.syncLoadDialog();
-    }
-
-    // RENDER BACKEND HOT-SWAP: THE ROWS REBUILD THEIR THUMBNAIL PLAYERS ON THE NEW ENGINE AS THEY DRAW
-    @Override
-    public void releaseMedia() {
-        this.releaseThumbs();
-    }
-
-    @Override
-    public List<Keybind> keybinds() {
-        if (this.loading) return KEYS_LOADING;
-        return this.searchMode() ? KEYS_SEARCH : KEYS_DEFAULT;
-    }
-
-    @Override
-    public boolean continuous() {
-        // CARET BLINK, LOADING DOTS, SEARCH POLLING, PREVIEW EASE AND ANIMATED THUMBNAILS
-        return this.textInputActive() || this.loading
-                || (this.search != null && !this.searchRenderedDone)
-                || System.currentTimeMillis() - this.animPreviewStart < PREVIEW_ANIM_MS
-                || Previews.animating(this.thumbPlayers.values());
-    }
-
-    // ==== PER-FRAME BINDING ====
-    // PULLS LIVE STATE INTO THE TREE BEFORE MEASURE/DRAW
-
-    @Override
     protected void onUpdate() {
+        // PER-FRAME BINDING: PULLS LIVE STATE INTO THE TREE BEFORE MEASURE/DRAW
         this.ensurePreviewMRL();
         if (this.loading) this.checkLoadingState();
         this.syncLoadDialog();
@@ -335,61 +381,9 @@ public class OpenMultimediaScreen extends Screen {
         this.searchRenderedDone = this.search == null || !PlatformAPI.searching(this.searchQuery);
     }
 
-    // FOLLOWS THE loading FLAG, WHICH ALSO FLIPS OUTSIDE INPUT EVENTS
-    private void syncLoadDialog() {
-        if (this.loading == this.loadShown || this.loadDialog == null) return;
-        this.loadShown = this.loading;
-        if (this.loading) this.showDialog(this.loadDialog);
-        else this.hideDialog(this.loadDialog);
-    }
-
-    private void cancelLoading() {
-        this.loading = false;
-        this.loadGeneration++;
-        this.ctx.media.selectedMRL = null;
-        this.ctx.requestRender();
-    }
-
-    // ==== INPUT ====
-    // THE TREE HANDLES POINTERS; ONLY THE SCREEN SHORTCUTS LIVE HERE
-
-    @Override
-    public boolean dispatchKey(final int key, final int action) {
-        // TREE FIRST: THE LOADING DIALOG (FULLY MODAL) AND THE FOCUSED FIELD (BACKSPACE/DELETE) CONSUME THEIRS
-        if (super.dispatchKey(key, action)) return true;
-        if (action == GLFW_RELEASE) {
-            final String url = this.field.value();
-            switch (key) {
-                // ONLY WHILE THE FIELD IS BLURRED: A TYPED SPACE IS INPUT, NOT THE SAVE SHORTCUT
-                case GLFW_KEY_SPACE -> {
-                    if (!this.field.textInputActive() && !this.searchMode() && !url.isEmpty()) this.saveCustomUrl();
-                }
-                case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
-                    if (!url.isEmpty()) {
-                        if (this.searchMode()) this.doSearch(true);
-                        else this.playCustomUrl();
-                    }
-                }
-                case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
-                case GLFW_KEY_V -> {
-                    if (this.ctx.ctrlDown && !this.ctx.altDown) this.pasteFromClipboard();
-                }
-                // ONLY WHILE THE FIELD IS BLURRED: AN R TYPED INTO A URL MUST NOT TRIGGER A NETWORK RELOAD
-                case GLFW_KEY_R -> {
-                    if (!this.field.textInputActive() && !this.searchMode() && !url.isEmpty()) this.reloadPreviewMRL();
-                }
-            }
-        }
-        return true; // MODAL: THE HOME SCREEN UNDERNEATH MUST NEVER SEE KEYS
-    }
-
-    @Override
-    public boolean dispatchScroll(final double mx, final double my, final double amount) {
-        if (super.dispatchScroll(mx, my, amount)) return true; // DROPDOWN / LOADING DIALOG
-        return this.contains(mx, my); // SWALLOWED INSIDE THE SLOT SO THE HOME SCREEN DOES NOT SCROLL
-    }
-
-    // ==== ACTIONS ====
+    // ==========================================================================
+    // ACTIONS
+    // ==========================================================================
 
     private void pasteFromClipboard() {
         try {
@@ -469,7 +463,9 @@ public class OpenMultimediaScreen extends Screen {
     private void ensurePreviewMRL() {
         final String url = this.field.value().trim();
         if (url.isEmpty()) {
-            this.clearPreview();
+            if (this.previewMRL != null || !this.previewUrl.isEmpty()) this.previewGeneration++;
+            this.previewMRL = null;
+            this.previewUrl = "";
             return;
         }
         if (url.equals(this.previewUrl)) return;
@@ -488,13 +484,9 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
-    private void clearPreview() {
-        if (this.previewMRL != null || !this.previewUrl.isEmpty()) this.previewGeneration++;
-        this.previewMRL = null;
-        this.previewUrl = "";
-    }
-
-    // ==== SEARCH MODE ====
+    // ==========================================================================
+    // SEARCH MODE
+    // ==========================================================================
 
     // TRUE WHEN THE INPUT IS NOT loadable(); MEMOIZED ON THE INPUT TEXT BECAUSE IT RUNS EVERY FRAME
     // AND loadable() BLOCKS ON A FILE SYSTEM STAT
@@ -505,17 +497,6 @@ public class OpenMultimediaScreen extends Screen {
             this.searchMode = !text.isEmpty() && !loadable(text);
         }
         return this.searchMode;
-    }
-
-    // THE ONE "URL/PATH VS SEARCH QUERY" RULE, SHARED BY searchMode() AND ensurePreviewMRL();
-    // text MUST BE TRIMMED AND NON-EMPTY
-    private static boolean loadable(final String text) {
-        if (new File(text).exists()) return true;
-        try {
-            return URI.create(text).getScheme() != null;
-        } catch (final IllegalArgumentException e) {
-            return false; // UNPARSEABLE (E.G. HAS SPACES), SO IT IS A SEARCH QUERY
-        }
     }
 
     // EASE-OUT QUAD TOWARD target; A NEW target RESTARTS FROM THE CURRENT HEIGHT SO RAPID MODE FLIPS
@@ -628,14 +609,6 @@ public class OpenMultimediaScreen extends Screen {
         };
     }
 
-    // A SECTION HEAD OF THE DROPDOWN ("RESULTS (n)", "SEARCHING...", "RECENT"); THE RECENT ONE SITS ON A RULE
-    private static ListRow headRow(final String label, final boolean rule) {
-        final ListRow row = new ListRow().title(label)
-                .titleStyle(AppTheme.TEXT_SUBTITLE, false, AppTheme.TEXT_FAINT, null).textAt(8, ListRow.CENTER);
-        if (rule) row.lead((canvas, r, x, y, w, h) -> canvas.fill(x + 8, y + h / 2f, w - 16, 1, AppTheme.STROKE));
-        return row.height(20).enabled(false);
-    }
-
     // ONE SEARCH RESULT: A 16:9 THUMBNAIL (THE LIVE MEDIA TEXTURE, ASPECT-FIT) AND THE PLATFORM TAG BEFORE THE TITLE
     private ListRow resultRow(final PlatformResult result) {
         return new ListRow()
@@ -668,7 +641,9 @@ public class OpenMultimediaScreen extends Screen {
                 .height(RESULT_ROW_H);
     }
 
-    // ==== THUMBNAIL PLAYERS ====
+    // ==========================================================================
+    // THUMBNAIL PLAYERS
+    // ==========================================================================
 
     private void releaseThumbs() {
         if (!this.thumbPlayers.isEmpty()) {
@@ -713,7 +688,24 @@ public class OpenMultimediaScreen extends Screen {
         return null;
     }
 
-    // ==== PREVIEW / LOADING STATE ====
+    // ==========================================================================
+    // PREVIEW AND LOADING STATE
+    // ==========================================================================
+
+    // FOLLOWS THE loading FLAG, WHICH ALSO FLIPS OUTSIDE INPUT EVENTS
+    private void syncLoadDialog() {
+        if (this.loading == this.loadShown || this.loadDialog == null) return;
+        this.loadShown = this.loading;
+        if (this.loading) this.showDialog(this.loadDialog);
+        else this.hideDialog(this.loadDialog);
+    }
+
+    private void cancelLoading() {
+        this.loading = false;
+        this.loadGeneration++;
+        this.ctx.media.selectedMRL = null;
+        this.ctx.requestRender();
+    }
 
     private void subscribePreviewMRL(final MRL mrl, final int generation) {
         if (mrl == null || Previews.loaded(mrl)) return;
@@ -815,7 +807,32 @@ public class OpenMultimediaScreen extends Screen {
         return best == MediaQuality.UNKNOWN ? null : best.name();
     }
 
-    // ==== TREE: BODY (SCRIM + CENTERED DIALOG PANEL) ====
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // THE ONE "URL/PATH VS SEARCH QUERY" RULE, SHARED BY searchMode() AND ensurePreviewMRL();
+    // text MUST BE TRIMMED AND NON-EMPTY
+    private static boolean loadable(final String text) {
+        if (new File(text).exists()) return true;
+        try {
+            return URI.create(text).getScheme() != null;
+        } catch (final IllegalArgumentException e) {
+            return false; // UNPARSEABLE (E.G. HAS SPACES), SO IT IS A SEARCH QUERY
+        }
+    }
+
+    // A SECTION HEAD OF THE DROPDOWN ("RESULTS (n)", "SEARCHING...", "RECENT"); THE RECENT ONE SITS ON A RULE
+    private static ListRow headRow(final String label, final boolean rule) {
+        final ListRow row = new ListRow().title(label)
+                .titleStyle(AppTheme.TEXT_SUBTITLE, false, AppTheme.TEXT_FAINT, null).textAt(8, ListRow.CENTER);
+        if (rule) row.lead((canvas, r, x, y, w, h) -> canvas.fill(x + 8, y + h / 2f, w - 16, 1, AppTheme.STROKE));
+        return row.height(20).enabled(false);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES: BODY (SCRIM + CENTERED DIALOG PANEL)
+    // ==========================================================================
 
     // THE SCRIM COVERS THE WHOLE SLOT AND THE PANEL IS CENTERED WITH AN 8 PX TOP MARGIN AND A 36 PX BOTTOM GAP
     private final class Body extends Group<Body> {
@@ -918,6 +935,9 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
+    // ONE DROPDOWN ROW: ITS ROW_* KIND, THE RESULT OF A RESULT ROW AND THE TEXT OF A HEAD OR HISTORY ROW
+    private record Row(int kind, PlatformResult result, String text) {}
+
     // ZONE BETWEEN THE INPUT ROW AND THE FOOTER: THE RESULTS DROPDOWN COVERS THE STATUS CHIP, MATCHES
     // THE INPUT FIELD'S WIDTH AND STOPS 10 PX ABOVE THE FOOTER
     private final class MiddleZone extends Group<MiddleZone> {
@@ -972,7 +992,9 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
-    // ==== TREE: PREVIEW PANEL (TV FRAME + LOCALIZED CRT + STATE CONTENT + QUALITY CHIP) ====
+    // ==========================================================================
+    // NESTED TYPES: PREVIEW PANEL (TV FRAME, CRT, STATE CONTENT, QUALITY CHIP)
+    // ==========================================================================
 
     private final class PreviewPanel extends Group<PreviewPanel> {
         private final CrtOverlay crt = new CrtOverlay();
@@ -1017,7 +1039,7 @@ public class OpenMultimediaScreen extends Screen {
             final int iy = y + 6;
             final int iw = w - 12;
             final int ih = h - 12;
-            final MRL mrl = OpenMultimediaScreen.this.previewMRL; // READ ONCE PER DRAW — THE FIELD FLIPS OFF-THREAD
+            final MRL mrl = OpenMultimediaScreen.this.previewMRL; // READ ONCE PER DRAW: THE FIELD FLIPS OFF-THREAD
             if (mrl == null) {
                 PixelIcon.draw("copy", ix + iw / 2 - 16, iy + ih / 2 - 32, 32, AppTheme.TEXT_FAINT);
                 canvas.text("NO MEDIA", ix + iw / 2 - canvas.textWidth("NO MEDIA", AppTheme.TEXT_BODY, false) / 2,

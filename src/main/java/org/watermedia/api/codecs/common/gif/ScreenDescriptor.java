@@ -14,11 +14,6 @@ public record ScreenDescriptor(
 
     public static final int LENGTH = 7;
 
-    /** Returns the global palette color count, {@code 2^(globalColorTableSize + 1)}, even when no palette is present. */
-    public int globalColorCount() {
-        return 1 << (this.globalColorTableSize + 1);
-    }
-
     /** Reads the {@value #LENGTH}-byte descriptor that follows the GIF signature at the buffer position, advancing past it. */
     public static ScreenDescriptor read(final ByteBuffer buffer) throws CodecException {
         // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException
@@ -31,6 +26,11 @@ public record ScreenDescriptor(
         buffer.position(at + LENGTH);
         return new ScreenDescriptor(width, height, (packedFields & 0b1000_0000) != 0, ((packedFields & 0b0111_0000) >> 4) + 1,
                 (packedFields & 0b0000_1000) != 0, packedFields & 0b0000_0111, buffer.get(at + 5) & 0xFF, buffer.get(at + 6) & 0xFF);
+    }
+
+    /** Returns the global palette color count, {@code 2^(globalColorTableSize + 1)}, even when no palette is present. */
+    public int globalColorCount() {
+        return 1 << (this.globalColorTableSize + 1);
     }
 
     @Override

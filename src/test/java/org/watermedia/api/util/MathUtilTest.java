@@ -11,7 +11,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /** Verifies the pure helpers in {@link MathUtil}: clamping, unit conversion and byte formatting. */
 @DisplayName("MathUtil")
 public class MathUtilTest {
-
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("clamp / clip255")
     class ClampTests {

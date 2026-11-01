@@ -4,6 +4,8 @@ import org.joml.Matrix4f;
 import org.joml.Vector4f;
 import org.watermedia.api.player.GFXEngine;
 import org.watermedia.api.util.MathUtil;
+import org.watermedia.bootstrap.app.render.RenderBackend.DrawMode;
+import org.watermedia.bootstrap.app.render.RenderBackend.TextureHandle;
 
 import java.awt.Color;
 import java.nio.ByteBuffer;
@@ -64,6 +66,9 @@ public final class RenderEngine {
         this.backend = backend;
     }
 
+    // ==========================================================================
+    // PUBLIC API: RENDERING
+    // ==========================================================================
     public void init() {
         this.backend.init();
         // START ON THE IDENTITY PROJECTION
@@ -405,7 +410,7 @@ public final class RenderEngine {
     }
 
     // ==========================================================================
-    // TREE CACHE
+    // PUBLIC API: TREE CACHE
     // ==========================================================================
     // THE TREE PAINTS INTO OFFSCREEN LAYERS ONLY WHEN IT CHANGES, AND EVERY OTHER FRAME DRAWS THE LAYERS
     // BACK WITH THE LIVE PAINTERS (THE CRT BAND) BETWEEN THEM
@@ -473,7 +478,6 @@ public final class RenderEngine {
     // ==========================================================================
     // VERTEX EMISSION
     // ==========================================================================
-
     private void strokeQuads(final float x, final float y, final float w, final float h, final float lineWidth) {
         // FOUR EDGE QUADS CENTERED ON THE PATH, CORNERS COVERED ONCE SO A TRANSLUCENT BORDER IS NOT DOUBLED;
         // UNLIKE A LINE_LOOP THEY JOIN THE TRIANGLE BATCH WITHOUT A FLUSH OR A LINE-WIDTH CHANGE
@@ -542,8 +546,9 @@ public final class RenderEngine {
         this.batchVertexCount += count;
     }
 
+    // ==========================================================================
     // UTILITY
-
+    // ==========================================================================
     private static float glowPulse() {
         // SLOW, NON-REPEATING HEARTBEAT OF THE GLOW FORCE: THREE INCOMMENSURATE SINES NEVER LOOP EXACTLY, SO THE
         // PULSE BREATHES OVER ~10-30 SECONDS. RESULT IN [0.74, 0.9]

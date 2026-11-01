@@ -49,6 +49,109 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class PngEncoderTest {
     private static final int FPS = 30;
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // ENCODES THE FRAMES AT THEIR TIMESTAMPS INTO MEMORY THROUGH CodecsAPI
+    private static byte[] encode(final int width, final int height, final PixelFormat format, final int repeat, final long[] ptsUs, final byte[]... frames) throws IOException {
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        final Encoder.Video video = new Encoder.Video(VideoCodec.PNG, width, height, format, FPS, Encoder.DEFAULT_QUALITY, repeat);
+        try (final Encoder encoder = CodecsAPI.encoder(Container.PNG, out, video, null)) {
+            for (int f = 0; f < frames.length; f++) encoder.video(ByteBuffer.wrap(frames[f]), ptsUs[f]);
+        }
+        return out.toByteArray();
+    }
+
+    // DECODES IN THE LAYOUT CLOSEST TO format AND MATCHES EVERY FRAME BYTE FOR BYTE; RGB COMES BACK AS OPAQUE RGBA
+    private static ImageData assertFrames(final byte[] png, final PixelFormat format, final byte[]... frames) throws IOException {
+        final ImageData image = CodecsAPI.decode(png, format == PixelFormat.RGB ? PixelFormat.RGBA : format);
+        assertEquals(frames.length, image.frames().length, "frame count");
+        for (int f = 0; f < frames.length; f++) {
+            final byte[] expected = format == PixelFormat.RGB ? new byte[frames[f].length / 3 * 4] : frames[f];
+            if (format == PixelFormat.RGB) for (int i = 0, o = 0; i < frames[f].length; i += 3, o += 4) {
+                System.arraycopy(frames[f], i, expected, o, 3);
+                expected[o + 3] = (byte) 0xFF;
+            }
+            final byte[] actual = new byte[image.frames()[f].remaining()];
+            image.frames()[f].duplicate().get(actual);
+            assertArrayEquals(expected, actual, "frame " + f);
+        }
+        return image;
+    }
+
+    // SPLITS A PNG FILE INTO ITS CHUNKS, CHECKING THE SIGNATURE AND EVERY CRC
+    private static List<PngChunk> chunks(final byte[] png) throws IOException {
+        final ByteBuffer buffer = ByteBuffer.wrap(png);
+        final byte[] signature = new byte[ImageBytes.PNG_SIGNATURE.length];
+        buffer.get(signature);
+        assertArrayEquals(ImageBytes.PNG_SIGNATURE, signature);
+        final List<PngChunk> chunks = new ArrayList<>();
+        while (buffer.hasRemaining()) {
+            final PngChunk chunk = PngChunk.read(buffer);
+            assertFalse(chunk.corrupted(), chunk.typeName() + " CRC");
+            chunks.add(chunk);
+        }
+        return chunks;
+    }
+
+    // CHECKS THE APNG LAYOUT (IHDR, acTL, THE FIRST fcTL AHEAD OF IDAT, THEN fcTL AND fdAT PER FRAME, IEND) AND THE
+    // SEQUENCE NUMBERS fcTL AND fdAT SHARE FROM ZERO, RETURNING EVERY fcTL IN ORDER
+    private static List<FCTL> controls(final byte[] png) throws IOException {
+        final List<PngChunk> chunks = chunks(png);
+        assertEquals(IHDR.SIGNATURE, chunks.get(0).type(), "IHDR comes first");
+        assertEquals(ACTL.SIGNATURE, chunks.get(1).type(), "acTL precedes the image data");
+        assertEquals(FCTL.SIGNATURE, chunks.get(2).type(), "the first frame is the default image");
+        assertEquals(IEND.SIGNATURE, chunks.get(chunks.size() - 1).type(), "IEND comes last");
+        final List<FCTL> controls = new ArrayList<>();
+        int sequence = 0;
+        for (int i = 2; i < chunks.size() - 1; i++) {
+            final PngChunk chunk = chunks.get(i);
+            if (chunk.type() == FCTL.SIGNATURE) {
+                final FCTL control = FCTL.convert(chunk);
+                assertEquals(sequence++, control.sequence(), "fcTL sequence");
+                assertEquals(FCTL.DISPOSE_OP_NONE, control.dispose());
+                assertEquals(FCTL.BLEND_OP_SOURCE, control.blend());
+                final int next = chunks.get(i + 1).type();
+                assertTrue(next == (controls.isEmpty() ? IDAT.SIGNATURE : FDAT.SIGNATURE), "frame " + controls.size() + " has data");
+                controls.add(control);
+            } else if (chunk.type() == FDAT.SIGNATURE) {
+                assertTrue(controls.size() > 1, "fdAT only carries later frames");
+                assertEquals(sequence++, FDAT.convert(chunk).sequence(), "fdAT sequence");
+            } else {
+                assertEquals(IDAT.SIGNATURE, chunk.type(), "unexpected " + chunk.typeName());
+                assertEquals(1, controls.size(), "IDAT only carries the first frame");
+            }
+        }
+        assertEquals(controls.size(), ACTL.convert(chunks.get(1)).frameCount(), "acTL counts every frame");
+        return controls;
+    }
+
+    // MATCHES THE REGION AN fcTL COVERS
+    private static void assertRegion(final FCTL control, final int x, final int y, final int width, final int height) {
+        assertEquals(List.of(x, y, width, height), List.of(control.xOffset(), control.yOffset(), control.width(), control.height()), "fcTL " + control.sequence() + " region");
+    }
+
+    // A SMOOTH GRADIENT OVER THE TOP HALF AND SEEDED NOISE BELOW; ANOTHER SEED CHANGES EVERY ROW
+    private static byte[] picture(final int width, final int height, final int channels, final int seed) {
+        final Random random = new Random(seed);
+        final byte[] out = new byte[width * height * channels];
+        for (int y = 0, o = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                for (int c = 0; c < channels; c++, o++) out[o] = (byte) (y < height / 2 ? x * 3 + y * 5 + c * 40 + seed : random.nextInt(256));
+        return out;
+    }
+
+    // COPIES A FRAME WITH THE BITS OF A RECTANGLE FLIPPED, SO EVERY BYTE IN IT CHANGES
+    private static byte[] flip(final byte[] frame, final int width, final int channels, final int x, final int y, final int w, final int h) {
+        final byte[] out = frame.clone();
+        for (int row = y; row < y + h; row++)
+            for (int i = (row * width + x) * channels; i < (row * width + x + w) * channels; i++) out[i] ^= 0x5A;
+        return out;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Still pictures")
     class Still {
@@ -276,105 +379,5 @@ public class PngEncoderTest {
             final ImageData image = assertFrames(Files.readAllBytes(file), PixelFormat.RGBA, frames);
             assertArrayEquals(new long[] { 100L, 100L, 33L }, image.delays());
         }
-    }
-
-    // ==========================================================================
-    // UTILITY
-    // ==========================================================================
-    // ENCODES THE FRAMES AT THEIR TIMESTAMPS INTO MEMORY THROUGH CodecsAPI
-    private static byte[] encode(final int width, final int height, final PixelFormat format, final int repeat, final long[] ptsUs, final byte[]... frames) throws IOException {
-        final ByteArrayOutputStream out = new ByteArrayOutputStream();
-        final Encoder.Video video = new Encoder.Video(VideoCodec.PNG, width, height, format, FPS, Encoder.DEFAULT_QUALITY, repeat);
-        try (final Encoder encoder = CodecsAPI.encoder(Container.PNG, out, video, null)) {
-            for (int f = 0; f < frames.length; f++) encoder.video(ByteBuffer.wrap(frames[f]), ptsUs[f]);
-        }
-        return out.toByteArray();
-    }
-
-    // DECODES IN THE LAYOUT CLOSEST TO format AND MATCHES EVERY FRAME BYTE FOR BYTE; RGB COMES BACK AS OPAQUE RGBA
-    private static ImageData assertFrames(final byte[] png, final PixelFormat format, final byte[]... frames) throws IOException {
-        final ImageData image = CodecsAPI.decode(png, format == PixelFormat.RGB ? PixelFormat.RGBA : format);
-        assertEquals(frames.length, image.frames().length, "frame count");
-        for (int f = 0; f < frames.length; f++) {
-            final byte[] expected = format == PixelFormat.RGB ? new byte[frames[f].length / 3 * 4] : frames[f];
-            if (format == PixelFormat.RGB) for (int i = 0, o = 0; i < frames[f].length; i += 3, o += 4) {
-                System.arraycopy(frames[f], i, expected, o, 3);
-                expected[o + 3] = (byte) 0xFF;
-            }
-            final byte[] actual = new byte[image.frames()[f].remaining()];
-            image.frames()[f].duplicate().get(actual);
-            assertArrayEquals(expected, actual, "frame " + f);
-        }
-        return image;
-    }
-
-    // SPLITS A PNG FILE INTO ITS CHUNKS, CHECKING THE SIGNATURE AND EVERY CRC
-    private static List<PngChunk> chunks(final byte[] png) throws IOException {
-        final ByteBuffer buffer = ByteBuffer.wrap(png);
-        final byte[] signature = new byte[ImageBytes.PNG_SIGNATURE.length];
-        buffer.get(signature);
-        assertArrayEquals(ImageBytes.PNG_SIGNATURE, signature);
-        final List<PngChunk> chunks = new ArrayList<>();
-        while (buffer.hasRemaining()) {
-            final PngChunk chunk = PngChunk.read(buffer);
-            assertFalse(chunk.corrupted(), chunk.typeName() + " CRC");
-            chunks.add(chunk);
-        }
-        return chunks;
-    }
-
-    // CHECKS THE APNG LAYOUT (IHDR, acTL, THE FIRST fcTL AHEAD OF IDAT, THEN fcTL AND fdAT PER FRAME, IEND) AND THE
-    // SEQUENCE NUMBERS fcTL AND fdAT SHARE FROM ZERO, RETURNING EVERY fcTL IN ORDER
-    private static List<FCTL> controls(final byte[] png) throws IOException {
-        final List<PngChunk> chunks = chunks(png);
-        assertEquals(IHDR.SIGNATURE, chunks.get(0).type(), "IHDR comes first");
-        assertEquals(ACTL.SIGNATURE, chunks.get(1).type(), "acTL precedes the image data");
-        assertEquals(FCTL.SIGNATURE, chunks.get(2).type(), "the first frame is the default image");
-        assertEquals(IEND.SIGNATURE, chunks.get(chunks.size() - 1).type(), "IEND comes last");
-        final List<FCTL> controls = new ArrayList<>();
-        int sequence = 0;
-        for (int i = 2; i < chunks.size() - 1; i++) {
-            final PngChunk chunk = chunks.get(i);
-            if (chunk.type() == FCTL.SIGNATURE) {
-                final FCTL control = FCTL.convert(chunk);
-                assertEquals(sequence++, control.sequence(), "fcTL sequence");
-                assertEquals(FCTL.DISPOSE_OP_NONE, control.dispose());
-                assertEquals(FCTL.BLEND_OP_SOURCE, control.blend());
-                final int next = chunks.get(i + 1).type();
-                assertTrue(next == (controls.isEmpty() ? IDAT.SIGNATURE : FDAT.SIGNATURE), "frame " + controls.size() + " has data");
-                controls.add(control);
-            } else if (chunk.type() == FDAT.SIGNATURE) {
-                assertTrue(controls.size() > 1, "fdAT only carries later frames");
-                assertEquals(sequence++, FDAT.convert(chunk).sequence(), "fdAT sequence");
-            } else {
-                assertEquals(IDAT.SIGNATURE, chunk.type(), "unexpected " + chunk.typeName());
-                assertEquals(1, controls.size(), "IDAT only carries the first frame");
-            }
-        }
-        assertEquals(controls.size(), ACTL.convert(chunks.get(1)).frameCount(), "acTL counts every frame");
-        return controls;
-    }
-
-    // MATCHES THE REGION AN fcTL COVERS
-    private static void assertRegion(final FCTL control, final int x, final int y, final int width, final int height) {
-        assertEquals(List.of(x, y, width, height), List.of(control.xOffset(), control.yOffset(), control.width(), control.height()), "fcTL " + control.sequence() + " region");
-    }
-
-    // A SMOOTH GRADIENT OVER THE TOP HALF AND SEEDED NOISE BELOW; ANOTHER SEED CHANGES EVERY ROW
-    private static byte[] picture(final int width, final int height, final int channels, final int seed) {
-        final Random random = new Random(seed);
-        final byte[] out = new byte[width * height * channels];
-        for (int y = 0, o = 0; y < height; y++)
-            for (int x = 0; x < width; x++)
-                for (int c = 0; c < channels; c++, o++) out[o] = (byte) (y < height / 2 ? x * 3 + y * 5 + c * 40 + seed : random.nextInt(256));
-        return out;
-    }
-
-    // COPIES A FRAME WITH THE BITS OF A RECTANGLE FLIPPED, SO EVERY BYTE IN IT CHANGES
-    private static byte[] flip(final byte[] frame, final int width, final int channels, final int x, final int y, final int w, final int h) {
-        final byte[] out = frame.clone();
-        for (int row = y; row < y + h; row++)
-            for (int i = (row * width + x) * channels; i < (row * width + x + w) * channels; i++) out[i] ^= 0x5A;
-        return out;
     }
 }

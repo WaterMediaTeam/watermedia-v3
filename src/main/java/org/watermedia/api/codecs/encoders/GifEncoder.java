@@ -123,6 +123,9 @@ public final class GifEncoder extends AnimationEncoder {
         this.errors = new int[(video.width() + 2) * 6];
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @Override
     void picture(final ByteBuffer frame, final long durationUs, final int index) throws IOException {
         final int width = this.video.width();

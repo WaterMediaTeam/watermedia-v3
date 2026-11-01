@@ -55,6 +55,9 @@ import static org.watermedia.test.support.ImageBytes.pngChunk;
 @DisplayName("PNG decoder")
 public class PngTest {
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @TestFactory
     @DisplayName("Decode and pixel match")
     Iterable<DynamicTest> testPNG() {
@@ -97,6 +100,47 @@ public class PngTest {
         return tests;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // fcTL FOR A 1x1 FRAME AT THE ORIGIN WITH A 1/10 S DELAY, DISPOSE NONE AND BLEND SOURCE
+    private static byte[] fctl(final int sequence) {
+        return new ImageBytes().be32(sequence).be32(1).be32(1).be32(0).be32(0).be16(1).be16(10).u8(0).u8(0).bytes();
+    }
+
+    // fdAT: THE SEQUENCE NUMBER, THEN THE DEFLATED FILTERED SCANLINES
+    private static byte[] fdat(final int sequence, final int... scanlines) {
+        return pngChunk("fdAT", new ImageBytes().be32(sequence).raw(deflate(new ImageBytes().raw(scanlines).bytes(), 9)).bytes());
+    }
+
+    // IDAT CARRYING THE DEFLATED FILTERED SCANLINES
+    private static byte[] idat(final int... scanlines) {
+        return pngChunk("IDAT", deflate(new ImageBytes().raw(scanlines).bytes(), 9));
+    }
+
+    private static byte[] latin1(final String text) {
+        return text.getBytes(StandardCharsets.ISO_8859_1);
+    }
+
+    private static int[] pixels(final ImageData image, final int frame) {
+        final int[] pixels = new int[image.width() * image.height()];
+        image.frames()[frame].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
+        return pixels;
+    }
+
+    private static List<Path> fixtures() {
+        try (final Stream<Path> entries = Files.list(Fixtures.PNG_DIR)) {
+            final List<Path> images = entries.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png")).sorted().toList();
+            assertFalse(images.isEmpty(), "Test folder is empty: " + Fixtures.PNG_DIR);
+            return images;
+        } catch (final IOException e) {
+            throw new UncheckedIOException("Failed to enumerate PNG fixtures", e);
+        }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Animation")
     class Animation {
@@ -260,42 +304,6 @@ public class PngTest {
             assertEquals(PixelFormat.GRAY, gray.format());
             assertEquals(1, gray.frames()[0].remaining());
             assertEquals(77, gray.frames()[0].get(0) & 0xFF, "BT.601 luma of pure red");
-        }
-    }
-
-    // UTILITY
-    // fcTL FOR A 1x1 FRAME AT THE ORIGIN WITH A 1/10 S DELAY, DISPOSE NONE AND BLEND SOURCE
-    private static byte[] fctl(final int sequence) {
-        return new ImageBytes().be32(sequence).be32(1).be32(1).be32(0).be32(0).be16(1).be16(10).u8(0).u8(0).bytes();
-    }
-
-    // fdAT: THE SEQUENCE NUMBER, THEN THE DEFLATED FILTERED SCANLINES
-    private static byte[] fdat(final int sequence, final int... scanlines) {
-        return pngChunk("fdAT", new ImageBytes().be32(sequence).raw(deflate(new ImageBytes().raw(scanlines).bytes(), 9)).bytes());
-    }
-
-    // IDAT CARRYING THE DEFLATED FILTERED SCANLINES
-    private static byte[] idat(final int... scanlines) {
-        return pngChunk("IDAT", deflate(new ImageBytes().raw(scanlines).bytes(), 9));
-    }
-
-    private static byte[] latin1(final String text) {
-        return text.getBytes(StandardCharsets.ISO_8859_1);
-    }
-
-    private static int[] pixels(final ImageData image, final int frame) {
-        final int[] pixels = new int[image.width() * image.height()];
-        image.frames()[frame].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
-        return pixels;
-    }
-
-    private static List<Path> fixtures() {
-        try (final Stream<Path> entries = Files.list(Fixtures.PNG_DIR)) {
-            final List<Path> images = entries.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png")).sorted().toList();
-            assertFalse(images.isEmpty(), "Test folder is empty: " + Fixtures.PNG_DIR);
-            return images;
-        } catch (final IOException e) {
-            throw new UncheckedIOException("Failed to enumerate PNG fixtures", e);
         }
     }
 }

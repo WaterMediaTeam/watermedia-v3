@@ -20,6 +20,17 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @DisplayName("ImageData")
 public class ImageDataTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static ImageData single(final long duration, final int repeat) {
+        final ByteBuffer[] frames = { ByteBuffer.allocate(4) };
+        return new ImageData(frames, PixelFormat.BGRA, 1, 1, new long[] { duration }, duration, repeat);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Duration")
     class DurationTests {
@@ -83,11 +94,5 @@ public class ImageDataTest {
         void testScanRejectsMismatch() {
             assertThrows(IllegalArgumentException.class, () -> new ImageData.Scan(2, new long[] { 10L }, 10L, 1));
         }
-    }
-
-    // UTILITY
-    private static ImageData single(final long duration, final int repeat) {
-        final ByteBuffer[] frames = { ByteBuffer.allocate(4) };
-        return new ImageData(frames, PixelFormat.BGRA, 1, 1, new long[] { duration }, duration, repeat);
     }
 }

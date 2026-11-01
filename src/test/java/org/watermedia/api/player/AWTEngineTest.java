@@ -213,7 +213,9 @@ public class AWTEngineTest {
         }
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
 
     // THE SOFTWARE SINK'S OWN EVENTS: THE CAPTURE SPANS THE WHOLE PROJECT LOGGER, WHICH OTHER THREADS MAY WRITE TO MEANWHILE
     private static List<LogEvent> sinkEvents(final LogCapture capture) {

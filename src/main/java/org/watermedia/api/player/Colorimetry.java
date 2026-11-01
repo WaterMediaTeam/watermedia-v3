@@ -16,22 +16,9 @@ import org.watermedia.api.util.PixelFormat;
  */
 record Colorimetry(Matrix matrix, boolean full, boolean cositedX, boolean cositedY, Transfer transfer, boolean wide) {
 
-    // YCBCR MATRIX, NAMED BY ITS STANDARD AND DEFINED BY ITS RED AND BLUE LUMA WEIGHTS
-    enum Matrix {
-        BT601(0.299f, 0.114f),
-        BT709(0.2126f, 0.0722f),
-        BT2020(0.2627f, 0.0593f);
-
-        final float kr, kb;
-
-        Matrix(final float kr, final float kb) {
-            this.kr = kr;
-            this.kb = kb;
-        }
-    }
-
-    // TRANSFER CURVE: STANDARD DYNAMIC RANGE, OR HDR THROUGH SMPTE ST 2084 (PQ) OR ARIB STD-B67 (HLG)
-    enum Transfer { SDR, PQ, HLG }
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     // WHAT AN UNTAGGED FRAME MOST LIKELY IS, AS MPV GUESSES IT (SWSCALE ALONE ASSUMES BT.601 AT ANY SIZE): BT.601 UP TO 576
     // LINES AND BELOW 1280 COLUMNS, BT.709 ABOVE; LIMITED RANGE EXCEPT GRAY; MPEG-2 CHROMA SITING; SDR
@@ -65,4 +52,26 @@ record Colorimetry(Matrix matrix, boolean full, boolean cositedX, boolean cosite
                 this.transfer.ordinal(), this.wide ? 1.0f : 0.0f, 0.0f, 0.0f
         };
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    // YCBCR MATRIX, NAMED BY ITS STANDARD AND DEFINED BY ITS RED AND BLUE LUMA WEIGHTS
+    enum Matrix {
+        BT601(0.299f, 0.114f),
+        BT709(0.2126f, 0.0722f),
+        BT2020(0.2627f, 0.0593f);
+
+        final float kr, kb;
+
+        Matrix(final float kr, final float kb) {
+            this.kr = kr;
+            this.kb = kb;
+        }
+    }
+
+    // TRANSFER CURVE: STANDARD DYNAMIC RANGE, OR HDR THROUGH SMPTE ST 2084 (PQ) OR ARIB STD-B67 (HLG); THE SHADER
+    // READS THE ORDINAL, SO THE ORDER IS PART OF THE CONTRACT
+    enum Transfer { SDR, PQ, HLG }
 }

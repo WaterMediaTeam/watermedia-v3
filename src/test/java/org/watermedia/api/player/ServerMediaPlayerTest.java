@@ -25,15 +25,36 @@ public class ServerMediaPlayerTest {
 
     private ServerMediaPlayer player;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @AfterEach
     void tearDown() {
         // A FAILED ASSERTION MUST NOT LEAVE THE CLOCK ON THE SHARED TICKER FOR THE REST OF THE JVM
         if (this.player != null) this.player.release();
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
+    private ServerMediaPlayer solo() {
+        this.player = new ServerMediaPlayer();
+        return this.player;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("Controls")
     class Controls {
+
+        // ======================================================================
+        // INTERNAL API
+        // ======================================================================
 
         @Test
         @DisplayName("start() plays and time advances with the wall clock")
@@ -488,13 +509,6 @@ public class ServerMediaPlayerTest {
             player.live(true);
             assertEquals(last, player.snapshot(), "nothing moves a released clock");
         }
-    }
-
-    // UTILITY
-
-    private ServerMediaPlayer solo() {
-        this.player = new ServerMediaPlayer();
-        return this.player;
     }
 
     // CAPTURES THE LAST STATUS TRANSITION FROM THE SHARED TICKER THREAD; volatile FOR VISIBILITY

@@ -40,7 +40,7 @@ public final class TitleBar extends Element<TitleBar> {
     private Runnable close;
     private int dragX;
     private int dragY;
-    // SNAP-ASSIST STATE — GLOBAL (PHYSICAL SCREEN) GRAB POINT AND WHETHER THIS GESTURE REALLY MOVED
+    // SNAP-ASSIST STATE: GLOBAL (PHYSICAL SCREEN) GRAB POINT AND WHETHER THIS GESTURE REALLY MOVED
     private double pressGX;
     private double pressGY;
     private boolean dragMoved;
@@ -49,6 +49,10 @@ public final class TitleBar extends Element<TitleBar> {
         this.width = MAX_PARENT;
         this.height = H;
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** Sets the window title text. */
     public TitleBar title(final String value) {
@@ -75,34 +79,6 @@ public final class TitleBar extends Element<TitleBar> {
     }
 
     @Override
-    protected void onDraw(final Canvas canvas) {
-        if (this.ctx == null || this.ctx.text == null) return;
-        final int x = this.left;
-        final int y = this.top;
-        final int w = this.measuredWidth;
-        canvas.gradientV(x, y, w, H,
-                AppTheme.BG_2.getRed() / 255f, AppTheme.BG_2.getGreen() / 255f, AppTheme.BG_2.getBlue() / 255f, 1f,
-                AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 1f);
-        canvas.lineH(x, y + H - 1, w, AppTheme.STROKE_BRIGHT, 1f);
-        // THE ICON TEXTURE ID IS READ EVERY DRAW BECAUSE IT CHANGES ACROSS RELOADS
-        if (this.ctx.assets.iconId > 0) canvas.image(this.ctx.assets.iconId, x + 8, y + 6, 16, 16, null);
-        canvas.text(this.title, x + 32,
-                y + Math.max(0, (H - this.ctx.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2),
-                AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE, false);
-        for (int i = 0; i < 3; i++) {
-            final int bx = x + w - BUTTON_W * (3 - i);
-            final boolean hover = this.ctx.mouseY >= y && this.ctx.mouseY <= y + H
-                    && this.ctx.mouseX >= bx && this.ctx.mouseX <= bx + BUTTON_W;
-            final Color color = i == 2
-                    ? (hover ? AppTheme.RED : AppTheme.alpha(AppTheme.RED, 190))
-                    : (hover ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT);
-            final String icon = i == 0 ? "minimize" : i == 1 ? (this.ctx.windowMaximized ? "restore" : "maximize") : "x";
-            // BARE GLYPH WITHOUT A BOX: ONLY ITS COLOR REACTS TO HOVER
-            IconButton.render(canvas, bx, y, BUTTON_W, H, icon, 12, color, color, false, hover, true, false);
-        }
-    }
-
-    @Override
     public boolean dispatchClick(final double mx, final double my) {
         if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
         final int base = this.left + this.measuredWidth - BUTTON_W * 3;
@@ -113,7 +89,7 @@ public final class TitleBar extends Element<TitleBar> {
                     else if (this.ctx != null && this.ctx.windowHandle != 0L) glfwIconifyWindow(this.ctx.windowHandle);
                 }
                 case 1 -> {
-                    // DEFAULT TOGGLE — THE GLFW MAXIMIZE CALLBACK KEEPS ctx.windowMaximized (AND THE APP) IN SYNC
+                    // DEFAULT TOGGLE: THE GLFW MAXIMIZE CALLBACK KEEPS ctx.windowMaximized (AND THE APP) IN SYNC
                     if (this.maximize != null) this.maximize.run();
                     else if (this.ctx != null && this.ctx.windowHandle != 0L) {
                         if (this.ctx.windowMaximized) glfwRestoreWindow(this.ctx.windowHandle);
@@ -126,34 +102,6 @@ public final class TitleBar extends Element<TitleBar> {
             }
         }
         return true; // THE BAR ALWAYS SWALLOWS ITS CLICKS SO THEY NEVER FALL THROUGH TO THE CONTENT
-    }
-
-    @Override
-    protected boolean onPress(final double mx, final double my) {
-        // ON WINDOWS THE EMPTY BAND IS NATIVE HTCAPTION (WinFrame) AND THE OS OWNS DRAG, SNAP AND RESTORE;
-        // A PRESS THAT SLIPS THROUGH BY EDGE ROUNDING MUST NOT START A MANUAL DRAG
-        if (WinFrame.ACTIVE) return false;
-        // ONLY THE EMPTY BAND STARTS A WINDOW DRAG; THE BUTTON ZONE KEEPS PLAIN CLICKS
-        if (mx >= this.left + this.measuredWidth - BUTTON_W * 3) return false;
-        // REMEMBER THE GLOBAL GRAB POINT (PHYSICAL SCREEN COORDS) BEFORE ANY RESTORE MOVES THE WINDOW,
-        // SO onDrag CAN TELL A REAL WINDOW DRAG FROM PRESS JITTER (SNAP-ASSIST GUARD)
-        this.dragMoved = false;
-        if (this.ctx != null && this.ctx.windowHandle != 0L) {
-            try (final MemoryStack stack = stackPush()) {
-                final IntBuffer wx = stack.mallocInt(1);
-                final IntBuffer wy = stack.mallocInt(1);
-                glfwGetWindowPos(this.ctx.windowHandle, wx, wy);
-                this.pressGX = wx.get(0) + this.ctx.mouseRawX;
-                this.pressGY = wy.get(0) + this.ctx.mouseRawY;
-            }
-        }
-        if (!this.restoreForDrag()) {
-            // THE GRAB POINT IS PHYSICAL — WINDOW POSITION AND glfwSetWindowPos ARE IN PHYSICAL SCREEN
-            // COORDS, WHILE mx/my ARRIVE IN LOGICAL PX (DIVIDED BY THE UI SCALE)
-            this.dragX = (int) this.ctx.mouseRawX;
-            this.dragY = (int) this.ctx.mouseRawY;
-        }
-        return true;
     }
 
     @Override
@@ -189,7 +137,7 @@ public final class TitleBar extends Element<TitleBar> {
             glfwGetWindowPos(this.ctx.windowHandle, px, py);
             final double gx = px.get(0) + this.ctx.mouseRawX;
             final double gy = py.get(0) + this.ctx.mouseRawY;
-            // MONITOR UNDER THE GRAB POINT (FULL BOUNDS — THE WORK AREA CAN START BELOW A TOP TASKBAR),
+            // MONITOR UNDER THE GRAB POINT (FULL BOUNDS, AS THE WORK AREA CAN START BELOW A TOP TASKBAR),
             // FALLING BACK TO THE PRIMARY WHEN THE POINT LANDS ON NO MONITOR
             final long monitor = WinFrame.monitorAt(gx, gy, px, py);
             if (monitor == 0L) return;
@@ -198,6 +146,70 @@ public final class TitleBar extends Element<TitleBar> {
             if (gy <= py.get(0) + SNAP_PX) glfwMaximizeWindow(this.ctx.windowHandle);
         }
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
+    protected void onDraw(final Canvas canvas) {
+        if (this.ctx == null || this.ctx.text == null) return;
+        final int x = this.left;
+        final int y = this.top;
+        final int w = this.measuredWidth;
+        canvas.gradientV(x, y, w, H,
+                AppTheme.BG_2.getRed() / 255f, AppTheme.BG_2.getGreen() / 255f, AppTheme.BG_2.getBlue() / 255f, 1f,
+                AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 1f);
+        canvas.lineH(x, y + H - 1, w, AppTheme.STROKE_BRIGHT, 1f);
+        // THE ICON TEXTURE ID IS READ EVERY DRAW BECAUSE IT CHANGES ACROSS RELOADS
+        if (this.ctx.assets.iconId > 0) canvas.image(this.ctx.assets.iconId, x + 8, y + 6, 16, 16, null);
+        canvas.text(this.title, x + 32,
+                y + Math.max(0, (H - this.ctx.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2),
+                AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE, false);
+        for (int i = 0; i < 3; i++) {
+            final int bx = x + w - BUTTON_W * (3 - i);
+            final boolean hover = this.ctx.mouseY >= y && this.ctx.mouseY <= y + H
+                    && this.ctx.mouseX >= bx && this.ctx.mouseX <= bx + BUTTON_W;
+            final Color color = i == 2
+                    ? (hover ? AppTheme.RED : AppTheme.alpha(AppTheme.RED, 190))
+                    : (hover ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT);
+            final String icon = i == 0 ? "minimize" : i == 1 ? (this.ctx.windowMaximized ? "restore" : "maximize") : "x";
+            // BARE GLYPH WITHOUT A BOX: ONLY ITS COLOR REACTS TO HOVER
+            IconButton.render(canvas, bx, y, BUTTON_W, H, icon, 12, color, color, false, hover, true, false);
+        }
+    }
+
+    @Override
+    protected boolean onPress(final double mx, final double my) {
+        // ON WINDOWS THE EMPTY BAND IS NATIVE HTCAPTION (WinFrame) AND THE OS OWNS DRAG, SNAP AND RESTORE;
+        // A PRESS THAT SLIPS THROUGH BY EDGE ROUNDING MUST NOT START A MANUAL DRAG
+        if (WinFrame.ACTIVE) return false;
+        // ONLY THE EMPTY BAND STARTS A WINDOW DRAG; THE BUTTON ZONE KEEPS PLAIN CLICKS
+        if (mx >= this.left + this.measuredWidth - BUTTON_W * 3) return false;
+        // REMEMBER THE GLOBAL GRAB POINT (PHYSICAL SCREEN COORDS) BEFORE ANY RESTORE MOVES THE WINDOW,
+        // SO onDrag CAN TELL A REAL WINDOW DRAG FROM PRESS JITTER (SNAP-ASSIST GUARD)
+        this.dragMoved = false;
+        if (this.ctx != null && this.ctx.windowHandle != 0L) {
+            try (final MemoryStack stack = stackPush()) {
+                final IntBuffer wx = stack.mallocInt(1);
+                final IntBuffer wy = stack.mallocInt(1);
+                glfwGetWindowPos(this.ctx.windowHandle, wx, wy);
+                this.pressGX = wx.get(0) + this.ctx.mouseRawX;
+                this.pressGY = wy.get(0) + this.ctx.mouseRawY;
+            }
+        }
+        if (!this.restoreForDrag()) {
+            // THE GRAB POINT IS PHYSICAL: WINDOW POSITION AND glfwSetWindowPos ARE IN PHYSICAL SCREEN
+            // COORDS, WHILE mx/my ARRIVE IN LOGICAL PX (DIVIDED BY THE UI SCALE)
+            this.dragX = (int) this.ctx.mouseRawX;
+            this.dragY = (int) this.ctx.mouseRawY;
+        }
+        return true;
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     // DRAGGING A MAXIMIZED WINDOW FIRST RESTORES IT AND RE-ANCHORS THE GRAB POINT SO THE CURSOR KEEPS
     // ITS RELATIVE POSITION OVER THE SMALLER TITLEBAR

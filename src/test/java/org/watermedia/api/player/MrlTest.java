@@ -48,6 +48,10 @@ public class MrlTest {
     // COPIED ONCE INTO build/ BECAUSE A PER-TEST @TempDir DELETE OF A JUST-WRITTEN FILE FLAKES AGAINST WINDOWS AV SCANS
     private static Path opaque;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeAll
     static void clientBootstrap() throws IOException {
         MediaBootstrap.client();
@@ -55,6 +59,43 @@ public class MrlTest {
         Files.createDirectories(opaque.getParent());
         Files.copy(Fixtures.PNG_BROKEN, opaque, StandardCopyOption.REPLACE_EXISTING);
     }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // A PLATFORM SOURCE OF UNKNOWN TYPE, LIKE water:// OR MEDIAFIRE HAND OUT
+    private static Source unknown(final URI target) {
+        return new Source(MediaType.UNKNOWN, null, null, HttpHeaders.defaults(target), List.of(new Quality(target, 0, 0)), null, null);
+    }
+
+    // RESOLVES claimed THROUGH A MINIMAL HANDLER THAT CLAIMS EXACTLY THAT URI, LIKE WaterPlatform DOES FOR water://
+    private static MRL resolve(final URI claimed, final Source... entries) {
+        final Platform platform = new Platform() {
+            @Override
+            public String name() {
+                return "MRL Test";
+            }
+
+            @Override
+            public Resolution resolve(final URI uri) {
+                return claimed.equals(uri) ? new Resolution(null, List.of(entries)) : null;
+            }
+        };
+        PlatformAPI.register(platform);
+        try {
+            final MRL mrl = PlayerAPI.mrl(claimed);
+            assertTrue(mrl.await(TIMEOUT_MS));
+            assertTrue(mrl.status().loaded(), () -> claimed + " did not load: " + mrl.exception());
+            return mrl;
+        } finally {
+            PlatformAPI.unregister(platform);
+        }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Readiness")
@@ -359,37 +400,6 @@ public class MrlTest {
             // A RESTART OR A SECOND PLAYER STILL HOLDS THE OLD SOURCE AND ASKS AGAIN: THE URI ALREADY SITS THERE
             assertTrue(mrl.moveQuality(0, uri, MediaQuality.MEDIUM), "a repeated relabel succeeds");
             assertFalse(mrl.moveQuality(0, uri, MediaQuality.HIGH), "a known quality is never relabeled");
-        }
-    }
-
-    // UTILITY
-
-    // A PLATFORM SOURCE OF UNKNOWN TYPE, LIKE water:// OR MEDIAFIRE HAND OUT
-    private static Source unknown(final URI target) {
-        return new Source(MediaType.UNKNOWN, null, null, HttpHeaders.defaults(target), List.of(new Quality(target, 0, 0)), null, null);
-    }
-
-    // RESOLVES claimed THROUGH A MINIMAL HANDLER THAT CLAIMS EXACTLY THAT URI, LIKE WaterPlatform DOES FOR water://
-    private static MRL resolve(final URI claimed, final Source... entries) {
-        final Platform platform = new Platform() {
-            @Override
-            public String name() {
-                return "MRL Test";
-            }
-
-            @Override
-            public Resolution resolve(final URI uri) {
-                return claimed.equals(uri) ? new Resolution(null, List.of(entries)) : null;
-            }
-        };
-        PlatformAPI.register(platform);
-        try {
-            final MRL mrl = PlayerAPI.mrl(claimed);
-            assertTrue(mrl.await(TIMEOUT_MS));
-            assertTrue(mrl.status().loaded(), () -> claimed + " did not load: " + mrl.exception());
-            return mrl;
-        } finally {
-            PlatformAPI.unregister(platform);
         }
     }
 }

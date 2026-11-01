@@ -4,19 +4,25 @@ import java.util.Arrays;
 
 /**
  * Resolved fill or stroke paint, a solid colour or a linear gradient; {@code fill="none"} is a {@code null} paint.
- * {@link #sampler} turns it into a per-pixel {@link Paint} from the device transform and the shape's user-space
+ * {@link #sampler} turns it into a per-pixel {@link Sampler} from the device transform and the shape's user-space
  * bounds (which {@code objectBoundingBox} gradients need).
  */
 sealed interface SvgPaint permits SvgPaint.Solid, SvgPaint.Linear {
-    Paint sampler(Affine ctm, double minX, double minY, double maxX, double maxY);
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+    Sampler sampler(Affine ctm, double minX, double minY, double maxX, double maxY);
 
     static SvgPaint solid(final int argb) {
         return new Solid(argb);
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     record Solid(int argb) implements SvgPaint {
         @Override
-        public Paint sampler(final Affine ctm, final double minX, final double minY, final double maxX, final double maxY) {
+        public Sampler sampler(final Affine ctm, final double minX, final double minY, final double maxX, final double maxY) {
             final int c = this.argb;
             return (px, py) -> c;
         }
@@ -27,7 +33,7 @@ sealed interface SvgPaint permits SvgPaint.Solid, SvgPaint.Linear {
     record Linear(double x1, double y1, double x2, double y2, boolean userSpace,
                   Affine gradientTransform, float[] offsets, int[] colors) implements SvgPaint {
         @Override
-        public Paint sampler(final Affine ctm, final double minX, final double minY, final double maxX, final double maxY) {
+        public Sampler sampler(final Affine ctm, final double minX, final double minY, final double maxX, final double maxY) {
             if (this.offsets.length == 0) return (px, py) -> 0;
             if (this.offsets.length == 1) { final int c = this.colors[0]; return (px, py) -> c; }
 
@@ -86,5 +92,11 @@ sealed interface SvgPaint permits SvgPaint.Solid, SvgPaint.Linear {
         private static int lerp(final int a, final int b, final float f) {
             return a + Math.round((b - a) * f);
         }
+    }
+
+    // PER-PIXEL COLOUR SOURCE OF THE RASTERIZER: A STRAIGHT 0xAARRGGBB VALUE FOR A DEVICE-SPACE PIXEL CENTRE
+    @FunctionalInterface
+    interface Sampler {
+        int argb(double px, double py);
     }
 }

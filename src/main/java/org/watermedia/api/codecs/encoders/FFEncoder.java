@@ -145,6 +145,9 @@ public final class FFEncoder extends Encoder {
         }
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @Override
     protected void frame(final ByteBuffer frame, final long ptsUs) throws IOException {
         // BIND THE CALLER'S PIXELS: ZERO-COPY WHEN DIRECT, ELSE A REUSED DIRECT MIRROR

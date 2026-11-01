@@ -13,12 +13,18 @@ import java.nio.ByteBuffer;
  * filter returns.
  */
 public interface ReaderFilter {
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /**
      * Transforms one frame. The returned buffer must be positioned at {@code 0} and ready to read.
      * Return {@code src} unchanged when the transform is a no-op for this frame.
      */
     Frame compute(final Frame src);
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     /** A decoded frame paired with the geometry a filter needs to read and rewrite it. */
     record Frame(ByteBuffer buffer, int width, int height, PixelFormat format) {}
 }

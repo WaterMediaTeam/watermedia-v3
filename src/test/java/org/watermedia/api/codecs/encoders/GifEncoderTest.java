@@ -51,6 +51,156 @@ public class GifEncoderTest {
     private static final int FPS = 25;
     private static final long FRAME_US = 1_000_000L / FPS;
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // ENCODES THE FRAMES AT THEIR TIMESTAMPS INTO MEMORY THROUGH CodecsAPI
+    private static byte[] encode(final int width, final int height, final PixelFormat format, final int quality, final int repeat,
+                                 final long[] ptsUs, final byte[]... frames) throws IOException {
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (final Encoder encoder = CodecsAPI.encoder(Container.GIF, out, new Encoder.Video(VideoCodec.GIF, width, height, format, FPS, quality, repeat), null)) {
+            for (int f = 0; f < frames.length; f++) encoder.video(ByteBuffer.wrap(frames[f]), ptsUs[f]);
+        }
+        return out.toByteArray();
+    }
+
+    // DECODES THE GIF AND MATCHES EVERY COMPOSED FRAME AGAINST ITS SOURCE, THRESHOLDED TO ONE-BIT ALPHA
+    private static ImageData assertComposition(final byte[] gif, final PixelFormat format, final byte[]... frames) throws IOException {
+        final ImageData image = CodecsAPI.decode(gif);
+        assertEquals(frames.length, image.frames().length, "frame count");
+        for (int f = 0; f < frames.length; f++) assertArrayEquals(argb(frames[f], format), pixels(image, f), "frame " + f);
+        return image;
+    }
+
+    // TIMESTAMPS OF count FRAMES AT THE TEST RATE
+    private static long[] steps(final int count) {
+        final long[] pts = new long[count];
+        for (int f = 0; f < count; f++) pts[f] = f * FRAME_US;
+        return pts;
+    }
+
+    // A TILED PICTURE OF 48 COLORS WITH A 10x8 PATCH MOVING EACH FRAME; ON ODD FRAMES THE PATCH IS TRANSPARENT WHEN THE
+    // LAYOUT HAS ALPHA, AND EVERY ALPHA AND HIDDEN COLOR VARIES SO ONLY THE THRESHOLD DECIDES WHAT SHOWS
+    private static byte[] picture(final int width, final int height, final PixelFormat format, final int frame) {
+        final int channels = format.texelBytes(0, 8);
+        final byte[] bytes = new byte[width * height * channels];
+        for (int y = 0, p = 0; y < height; y++) {
+            for (int x = 0; x < width; x++, p += channels) {
+                final boolean patch = x >= frame * 4 % width && x < frame * 4 % width + 10 && y >= frame * 3 % height && y < frame * 3 % height + 8;
+                final int k = patch ? 40 + frame % 8 : (x / 5 * 7 + y / 3 * 13) % 40;
+                final int r = k * 37 & 0xFF, g = k * 91 & 0xFF, b = k * 53 & 0xFF;
+                final boolean hidden = patch && (frame & 1) == 1;
+                switch (format) {
+                    case RGBA, BGRA -> {
+                        bytes[p] = (byte) (format == PixelFormat.RGBA ? r : b);
+                        bytes[p + 1] = (byte) g;
+                        bytes[p + 2] = (byte) (format == PixelFormat.RGBA ? b : r);
+                        bytes[p + 3] = (byte) (hidden ? (x + y) % 128 : 128 + (x * 7 + y) % 128);
+                    }
+                    case RGB -> {
+                        bytes[p] = (byte) r;
+                        bytes[p + 1] = (byte) g;
+                        bytes[p + 2] = (byte) b;
+                    }
+                    default -> bytes[p] = (byte) (k * 6);
+                }
+            }
+        }
+        return bytes;
+    }
+
+    // BGRA BYTES OF A BACKGROUND WITH A 6x6 SQUARE AT (x, y); A ZERO COLOR IS TRANSPARENT AND CARRIES A STRAY COLOR AND
+    // ALPHA BELOW 128 THAT THE ENCODER MUST IGNORE
+    private static byte[] scene(final int width, final int height, final int background, final int square, final int x, final int y) {
+        final ByteBuffer bytes = ByteBuffer.allocate(width * height * 4).order(ByteOrder.LITTLE_ENDIAN);
+        for (int py = 0; py < height; py++) {
+            for (int px = 0; px < width; px++) {
+                final int color = px >= x && px < x + 6 && py >= y && py < y + 6 ? square : background;
+                bytes.putInt(color != 0 ? color : (px * 0x01_03_05 + py * 0x07_0B_0D) & 0x7F_FF_FF_FF);
+            }
+        }
+        return bytes.array();
+    }
+
+    // THE ARGB A DECODER SHOWS FOR A SOURCE FRAME: ALPHA BELOW 128 IS TRANSPARENT BLACK, ANYTHING ELSE IS OPAQUE
+    private static int[] argb(final byte[] frame, final PixelFormat format) {
+        final int channels = format.texelBytes(0, 8);
+        final int[] pixels = new int[frame.length / channels];
+        for (int i = 0, p = 0; i < pixels.length; i++, p += channels) {
+            pixels[i] = switch (format) {
+                case RGBA -> (frame[p + 3] & 0xFF) < 128 ? 0 : 0xFF000000 | (frame[p] & 0xFF) << 16 | (frame[p + 1] & 0xFF) << 8 | frame[p + 2] & 0xFF;
+                case BGRA -> (frame[p + 3] & 0xFF) < 128 ? 0 : 0xFF000000 | (frame[p + 2] & 0xFF) << 16 | (frame[p + 1] & 0xFF) << 8 | frame[p] & 0xFF;
+                case RGB -> 0xFF000000 | (frame[p] & 0xFF) << 16 | (frame[p + 1] & 0xFF) << 8 | frame[p + 2] & 0xFF;
+                default -> 0xFF000000 | (frame[p] & 0xFF) * 0x01_01_01;
+            };
+        }
+        return pixels;
+    }
+
+    // DECODED BGRA READ AS LITTLE-ENDIAN INTS, WHICH IS ARGB
+    private static int[] pixels(final ImageData image, final int frame) {
+        final int[] pixels = new int[image.width() * image.height()];
+        image.frames()[frame].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
+        return pixels;
+    }
+
+    // MEAN AND MAX CHANNEL ERROR, THEN THE MEAN ERROR OF THE 8x8 BLOCK AVERAGES THAT DITHERING PRESERVES
+    private static double[] error(final int[] expected, final int[] actual, final int width) {
+        long total = 0L;
+        int max = 0;
+        for (int i = 0; i < expected.length; i++) {
+            for (int shift = 0; shift < 24; shift += 8) {
+                final int diff = Math.abs((expected[i] >> shift & 0xFF) - (actual[i] >> shift & 0xFF));
+                total += diff;
+                max = Math.max(max, diff);
+            }
+        }
+        final int height = expected.length / width;
+        double blocks = 0.0;
+        int count = 0;
+        for (int by = 0; by + 8 <= height; by += 8) {
+            for (int bx = 0; bx + 8 <= width; bx += 8, count++) {
+                for (int shift = 0; shift < 24; shift += 8) {
+                    long sum = 0L;
+                    for (int y = by; y < by + 8; y++)
+                        for (int x = bx; x < bx + 8; x++) sum += (expected[y * width + x] >> shift & 0xFF) - (actual[y * width + x] >> shift & 0xFF);
+                    blocks += Math.abs(sum / 64.0);
+                }
+            }
+        }
+        return new double[] { (double) total / (expected.length * 3), max, blocks / (count * 3) };
+    }
+
+    // WALKS THE BLOCK STREAM AND RETURNS EVERY IMAGE WITH THE GRAPHIC CONTROL EXTENSION BEFORE IT
+    private static List<Image> images(final byte[] gif) throws CodecException {
+        final ByteBuffer buffer = ByteBuffer.wrap(gif);
+        buffer.position(6);
+        final ScreenDescriptor screen = ScreenDescriptor.read(buffer);
+        if (screen.globalColorTableFlag()) ColorTable.read(screen.globalColorCount(), buffer);
+        final List<Image> images = new ArrayList<>();
+        GraphicExtension control = null;
+        while (true) {
+            final int introducer = buffer.get() & 0xFF;
+            if (introducer == 0x3B) return images;
+            if (introducer == 0x2C) {
+                final ImageDescriptor descriptor = ImageDescriptor.read(buffer);
+                if (descriptor.localColorTableFlag()) ColorTable.read(descriptor.localColorCount(), buffer);
+                // SKIPS THE LZW MINIMUM CODE SIZE, THEN THE SUB-BLOCK CHAIN AND ITS TERMINATOR
+                buffer.get();
+                for (int size = buffer.get() & 0xFF; size > 0; size = buffer.get() & 0xFF) buffer.position(buffer.position() + size);
+                images.add(new Image(descriptor, control));
+                control = null;
+                continue;
+            }
+            assertEquals(0x21, introducer, "only extensions sit between images");
+            if ((buffer.get() & 0xFF) == GraphicExtension.GCE_LABEL) control = GraphicExtension.read(buffer);
+            else for (int size = buffer.get() & 0xFF; size > 0; size = buffer.get() & 0xFF) buffer.position(buffer.position() + size);
+        }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Exact palettes")
     class Exact {
@@ -369,152 +519,5 @@ public class GifEncoderTest {
         }
     }
 
-    // ==========================================================================
-    // UTILITY
-    // ==========================================================================
     private record Image(ImageDescriptor descriptor, GraphicExtension control) {}
-
-    // ENCODES THE FRAMES AT THEIR TIMESTAMPS INTO MEMORY THROUGH CodecsAPI
-    private static byte[] encode(final int width, final int height, final PixelFormat format, final int quality, final int repeat,
-                                 final long[] ptsUs, final byte[]... frames) throws IOException {
-        final ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (final Encoder encoder = CodecsAPI.encoder(Container.GIF, out, new Encoder.Video(VideoCodec.GIF, width, height, format, FPS, quality, repeat), null)) {
-            for (int f = 0; f < frames.length; f++) encoder.video(ByteBuffer.wrap(frames[f]), ptsUs[f]);
-        }
-        return out.toByteArray();
-    }
-
-    // DECODES THE GIF AND MATCHES EVERY COMPOSED FRAME AGAINST ITS SOURCE, THRESHOLDED TO ONE-BIT ALPHA
-    private static ImageData assertComposition(final byte[] gif, final PixelFormat format, final byte[]... frames) throws IOException {
-        final ImageData image = CodecsAPI.decode(gif);
-        assertEquals(frames.length, image.frames().length, "frame count");
-        for (int f = 0; f < frames.length; f++) assertArrayEquals(argb(frames[f], format), pixels(image, f), "frame " + f);
-        return image;
-    }
-
-    // TIMESTAMPS OF count FRAMES AT THE TEST RATE
-    private static long[] steps(final int count) {
-        final long[] pts = new long[count];
-        for (int f = 0; f < count; f++) pts[f] = f * FRAME_US;
-        return pts;
-    }
-
-    // A TILED PICTURE OF 48 COLORS WITH A 10x8 PATCH MOVING EACH FRAME; ON ODD FRAMES THE PATCH IS TRANSPARENT WHEN THE
-    // LAYOUT HAS ALPHA, AND EVERY ALPHA AND HIDDEN COLOR VARIES SO ONLY THE THRESHOLD DECIDES WHAT SHOWS
-    private static byte[] picture(final int width, final int height, final PixelFormat format, final int frame) {
-        final int channels = format.texelBytes(0, 8);
-        final byte[] bytes = new byte[width * height * channels];
-        for (int y = 0, p = 0; y < height; y++) {
-            for (int x = 0; x < width; x++, p += channels) {
-                final boolean patch = x >= frame * 4 % width && x < frame * 4 % width + 10 && y >= frame * 3 % height && y < frame * 3 % height + 8;
-                final int k = patch ? 40 + frame % 8 : (x / 5 * 7 + y / 3 * 13) % 40;
-                final int r = k * 37 & 0xFF, g = k * 91 & 0xFF, b = k * 53 & 0xFF;
-                final boolean hidden = patch && (frame & 1) == 1;
-                switch (format) {
-                    case RGBA, BGRA -> {
-                        bytes[p] = (byte) (format == PixelFormat.RGBA ? r : b);
-                        bytes[p + 1] = (byte) g;
-                        bytes[p + 2] = (byte) (format == PixelFormat.RGBA ? b : r);
-                        bytes[p + 3] = (byte) (hidden ? (x + y) % 128 : 128 + (x * 7 + y) % 128);
-                    }
-                    case RGB -> {
-                        bytes[p] = (byte) r;
-                        bytes[p + 1] = (byte) g;
-                        bytes[p + 2] = (byte) b;
-                    }
-                    default -> bytes[p] = (byte) (k * 6);
-                }
-            }
-        }
-        return bytes;
-    }
-
-    // BGRA BYTES OF A BACKGROUND WITH A 6x6 SQUARE AT (x, y); A ZERO COLOR IS TRANSPARENT AND CARRIES A STRAY COLOR AND
-    // ALPHA BELOW 128 THAT THE ENCODER MUST IGNORE
-    private static byte[] scene(final int width, final int height, final int background, final int square, final int x, final int y) {
-        final ByteBuffer bytes = ByteBuffer.allocate(width * height * 4).order(ByteOrder.LITTLE_ENDIAN);
-        for (int py = 0; py < height; py++) {
-            for (int px = 0; px < width; px++) {
-                final int color = px >= x && px < x + 6 && py >= y && py < y + 6 ? square : background;
-                bytes.putInt(color != 0 ? color : (px * 0x01_03_05 + py * 0x07_0B_0D) & 0x7F_FF_FF_FF);
-            }
-        }
-        return bytes.array();
-    }
-
-    // THE ARGB A DECODER SHOWS FOR A SOURCE FRAME: ALPHA BELOW 128 IS TRANSPARENT BLACK, ANYTHING ELSE IS OPAQUE
-    private static int[] argb(final byte[] frame, final PixelFormat format) {
-        final int channels = format.texelBytes(0, 8);
-        final int[] pixels = new int[frame.length / channels];
-        for (int i = 0, p = 0; i < pixels.length; i++, p += channels) {
-            pixels[i] = switch (format) {
-                case RGBA -> (frame[p + 3] & 0xFF) < 128 ? 0 : 0xFF000000 | (frame[p] & 0xFF) << 16 | (frame[p + 1] & 0xFF) << 8 | frame[p + 2] & 0xFF;
-                case BGRA -> (frame[p + 3] & 0xFF) < 128 ? 0 : 0xFF000000 | (frame[p + 2] & 0xFF) << 16 | (frame[p + 1] & 0xFF) << 8 | frame[p] & 0xFF;
-                case RGB -> 0xFF000000 | (frame[p] & 0xFF) << 16 | (frame[p + 1] & 0xFF) << 8 | frame[p + 2] & 0xFF;
-                default -> 0xFF000000 | (frame[p] & 0xFF) * 0x01_01_01;
-            };
-        }
-        return pixels;
-    }
-
-    // DECODED BGRA READ AS LITTLE-ENDIAN INTS, WHICH IS ARGB
-    private static int[] pixels(final ImageData image, final int frame) {
-        final int[] pixels = new int[image.width() * image.height()];
-        image.frames()[frame].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
-        return pixels;
-    }
-
-    // MEAN AND MAX CHANNEL ERROR, THEN THE MEAN ERROR OF THE 8x8 BLOCK AVERAGES THAT DITHERING PRESERVES
-    private static double[] error(final int[] expected, final int[] actual, final int width) {
-        long total = 0L;
-        int max = 0;
-        for (int i = 0; i < expected.length; i++) {
-            for (int shift = 0; shift < 24; shift += 8) {
-                final int diff = Math.abs((expected[i] >> shift & 0xFF) - (actual[i] >> shift & 0xFF));
-                total += diff;
-                max = Math.max(max, diff);
-            }
-        }
-        final int height = expected.length / width;
-        double blocks = 0.0;
-        int count = 0;
-        for (int by = 0; by + 8 <= height; by += 8) {
-            for (int bx = 0; bx + 8 <= width; bx += 8, count++) {
-                for (int shift = 0; shift < 24; shift += 8) {
-                    long sum = 0L;
-                    for (int y = by; y < by + 8; y++)
-                        for (int x = bx; x < bx + 8; x++) sum += (expected[y * width + x] >> shift & 0xFF) - (actual[y * width + x] >> shift & 0xFF);
-                    blocks += Math.abs(sum / 64.0);
-                }
-            }
-        }
-        return new double[] { (double) total / (expected.length * 3), max, blocks / (count * 3) };
-    }
-
-    // WALKS THE BLOCK STREAM AND RETURNS EVERY IMAGE WITH THE GRAPHIC CONTROL EXTENSION BEFORE IT
-    private static List<Image> images(final byte[] gif) throws CodecException {
-        final ByteBuffer buffer = ByteBuffer.wrap(gif);
-        buffer.position(6);
-        final ScreenDescriptor screen = ScreenDescriptor.read(buffer);
-        if (screen.globalColorTableFlag()) ColorTable.read(screen.globalColorCount(), buffer);
-        final List<Image> images = new ArrayList<>();
-        GraphicExtension control = null;
-        while (true) {
-            final int introducer = buffer.get() & 0xFF;
-            if (introducer == 0x3B) return images;
-            if (introducer == 0x2C) {
-                final ImageDescriptor descriptor = ImageDescriptor.read(buffer);
-                if (descriptor.localColorTableFlag()) ColorTable.read(descriptor.localColorCount(), buffer);
-                // SKIPS THE LZW MINIMUM CODE SIZE, THEN THE SUB-BLOCK CHAIN AND ITS TERMINATOR
-                buffer.get();
-                for (int size = buffer.get() & 0xFF; size > 0; size = buffer.get() & 0xFF) buffer.position(buffer.position() + size);
-                images.add(new Image(descriptor, control));
-                control = null;
-                continue;
-            }
-            assertEquals(0x21, introducer, "only extensions sit between images");
-            if ((buffer.get() & 0xFF) == GraphicExtension.GCE_LABEL) control = GraphicExtension.read(buffer);
-            else for (int size = buffer.get() & 0xFF; size > 0; size = buffer.get() & 0xFF) buffer.position(buffer.position() + size);
-        }
-    }
 }

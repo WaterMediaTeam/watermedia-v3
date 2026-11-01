@@ -17,6 +17,9 @@ public final class JSONTool {
 
     private JSONTool() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Binds a JSON tree to {@code type}, or returns null for a null tree; a shape mismatch throws {@link JsonSyntaxException}. */
     public static <T> T parse(final JsonElement json, final Class<T> type) {
         return json == null ? null : GSON.fromJson(json, type);
@@ -88,6 +91,9 @@ public final class JSONTool {
         catch (final NumberFormatException e) { return def; }
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // THE ONLY SHAPE THE ACCESSORS READ; A NULL OBJECT, A MISSING KEY, JSON NULL, OBJECTS AND ARRAYS ALL YIELD NULL
     private static JsonPrimitive primitive(final JsonObject o, final String key) {
         final JsonElement e = o == null ? null : o.get(key);

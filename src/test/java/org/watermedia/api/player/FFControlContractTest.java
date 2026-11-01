@@ -61,9 +61,13 @@ public class FFControlContractTest {
 
     private boolean cache;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeAll
     static void boot() {
-        assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping FFMediaPlayer control tests");
+        assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable, skipping FFMediaPlayer control tests");
     }
 
     @BeforeEach
@@ -71,6 +75,68 @@ public class FFControlContractTest {
 
     @AfterEach
     void restoreCache() { WaterMediaConfig.codecs.ffmpeg.cache = this.cache; }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // HOLDS THE ORIGIN UNTIL A NEW PIPELINE THREAD BLOCKS WHERE blocked SAYS, THEN STOPS THE LOADING PLAYER THERE. ONLY A
+    // STOP INSIDE FFMPEG'S OPEN CUTS THAT OPEN SHORT ("Open aborted"); A STOP INSIDE THE CACHE WAIT NEVER REACHES THE OPEN
+    private static void stopWhileLoading(final boolean cache, final Predicate<StackTraceElement> blocked) throws Exception {
+        WaterMediaConfig.codecs.ffmpeg.cache = cache;
+        try (final Origin origin = Origin.of(Fixtures.readAll(Fixtures.MP4_H264), "video/mp4")) {
+            final MRL mrl = resolve(origin.uri(".mp4"));
+            final Set<Thread> baseline = Set.copyOf(Thread.getAllStackTraces().keySet());
+            final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, new HeadlessGFXEngine(false), null);
+            try {
+                origin.hold();
+                assertTrue(player.start());
+                assertTrue(origin.awaitEntered(LOAD_TIMEOUT_MS), "the open must reach the held origin");
+                assertTrue(PlayerWait.awaitCondition(() -> pipeline(baseline).stream()
+                        .anyMatch(thread -> Arrays.stream(thread.getStackTrace()).anyMatch(blocked)), LOAD_TIMEOUT_MS),
+                        "the load must block where this case expects");
+                assertEquals(Status.LOADING, player.status());
+
+                try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
+                    final long before = System.nanoTime();
+                    assertTrue(player.stop(), "a loading player has a pipeline to stop");
+                    final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+                    assertTrue(elapsedMs < STOP_RETURN_MS, "stop() must not wait for the open, it took " + elapsedMs + " ms");
+                    assertTrue(PlayerWait.awaitStatus(player, STOP_SETTLE_MS, Status.STOPPED), () -> "still " + player.status());
+                    assertNull(player.exception(), "an open cut short by stop() is not a failure");
+                    assertFalse(player.canPlay(), "the source never opened");
+                    assertTrue(PlayerWait.awaitCondition(() -> pipeline(baseline).isEmpty(), THREAD_EXIT_MS),
+                            () -> "pipeline threads left behind: " + pipeline(baseline));
+                    final boolean opened = capture.events().stream().anyMatch(event -> event.getThreadName().startsWith("FFThread-")
+                            && event.getMessage().getFormattedMessage().startsWith("Open aborted"));
+                    assertEquals(!cache, opened, cache ? "the stopped load opened the source it abandoned" : "the stop must cut the open short");
+                }
+            } finally {
+                origin.release();
+                player.release();
+            }
+        }
+    }
+
+    // RESOLVES A FRESH MRL; AN ORIGIN'S PROBE GOES THROUGH BEFORE ANY hold()
+    private static MRL resolve(final URI uri) {
+        final MRL mrl = PlayerAPI.mrl(uri);
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        assertEquals(MRL.Status.LOADED, mrl.status());
+        return mrl;
+    }
+
+    // PIPELINE THREADS (FFThread-*) STARTED AFTER THE BASELINE AND STILL ALIVE
+    private static List<Thread> pipeline(final Set<Thread> baseline) {
+        final List<Thread> alive = new ArrayList<>();
+        for (final Thread thread: Thread.getAllStackTraces().keySet())
+            if (!baseline.contains(thread) && thread.getName().startsWith("FFThread-")) alive.add(thread);
+        return alive;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Controls before the source opens")
@@ -330,63 +396,5 @@ public class FFControlContractTest {
                 player.release();
             }
         }
-    }
-
-    // ==========================================================================
-    // UTILITY
-    // ==========================================================================
-
-    // HOLDS THE ORIGIN UNTIL A NEW PIPELINE THREAD BLOCKS WHERE blocked SAYS, THEN STOPS THE LOADING PLAYER THERE. ONLY A
-    // STOP INSIDE FFMPEG'S OPEN CUTS THAT OPEN SHORT ("Open aborted"); A STOP INSIDE THE CACHE WAIT NEVER REACHES THE OPEN
-    private static void stopWhileLoading(final boolean cache, final Predicate<StackTraceElement> blocked) throws Exception {
-        WaterMediaConfig.codecs.ffmpeg.cache = cache;
-        try (final Origin origin = Origin.of(Fixtures.readAll(Fixtures.MP4_H264), "video/mp4")) {
-            final MRL mrl = resolve(origin.uri(".mp4"));
-            final Set<Thread> baseline = Set.copyOf(Thread.getAllStackTraces().keySet());
-            final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, new HeadlessGFXEngine(false), null);
-            try {
-                origin.hold();
-                assertTrue(player.start());
-                assertTrue(origin.awaitEntered(LOAD_TIMEOUT_MS), "the open must reach the held origin");
-                assertTrue(PlayerWait.awaitCondition(() -> pipeline(baseline).stream()
-                        .anyMatch(thread -> Arrays.stream(thread.getStackTrace()).anyMatch(blocked)), LOAD_TIMEOUT_MS),
-                        "the load must block where this case expects");
-                assertEquals(Status.LOADING, player.status());
-
-                try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
-                    final long before = System.nanoTime();
-                    assertTrue(player.stop(), "a loading player has a pipeline to stop");
-                    final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
-                    assertTrue(elapsedMs < STOP_RETURN_MS, "stop() must not wait for the open, it took " + elapsedMs + " ms");
-                    assertTrue(PlayerWait.awaitStatus(player, STOP_SETTLE_MS, Status.STOPPED), () -> "still " + player.status());
-                    assertNull(player.exception(), "an open cut short by stop() is not a failure");
-                    assertFalse(player.canPlay(), "the source never opened");
-                    assertTrue(PlayerWait.awaitCondition(() -> pipeline(baseline).isEmpty(), THREAD_EXIT_MS),
-                            () -> "pipeline threads left behind: " + pipeline(baseline));
-                    final boolean opened = capture.events().stream().anyMatch(event -> event.getThreadName().startsWith("FFThread-")
-                            && event.getMessage().getFormattedMessage().startsWith("Open aborted"));
-                    assertEquals(!cache, opened, cache ? "the stopped load opened the source it abandoned" : "the stop must cut the open short");
-                }
-            } finally {
-                origin.release();
-                player.release();
-            }
-        }
-    }
-
-    // RESOLVES A FRESH MRL; AN ORIGIN'S PROBE GOES THROUGH BEFORE ANY hold()
-    private static MRL resolve(final URI uri) {
-        final MRL mrl = PlayerAPI.mrl(uri);
-        assertTrue(mrl.await(MRL_TIMEOUT_MS));
-        assertEquals(MRL.Status.LOADED, mrl.status());
-        return mrl;
-    }
-
-    // PIPELINE THREADS (FFThread-*) STARTED AFTER THE BASELINE AND STILL ALIVE
-    private static List<Thread> pipeline(final Set<Thread> baseline) {
-        final List<Thread> alive = new ArrayList<>();
-        for (final Thread thread: Thread.getAllStackTraces().keySet())
-            if (!baseline.contains(thread) && thread.getName().startsWith("FFThread-")) alive.add(thread);
-        return alive;
     }
 }

@@ -12,7 +12,9 @@ import static org.junit.jupiter.api.Assertions.assertSame;
  */
 @DisplayName("MediaType")
 public class MediaTypeTest {
-
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("of(mimeString)")
     class OfMimeTests {

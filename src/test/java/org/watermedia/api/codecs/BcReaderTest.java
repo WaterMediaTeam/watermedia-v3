@@ -22,6 +22,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("BcReader")
 public class BcReaderTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // A 4x4 BC1 TEXTURE ARRAY OF ZEROED BLOCKS FOLLOWED BY THE GIVEN TRAILING BYTES
+    private static ByteBuffer texture(final int slices, final byte[] trailer) {
+        final int blocks = slices * PixelFormat.BC1.blockBytes();
+        return ByteBuffer.allocate(DdsHeader.BYTES + blocks + trailer.length)
+                .put(DdsFixture.write(4, 4, PixelFormat.BC1, slices)).put(new byte[blocks]).put(trailer).flip();
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Blocks")
     class Blocks {
@@ -80,12 +93,5 @@ public class BcReaderTest {
             assertTrue(assertThrowsExactly(CodecException.class, () -> new BcReader(large)).getMessage().contains("too large"));
             assertThrowsExactly(CodecException.class, () -> new BcReader(texture(1, DdsFixture.writeFooter(-1))));
         }
-    }
-
-    // A 4x4 BC1 TEXTURE ARRAY OF ZEROED BLOCKS FOLLOWED BY THE GIVEN TRAILING BYTES
-    private static ByteBuffer texture(final int slices, final byte[] trailer) {
-        final int blocks = slices * PixelFormat.BC1.blockBytes();
-        return ByteBuffer.allocate(DdsHeader.BYTES + blocks + trailer.length)
-                .put(DdsFixture.write(4, 4, PixelFormat.BC1, slices)).put(new byte[blocks]).put(trailer).flip();
     }
 }

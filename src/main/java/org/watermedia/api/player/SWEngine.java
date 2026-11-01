@@ -11,7 +11,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 /**
  * Software {@link GFXEngine} base for CPU render targets that consume a packed BGRA frame
- * instead of a GPU texture — JavaFX ({@link JFXEngine}) and AWT/Swing ({@link AWTEngine}).
+ * instead of a GPU texture: JavaFX ({@link JFXEngine}) and AWT/Swing ({@link AWTEngine}).
  * <p>
  * It only accepts single-plane 8-bit {@code BGRA}/{@code RGBA}; every planar or packed-YUV format
  * is declined, so the frame producer pre-converts those to BGRA through the decoder's scaler. Each
@@ -29,7 +29,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEngine {
     private static final Marker IT = MarkerManager.getMarker(SWEngine.class.getSimpleName());
 
-    // REUSABLE DIRECT BGRA SURFACE — width*height*4 BYTES, REALLOCATED ON RESIZE, NULL WHILE NO LAYOUT IS BACKED
+    // REUSABLE DIRECT BGRA SURFACE OF width*height*4 BYTES, REALLOCATED ON RESIZE, NULL WHILE NO LAYOUT IS BACKED
     volatile ByteBuffer bgra;
     // OPTIONAL "FRAME READY" HOOK, RUN ON THE UPLOAD THREAD AFTER EACH present()
     private final Runnable onFrame;
@@ -42,11 +42,19 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         this.onFrame = onFrame;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     @Override
     public boolean supports(final PixelFormat format, final int bits) {
         // ANYTHING ELSE (PLANAR/PACKED YUV, RGB, GRAY, BCn, DEEP COLOR) IS DECLINED SO THE PRODUCER CONVERTS IT TO BGRA
         return (format == PixelFormat.BGRA || format == PixelFormat.RGBA) && bits == 8;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     boolean apply(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
@@ -102,7 +110,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         dst.clear();
         if (this.format == PixelFormat.RGBA) {
             // SWIZZLE RGBA->BGRA WITH ONE 32-BIT OP PER PIXEL (SWAP R AND B). FORCING LE VIEWS MAKES
-            // THE BYTE MATH HOST-AGNOSTIC — THE OUTPUT MEMORY IS ALWAYS B,G,R,A REGARDLESS OF ENDIANNESS.
+            // THE BYTE MATH HOST-AGNOSTIC: THE OUTPUT MEMORY IS ALWAYS B,G,R,A REGARDLESS OF ENDIANNESS
             final ByteBuffer s = src.order(ByteOrder.LITTLE_ENDIAN);
             final ByteBuffer d = dst.duplicate().order(ByteOrder.LITTLE_ENDIAN);
             for (int row = 0; row < h; row++) {
@@ -113,7 +121,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
                 }
             }
         } else {
-            // BGRA — COPY EACH ROW, DROPPING ANY STRIDE PADDING
+            // BGRA: COPY EACH ROW, DROPPING ANY STRIDE PADDING
             for (int row = 0; row < h; row++) {
                 final int o = base + row * srcStride;
                 src.limit(o + rowBytes).position(o);

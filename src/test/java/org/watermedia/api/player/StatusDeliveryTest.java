@@ -28,8 +28,46 @@ public class StatusDeliveryTest {
     private static final int TOGGLERS = 4;
     private static final long JOIN_MS = 2_000L;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeAll
     static void boot() { MediaBootstrap.client(); }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // A HOST THAT RELEASES PLAYERS FROM A BACKGROUND THREAD WHILE ITS STOPPED LISTENER WAITS FOR THAT THREAD DEADLOCKS WHEN
+    // THE LISTENER RUNS UNDER THE PLAYER'S RELEASE LOCK; THE JOIN TIMES OUT INSTEAD OF HANGING THE TEST
+    private static void assertReleaseIsLockFree(final Path media) {
+        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(media));
+        assertTrue(mrl.await(3_000L));
+        final HeadlessGFXEngine gfx = PlayerAPI.headlessEngine();
+        final MediaPlayer player = PlayerAPI.player(mrl, () -> gfx, () -> null);
+        final AtomicBoolean ran = new AtomicBoolean();
+        final AtomicBoolean joined = new AtomicBoolean();
+        // REGISTERED BEFORE start(): NEITHER FIXTURE ENDS, SO ONLY THE RELEASE'S STOPPED CONSUMES IT
+        player.onStatus((p, previous, current) -> {
+            if (current != Status.STOPPED) return;
+            ran.set(true);
+            final Thread other = new Thread(p::release, "second-release");
+            other.start();
+            try { other.join(JOIN_MS); }
+            catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
+            joined.set(!other.isAlive());
+        });
+        assertTrue(player.start());
+        assertTrue(PlayerWait.awaitStatus(player, 15_000L, Status.PLAYING, Status.PAUSED));
+        player.release();
+        assertTrue(ran.get(), "the release published STOPPED to the listener");
+        assertTrue(joined.get(), "the second release waited for the lock the first one held while the listener ran");
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Ordering")
@@ -85,36 +123,8 @@ public class StatusDeliveryTest {
         @Test
         @DisplayName("A video player's release lets a STOPPED listener wait for another thread releasing it")
         void videoReleaseListenerIsLockFree() {
-            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
+            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable, skipping");
             assertReleaseIsLockFree(Fixtures.MP4_H264);
         }
-    }
-
-    // UTILITY
-
-    // A HOST THAT RELEASES PLAYERS FROM A BACKGROUND THREAD WHILE ITS STOPPED LISTENER WAITS FOR THAT THREAD DEADLOCKS WHEN
-    // THE LISTENER RUNS UNDER THE PLAYER'S RELEASE LOCK; THE JOIN TIMES OUT INSTEAD OF HANGING THE TEST
-    private static void assertReleaseIsLockFree(final Path media) {
-        final MRL mrl = PlayerAPI.mrl(Fixtures.fileUri(media));
-        assertTrue(mrl.await(3_000L));
-        final HeadlessGFXEngine gfx = PlayerAPI.headlessEngine();
-        final MediaPlayer player = PlayerAPI.player(mrl, () -> gfx, () -> null);
-        final AtomicBoolean ran = new AtomicBoolean();
-        final AtomicBoolean joined = new AtomicBoolean();
-        // REGISTERED BEFORE start(): NEITHER FIXTURE ENDS, SO ONLY THE RELEASE'S STOPPED CONSUMES IT
-        player.onStatus((p, previous, current) -> {
-            if (current != Status.STOPPED) return;
-            ran.set(true);
-            final Thread other = new Thread(p::release, "second-release");
-            other.start();
-            try { other.join(JOIN_MS); }
-            catch (final InterruptedException e) { Thread.currentThread().interrupt(); }
-            joined.set(!other.isAlive());
-        });
-        assertTrue(player.start());
-        assertTrue(PlayerWait.awaitStatus(player, 15_000L, Status.PLAYING, Status.PAUSED));
-        player.release();
-        assertTrue(ran.get(), "the release published STOPPED to the listener");
-        assertTrue(joined.get(), "the second release waited for the lock the first one held while the listener ran");
     }
 }

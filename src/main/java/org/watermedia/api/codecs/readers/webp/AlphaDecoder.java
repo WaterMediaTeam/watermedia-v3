@@ -27,6 +27,9 @@ public final class AlphaDecoder {
 
     private AlphaDecoder() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Decodes a WebP ALPH payload, inverse filter included, into one alpha byte per pixel; an unknown compression throws {@link UnsupportedFormatException}. */
     public static byte[] decode(final ByteBuffer data, final int w, final int h) throws CodecException {
         final ByteBuffer buffer = data.slice().order(ByteOrder.LITTLE_ENDIAN);
@@ -72,6 +75,9 @@ public final class AlphaDecoder {
         for (int i = 0; i < pixelCount; i++) bgra.put(i * 4 + 3, alpha[i]);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // INVERSE FILTER (RFC 9649): EVERY METHOD PREDICTS ROW 0 FROM THE LEFT AND COLUMN 0 FROM ABOVE; INTERIOR PIXELS
     // ADD THE LEFT NEIGHBOUR (HORIZONTAL), THE TOP ONE (VERTICAL) OR CLAMP(LEFT + TOP - TOP_LEFT) (GRADIENT), MOD 256
     private static void unfilter(final byte[] alpha, final int w, final int h, final int method) {

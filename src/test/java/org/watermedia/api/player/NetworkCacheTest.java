@@ -35,12 +35,20 @@ public class NetworkCacheTest {
     private static final String ACCEPT_VIDEO = "video/*,*/*";
     private static final int READ_LIMIT_BYTES = 1_024;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     // THE STORE IS PROCESS-WIDE: LATER CLASSES OF THIS JVM MUST NOT WRITE INTO A TEMP DIRECTORY JUNIT ALREADY DELETED.
     // BEFORE WaterMedia LOADS THERE IS NOTHING TO RESTORE; ITS PLAYER MODULE OPENS THE PRODUCTION STORE ITSELF
     @AfterAll
     static void restoreStore() throws IOException {
         if (WaterMedia.loaded()) NetworkCache.start(WaterMedia.tmp().resolve("cache"));
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Cached reads")

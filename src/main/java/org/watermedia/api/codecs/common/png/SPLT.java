@@ -15,16 +15,9 @@ import java.nio.charset.StandardCharsets;
 public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) implements IChunk {
     public static final int SIGNATURE = 0x73_50_4C_54; // "sPLT"
 
-    /** A single entry in the suggested palette. */
-    public record SPLTEntry(int red, int green, int blue, int alpha, int frequency) {
-        /** Returns the entry as packed ARGB, scaled to 8 bits when the samples are 16-bit. */
-        public int toARGB(final int sampleDepth) {
-            if (sampleDepth == 8) return (this.alpha << 24) | (this.red << 16) | (this.green << 8) | this.blue;
-            // 16-BIT SAMPLES KEEP THEIR HIGH BYTE
-            return ((this.alpha >> 8) << 24) | ((this.red >> 8) << 16) | ((this.green >> 8) << 8) | (this.blue >> 8);
-        }
-    }
-
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Reads a complete sPLT chunk (length, type, data and CRC) from the buffer. */
     public static SPLT read(final ByteBuffer buffer) throws IOException {
         return convert(PngChunk.read(buffer, SIGNATURE));
@@ -117,5 +110,18 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
     @Override
     public PngChunk toChunk() {
         return PngChunk.create(SIGNATURE, this.toBytes());
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /** A single entry in the suggested palette. */
+    public record SPLTEntry(int red, int green, int blue, int alpha, int frequency) {
+        /** Returns the entry as packed ARGB, scaled to 8 bits when the samples are 16-bit. */
+        public int toARGB(final int sampleDepth) {
+            if (sampleDepth == 8) return (this.alpha << 24) | (this.red << 16) | (this.green << 8) | this.blue;
+            // 16-BIT SAMPLES KEEP THEIR HIGH BYTE
+            return ((this.alpha >> 8) << 24) | ((this.red >> 8) << 16) | ((this.green >> 8) << 8) | (this.blue >> 8);
+        }
     }
 }

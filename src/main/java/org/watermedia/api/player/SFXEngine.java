@@ -15,12 +15,12 @@ import java.util.Set;
  * WATERMeDIA decodes audio, uploads sample data, and controls playback.
  * A native source handle and optional spatial controls are available for host integrations.
  * <p>
- * Engines are created through {@link PlayerAPI} factory methods and are client-side only —
+ * Engines are created through {@link PlayerAPI} factory methods and are client-side only:
  * construction throws on a server-side environment. Implementations are backend-specific:
  * OpenAL ({@link ALEngine}) binds to the context current when it is created, and every later call
  * except the pure queries ({@link #canSpeed()}, {@link #released()}, the capability tables) must run
- * with that context current on the calling thread — the player's decode thread and the sync ticker
- * included — or it throws; Java Sound ({@link JSEngine}) needs no context and is thread-safe.
+ * with that context current on the calling thread (the player's decode thread and the sync ticker
+ * included) or it throws; Java Sound ({@link JSEngine}) needs no context and is thread-safe.
  * <p>
  * {@link #release()} is idempotent and leaves the engine inert: formats and uploads are refused.
  * {@link #source()} is the native handle, 0 when the backend has none (Java Sound) or after release.
@@ -31,32 +31,6 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Maximum reasonable sample rate (covers DXD and any hi-res consumer content). */
     public static final int MAX_SAMPLE_RATE_HZ = 384_000;
 
-    /**
-     * One supported channel count and the sample types playable at it. Declared per channel
-     * count because support is not rectangular (e.g. OpenAL plays {@link SampleType#DBL} only
-     * in mono/stereo, never multichannel).
-     *
-     * @param channels audio channel count (1..8)
-     * @param types    sample types playable at this channel count, never empty
-     */
-    public record ChannelSupport(int channels, Set<SampleType> types) {
-
-        public ChannelSupport {
-            if (channels < 1 || channels > 8) throw new IllegalArgumentException("Channel count must be 1..8, got " + channels);
-            if (types == null || types.isEmpty()) throw new IllegalArgumentException("A channel count needs at least one sample type");
-            types = Collections.unmodifiableSet(EnumSet.copyOf(types));
-        }
-
-        public ChannelSupport(final int channels, final SampleType... types) {
-            this(channels, types.length == 0 ? EnumSet.noneOf(SampleType.class) : EnumSet.copyOf(List.of(types)));
-        }
-
-        /** Whether {@code type} is playable at this channel count. */
-        public boolean supports(final SampleType type) {
-            return type != null && this.types.contains(type);
-        }
-    }
-
     // CONFIGURED LAYOUT, WRITTEN BY THE PRODUCER THREAD AND READ FROM ANY HOST THREAD
     volatile int source;
     volatile SampleType sampleType;
@@ -66,10 +40,14 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     volatile float volume = 1.0f;
     volatile boolean released;
 
-    // SINGLE ENFORCEMENT POINT: EVERY AUDIO ENGINE CONSTRUCTION PASSES THROUGH HERE.
+    // SINGLE ENFORCEMENT POINT: EVERY AUDIO ENGINE CONSTRUCTION PASSES THROUGH HERE
     SFXEngine() {
         WaterMedia.checkIsClientSideOrThrow(this.getClass());
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** Returns a copy of the channel-support table, one entry per supported channel count: the only combinations the engine plays. */
     public abstract ChannelSupport[] supportedChannels();
@@ -79,9 +57,8 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
 
     /** Support entry for exactly {@code channels}, or {@code null} when this backend does not expose that channel count. */
     public final ChannelSupport channelSupport(final int channels) {
-        for (final ChannelSupport entry: this.supportedChannels()) {
+        for (final ChannelSupport entry: this.supportedChannels())
             if (entry.channels() == channels) return entry;
-        }
         return null;
     }
 
@@ -99,17 +76,6 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         }
         return best;
     }
-
-    // RECONFIGURES THE SOURCE FOR A COMBINATION OF THE CHANNEL-SUPPORT TABLE AND A RATE (MIN_SAMPLE_RATE_HZ..MAX_SAMPLE_RATE_HZ)
-    // BEFORE THE FIRST UPLOAD AND ON EVERY CHANGE; FALSE WHEN UNSUPPORTED OR RELEASED. A LAYOUT CHANGE DROPS QUEUED AUDIO
-    final boolean format(final SampleType type, final int channels, final int sampleRate) {
-        if (this.released || sampleRate < MIN_SAMPLE_RATE_HZ || sampleRate > MAX_SAMPLE_RATE_HZ) return false;
-        final ChannelSupport support = this.channelSupport(channels);
-        return support != null && support.supports(type) && this.apply(type, channels, sampleRate);
-    }
-
-    // BACKEND RECONFIGURATION FOR A TABLE COMBINATION THE BASE ALREADY VALIDATED; STREAM BACKENDS REOPEN THEIR LINE
-    abstract boolean apply(final SampleType type, final int channels, final int sampleRate);
 
     /** Current source handle, 0 when the backend has none or the engine was released. */
     public int source() { return this.source; }
@@ -141,29 +107,8 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Current gain: 0 = silent, 1 = full. */
     public float volume() { return this.volume; }
 
-    // PAUSES PLAYBACK
-    abstract void pause();
-
-    // STARTS OR RESUMES PLAYBACK
-    abstract void play();
-
     /** Whether the player can change the playback rate through this backend; a pure query any thread can ask every frame. */
     public abstract boolean canSpeed();
-
-    // SETS THE PLAYBACK RATE (PITCH); FALSE WHEN THE BACKEND CANNOT CHANGE SPEED, PLAYBACK THEN STAYS AT 1.0x AND THE
-    // PLAYER MUST NOT SCALE ITS TIMELINE
-    abstract boolean speed(final float speed);
-
-    // SETS THE GAIN: 0 = SILENT, 1 = FULL. A NEGATIVE OR NON-FINITE VALUE IS A CALLER BUG; IGNORED ONCE RELEASED
-    final void volume(final float volume) {
-        if (!Float.isFinite(volume) || volume < 0) throw new IllegalArgumentException("Volume must be finite and nonnegative");
-        if (this.released) return;
-        this.volume = volume;
-        this.gain();
-    }
-
-    // APPLIES volume TO THE BACKEND; IT ALWAYS READS THE LATEST VALUE, SO CONCURRENT CALLS SETTLE ON THE LAST WRITE
-    abstract void gain();
 
     /** Releases all resources of the source; later calls are no-ops. OpenAL needs its original context current here as well. */
     public final void release() {
@@ -182,8 +127,22 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         }
     }
 
-    // BACKEND TEARDOWN; A THROW THAT KEEPS THE SOURCE LEAVES THE ENGINE LIVE SO THE CALLER CAN RETRY ON THE RIGHT THREAD
-    abstract void destroy();
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    // THE OWNING PLAYER DRIVES EVERY MEMBER OF THIS SECTION FROM ONE PRODUCER THREAD
+
+    // RECONFIGURES THE SOURCE FOR A COMBINATION OF THE CHANNEL-SUPPORT TABLE AND A RATE (MIN_SAMPLE_RATE_HZ..MAX_SAMPLE_RATE_HZ)
+    // BEFORE THE FIRST UPLOAD AND ON EVERY CHANGE; FALSE WHEN UNSUPPORTED OR RELEASED. A LAYOUT CHANGE DROPS QUEUED AUDIO
+    final boolean format(final SampleType type, final int channels, final int sampleRate) {
+        if (this.released || sampleRate < MIN_SAMPLE_RATE_HZ || sampleRate > MAX_SAMPLE_RATE_HZ) return false;
+        final ChannelSupport support = this.channelSupport(channels);
+        return support != null && support.supports(type) && this.apply(type, channels, sampleRate);
+    }
+
+    // BACKEND RECONFIGURATION FOR A TABLE COMBINATION THE BASE ALREADY VALIDATED; STREAM BACKENDS REOPEN THEIR LINE
+    abstract boolean apply(final SampleType type, final int channels, final int sampleRate);
 
     // QUEUES PCM IN THE LAST format(), READING [position, limit) WITHOUT MOVING position: FALSE WHEN FULL (RETRY LATER),
     // UNCONFIGURED OR RELEASED. A HEAP, EMPTY OR FRAME-MISALIGNED CHUNK IS A CALLER BUG ON EVERY BACKEND
@@ -204,6 +163,59 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     // MILLISECONDS OF UPLOADED AUDIO NOT YET AUDIBLE (DEVICE LATENCY INCLUDED WHEN THE BACKEND EXPOSES IT); 0 WHEN NOTHING
     // PENDS. THE AUDIBLE POSITION IS endPtsOfLastUpload - pendingMs()
     abstract long pendingMs();
+
+    // PAUSES PLAYBACK
+    abstract void pause();
+
+    // STARTS OR RESUMES PLAYBACK
+    abstract void play();
+
+    // SETS THE PLAYBACK RATE (PITCH); FALSE WHEN THE BACKEND CANNOT CHANGE SPEED, PLAYBACK THEN STAYS AT 1.0x AND THE
+    // PLAYER MUST NOT SCALE ITS TIMELINE
+    abstract boolean speed(final float speed);
+
+    // SETS THE GAIN: 0 = SILENT, 1 = FULL. A NEGATIVE OR NON-FINITE VALUE IS A CALLER BUG; IGNORED ONCE RELEASED
+    final void volume(final float volume) {
+        if (!Float.isFinite(volume) || volume < 0) throw new IllegalArgumentException("Volume must be finite and nonnegative");
+        if (this.released) return;
+        this.volume = volume;
+        this.gain();
+    }
+
+    // APPLIES volume TO THE BACKEND; IT ALWAYS READS THE LATEST VALUE, SO CONCURRENT CALLS SETTLE ON THE LAST WRITE
+    abstract void gain();
+
+    // BACKEND TEARDOWN; A THROW THAT KEEPS THE SOURCE LEAVES THE ENGINE LIVE SO THE CALLER CAN RETRY ON THE RIGHT THREAD
+    abstract void destroy();
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    /**
+     * One supported channel count and the sample types playable at it. Declared per channel
+     * count because support is not rectangular (e.g. OpenAL plays {@link SampleType#DBL} only
+     * in mono/stereo, never multichannel).
+     *
+     * @param channels audio channel count (1..8)
+     * @param types    sample types playable at this channel count, never empty
+     */
+    public record ChannelSupport(int channels, Set<SampleType> types) {
+        public ChannelSupport {
+            if (channels < 1 || channels > 8) throw new IllegalArgumentException("Channel count must be 1..8, got " + channels);
+            if (types == null || types.isEmpty()) throw new IllegalArgumentException("A channel count needs at least one sample type");
+            types = Collections.unmodifiableSet(EnumSet.copyOf(types));
+        }
+
+        public ChannelSupport(final int channels, final SampleType... types) {
+            this(channels, types.length == 0 ? EnumSet.noneOf(SampleType.class) : EnumSet.copyOf(List.of(types)));
+        }
+
+        /** Whether {@code type} is playable at this channel count. */
+        public boolean supports(final SampleType type) {
+            return type != null && this.types.contains(type);
+        }
+    }
 
     /**
      * World position and attenuation for a mono sound source. Distances use the host's OpenAL distance model.

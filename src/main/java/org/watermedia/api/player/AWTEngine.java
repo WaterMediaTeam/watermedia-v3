@@ -21,10 +21,18 @@ public final class AWTEngine extends SWEngine {
         super(onFrame);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /** The current frame image; changes on a resolution change, so re-read it after each frame. */
     public BufferedImage image() {
         return this.image;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     void allocSurface(final int width, final int height, final ByteBuffer bgra) {
@@ -39,7 +47,7 @@ public final class AWTEngine extends SWEngine {
         final ByteBuffer b = this.bgra;
         if (px == null || b == null) return;
         if (b.order() == ByteOrder.LITTLE_ENDIAN) {
-            // BGRA BYTES READ AS A NATIVE (LE) INT ARE EXACTLY 0xAARRGGBB == TYPE_INT_ARGB — BULK COPY
+            // BGRA BYTES READ AS A NATIVE (LE) INT ARE EXACTLY 0xAARRGGBB == TYPE_INT_ARGB: BULK COPY
             b.clear();
             b.asIntBuffer().get(px);
         } else {

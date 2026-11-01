@@ -31,6 +31,10 @@ public final class SectionHead extends Element<SectionHead> {
         this.label(label);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public SectionHead label(final String value) {
         final String source = value == null ? "" : value;
         if (!source.equals(this.labelSource)) {
@@ -52,16 +56,24 @@ public final class SectionHead extends Element<SectionHead> {
         return this;
     }
 
+    /** Paints a heading whose row starts at ({@code x}, {@code y}); the count is cut to fit {@code width}. */
+    public static void draw(final Canvas canvas, final String label, final String count, final int x, final int y, final int width) {
+        paint(canvas, label, count, x, y, width, 3, 21, 18, 12);
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @Override
     protected void onDraw(final Canvas canvas) {
         if (this.compact) paint(canvas, this.label, this.count, this.left, this.top, this.measuredWidth, 2, 20, 12, 8);
         else draw(canvas, this.label, this.count, this.left, this.top, this.measuredWidth);
     }
 
-    /** Paints a heading whose row starts at ({@code x}, {@code y}); the count is cut to fit {@code width}. */
-    public static void draw(final Canvas canvas, final String label, final String count, final int x, final int y, final int width) {
-        paint(canvas, label, count, x, y, width, 3, 21, 18, 12);
-    }
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
 
     private static void paint(final Canvas canvas, final String label, final String count, final int x, final int y, final int width,
                               final int tabTop, final int tabH, final int labelX, final int countGap) {

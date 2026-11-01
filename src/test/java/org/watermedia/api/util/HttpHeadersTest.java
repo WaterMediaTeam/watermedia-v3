@@ -21,7 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("HttpHeaders")
 public class HttpHeadersTest {
-
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Validation")
     class ValidationTests {

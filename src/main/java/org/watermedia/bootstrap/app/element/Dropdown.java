@@ -20,14 +20,6 @@ import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
  */
 public final class Dropdown extends Element<Dropdown> {
 
-    /** How the option list is presented when the control is clicked. */
-    public enum Mode {
-        /** A floating menu anchored to the control. */
-        ATTACH,
-        /** A centered picker {@link Dialog}. */
-        DIALOG
-    }
-
     private static final int ROW_H = 26;
     private static final int PAD = Theme.SPACE_XS;
     private static final int ARROW_ZONE = 26;
@@ -49,6 +41,10 @@ public final class Dropdown extends Element<Dropdown> {
     public Dropdown() {
         this.height = Theme.CONTROL;
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     public Dropdown items(final List<String> values) {
         this.items = values == null ? new ArrayList<>() : new ArrayList<>(values);
@@ -109,6 +105,19 @@ public final class Dropdown extends Element<Dropdown> {
     }
 
     @Override
+    public boolean dispatchClick(final double mx, final double my) {
+        if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
+        // WHILE ATTACH IS OPEN THE POPUP INTERCEPTS THIS CLICK ITSELF; THE TOGGLE HERE ONLY OPENS
+        if (this.isOpen()) this.close();
+        else this.open();
+        return true;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         this.contentHeight = Theme.CONTROL;
         this.contentWidth = 10 + Math.max(40, this.widestItemWidth()) + ARROW_ZONE;
@@ -146,14 +155,9 @@ public final class Dropdown extends Element<Dropdown> {
                 open ? Theme.BORDER_ACTIVE : Theme.BORDER_HAIRLINE);
     }
 
-    @Override
-    public boolean dispatchClick(final double mx, final double my) {
-        if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
-        // WHILE ATTACH IS OPEN THE POPUP INTERCEPTS THIS CLICK ITSELF; THE TOGGLE HERE ONLY OPENS
-        if (this.isOpen()) this.close();
-        else this.open();
-        return true;
-    }
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private boolean isOpen() {
         return this.popup != null || this.pickerDialog != null;
@@ -238,9 +242,18 @@ public final class Dropdown extends Element<Dropdown> {
     }
 
     // ==========================================================================
-    // ATTACH MENU: A FULL-LAYER MODAL THAT DRAWS AN ANCHORED PANEL AND WINS INPUT WHILE OPEN
+    // NESTED TYPES
     // ==========================================================================
 
+    /** How the option list is presented when the control is clicked. */
+    public enum Mode {
+        /** A floating menu anchored to the control. */
+        ATTACH,
+        /** A centered picker {@link Dialog}. */
+        DIALOG
+    }
+
+    // ATTACH MENU: A FULL-LAYER MODAL THAT DRAWS AN ANCHORED PANEL AND WINS INPUT WHILE OPEN
     private final class Popup extends Element<Popup> {
 
         private final long openedAt = System.currentTimeMillis();

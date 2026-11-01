@@ -26,7 +26,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  */
 @DisplayName("FFmpeg pipeline queues")
 public class QueueLifecycleTest {
-
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Construction")
     class Construction {

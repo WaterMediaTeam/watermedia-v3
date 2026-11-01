@@ -24,29 +24,6 @@ import java.util.TreeSet;
  * its mutators then throw, and {@link #HttpHeaders(HttpHeaders) copying} it yields a mutable bag again.
  */
 public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
-    /** One header field: an HTTP token name and a value free of control characters. */
-    public record Entry(String name, String value) {
-        public Entry {
-            if (name == null || value == null) throw new IllegalArgumentException("Header name and value are required");
-            if (name.isEmpty()) throw new IllegalArgumentException("Header name cannot be empty");
-            for (int i = 0; i < name.length(); i++) {
-                final char c = name.charAt(i);
-                if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && "!#$%&'*+-.^_`|~".indexOf(c) < 0)
-                    throw new IllegalArgumentException("Header name must be an HTTP token");
-            }
-            // RAW NATIVE CONSUMERS REQUIRE THE SAME FIELD BOUNDARIES AS HTTP CONNECTIONS.
-            for (int i = 0; i < value.length(); i++) {
-                final char c = value.charAt(i);
-                if ((c < 0x20 && c != '\t') || c == 0x7f)
-                    throw new IllegalArgumentException("Header value contains a prohibited control character");
-            }
-        }
-
-        // NAME ONLY: LOGGED SOURCES MUST NEVER PRINT COOKIE OR AUTHORIZATION VALUES
-        @Override
-        public String toString() { return this.name; }
-    }
-
     private List<Entry> entries = new ArrayList<>();
 
     /** Creates an empty, mutable bag. */
@@ -57,12 +34,9 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         if (other != null) this.entries.addAll(other.entries);
     }
 
-    /** Makes this bag immutable: every later mutator throws {@link UnsupportedOperationException}. */
-    public HttpHeaders freeze() {
-        this.entries = Collections.unmodifiableList(this.entries);
-        return this;
-    }
-
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Creates the default bag platforms stamp on each {@link Platform.Source}: WaterMedia User-Agent, {@link NetRequest#ACCEPT_MEDIA} and a Referer from {@code uri}'s origin. */
     public static HttpHeaders defaults(final URI uri) {
         final HttpHeaders h = new HttpHeaders().set("User-Agent", WaterMedia.USER_AGENT).set("Accept", NetRequest.ACCEPT_MEDIA);
@@ -71,10 +45,10 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         return h;
     }
 
-    // ORIGIN-SHAPED REFERER scheme://host[:port]/ KEEPING AN EXPLICIT PORT, OR NULL WITHOUT A HOST
-    static String referer(final URI uri) {
-        if (uri == null || uri.getHost() == null) return null;
-        return uri.getScheme() + "://" + uri.getHost() + (uri.getPort() != -1 ? ":" + uri.getPort() : "") + "/";
+    /** Makes this bag immutable: every later mutator throws {@link UnsupportedOperationException}. */
+    public HttpHeaders freeze() {
+        this.entries = Collections.unmodifiableList(this.entries);
+        return this;
     }
 
     /** Replaces every value of {@code name}, matched case-insensitively, with a single entry. */
@@ -142,6 +116,23 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
     /** Immutable snapshot of every entry, values included, in insertion order. */
     public List<Entry> entries() { return List.copyOf(this.entries); }
 
+    /** Serializes the bag as {@code "Name: Value\r\n"} lines, the form of FFmpeg's {@code headers} option; empty without entries. */
+    public String toRawString() {
+        if (this.entries.isEmpty()) return "";
+        final StringBuilder sb = new StringBuilder(this.entries.size() * 32);
+        for (final Entry e: this.entries) sb.append(e.name).append(": ").append(e.value).append("\r\n");
+        return sb.toString();
+    }
+
+    @Override
+    public Iterator<Entry> iterator() { return Collections.unmodifiableList(this.entries).iterator(); }
+
+    @Override
+    public String toString() { return "HttpHeaders" + this.entries; }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // REPEATED HEADER NAMES USE ADD AFTER THE FIRST VALUE SO NONE ARE LOST.
     void writeTo(final URLConnection conn) {
         final Set<String> seen = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
@@ -149,6 +140,15 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
             if (seen.add(e.name)) conn.setRequestProperty(e.name, e.value);
             else conn.addRequestProperty(e.name, e.value);
         }
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // ORIGIN-SHAPED REFERER scheme://host[:port]/ KEEPING AN EXPLICIT PORT, OR NULL WITHOUT A HOST
+    static String referer(final URI uri) {
+        if (uri == null || uri.getHost() == null) return null;
+        return uri.getScheme() + "://" + uri.getHost() + (uri.getPort() != -1 ? ":" + uri.getPort() : "") + "/";
     }
 
     // THE STATUS LINE HAS NO HEADER NAME AND IS NOT PART OF THE SNAPSHOT.
@@ -159,26 +159,34 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         for (final var entry: fields.entrySet()) {
             final String name = entry.getKey();
             if (name == null) continue;
-            for (final String value: entry.getValue()) {
-                if (value != null) out.add(name, value);
-            }
+            for (final String value: entry.getValue()) if (value != null) out.add(name, value);
         }
         return out;
     }
 
-    /** Serializes the bag as {@code "Name: Value\r\n"} lines, the form of FFmpeg's {@code headers} option; empty without entries. */
-    public String toRawString() {
-        if (this.entries.isEmpty()) return "";
-        final StringBuilder sb = new StringBuilder(this.entries.size() * 32);
-        for (final Entry e: this.entries) {
-            sb.append(e.name).append(": ").append(e.value).append("\r\n");
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /** One header field: an HTTP token name and a value free of control characters. */
+    public record Entry(String name, String value) {
+        public Entry {
+            if (name == null || value == null) throw new IllegalArgumentException("Header name and value are required");
+            if (name.isEmpty()) throw new IllegalArgumentException("Header name cannot be empty");
+            for (int i = 0; i < name.length(); i++) {
+                final char c = name.charAt(i);
+                if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && "!#$%&'*+-.^_`|~".indexOf(c) < 0)
+                    throw new IllegalArgumentException("Header name must be an HTTP token");
+            }
+            // RAW NATIVE CONSUMERS REQUIRE THE SAME FIELD BOUNDARIES AS HTTP CONNECTIONS.
+            for (int i = 0; i < value.length(); i++) {
+                final char c = value.charAt(i);
+                if ((c < 0x20 && c != '\t') || c == 0x7f)
+                    throw new IllegalArgumentException("Header value contains a prohibited control character");
+            }
         }
-        return sb.toString();
+
+        // NAME ONLY: LOGGED SOURCES MUST NEVER PRINT COOKIE OR AUTHORIZATION VALUES
+        @Override
+        public String toString() { return this.name; }
     }
-
-    @Override
-    public Iterator<Entry> iterator() { return Collections.unmodifiableList(this.entries).iterator(); }
-
-    @Override
-    public String toString() { return "HttpHeaders" + this.entries; }
 }

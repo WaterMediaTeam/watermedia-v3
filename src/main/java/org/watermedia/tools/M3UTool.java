@@ -30,8 +30,9 @@ public final class M3UTool {
 
     private M3UTool() {}
 
-    // ==== ENTRY POINTS ====
-
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Fetches and parses the playlist at {@code uri} with WaterMedia's User-Agent; see {@link #parse}. */
     public static Playlist fetch(final URI uri) throws IOException {
         return fetch(uri, null);
@@ -91,68 +92,9 @@ public final class M3UTool {
         }
     }
 
-    // ==== PLAYLIST TYPES ====
-
-    /** A parsed playlist of one of the three M3U shapes. */
-    public sealed interface Playlist permits Master, Media, Iptv {
-        /** The URI this playlist was parsed from; entry URLs are already resolved against it. */
-        URI source();
-
-        /** Lower-case discriminator ({@code "master"}, {@code "media"}, {@code "iptv"}). */
-        String kind();
-    }
-
-    /** HLS master playlist: a quality ladder ({@code variants}) plus alternate {@code renditions}. */
-    public record Master(URI source, int version, List<Variant> variants, List<Rendition> renditions) implements Playlist {
-        @Override public String kind() { return "master"; }
-    }
-
-    /** HLS media playlist: ordered {@code segments} plus live/VOD timing metadata. */
-    public record Media(URI source, int version, List<Segment> segments, double targetDuration,
-                        long sequence, boolean live, boolean vod, double totalDuration) implements Playlist {
-        @Override public String kind() { return "media"; }
-    }
-
-    /** Flat IPTV catalog: a list of independent {@code channels}. */
-    public record Iptv(URI source, List<Channel> channels) implements Playlist {
-        @Override public String kind() { return "iptv"; }
-    }
-
-    // ==== DATA RECORDS ====
-
-    /** One rendition of a {@link Master}'s quality ladder. URL is absolute. */
-    public record Variant(URI uri, long bandwidth, int width, int height, double fps,
-                          String codecs, String videoGroup, String audioGroup, String name) {
-        /** A metadata-less variant that just points at a stream URL (media playlist / fallback). */
-        public static Variant self(final URI uri) {
-            return new Variant(uri, 0L, 0, 0, 0d, null, null, null, null);
-        }
-    }
-
-    /** One segment of a {@link Media} playlist. URL is absolute. */
-    public record Segment(URI uri, double duration, String title, long sequence, String dateTime) {}
-
-    /** An alternate {@code #EXT-X-MEDIA} rendition (audio/subtitle/video group); {@code preferred} mirrors {@code DEFAULT=YES}. URI may be null. */
-    public record Rendition(String type, String groupId, String name, String language, URI uri,
-                            boolean preferred, boolean autoSelect) {}
-
-    /**
-     * A single channel entry parsed from an IPTV M3U.
-     *
-     * @param title       trailing label, or {@code tvg-name}/URL when missing
-     * @param uri         the stream URI (absolute)
-     * @param tvgId       optional {@code tvg-id} (EPG cross-reference)
-     * @param tvgName     optional {@code tvg-name}
-     * @param tvgLogo     optional {@code tvg-logo} (channel icon URL, passed through verbatim)
-     * @param tvgCountry  optional {@code tvg-country} ISO code
-     * @param tvgGroup    optional {@code group-title}
-     * @param attrs       unmodifiable view of every raw {@code key="value"} attribute, lower-cased
-     */
-    public record Channel(String title, URI uri, String tvgId, String tvgName, String tvgLogo,
-                          String tvgCountry, String tvgGroup, Map<String, String> attrs) {}
-
-    // ==== PARSERS: ONE indexOf PASS OVER THE BODY EACH, NO REGEX SPLIT OR String[] ====
-
+    // ==========================================================================
+    // PARSERS: ONE indexOf PASS OVER THE BODY EACH, NO REGEX SPLIT OR String[]
+    // ==========================================================================
     private static Master parseMaster(final String content, final URI source) {
         final List<Variant> variants = new ArrayList<>();
         final List<Rendition> renditions = new ArrayList<>();
@@ -323,7 +265,7 @@ public final class M3UTool {
 
             if (line.charAt(0) == '#') continue;
 
-            // PAYLOAD LINE — FLUSH THE PENDING ENTRY (OR A BARE-URL ONE)
+            // PAYLOAD LINE: FLUSH THE PENDING ENTRY (OR A BARE-URL ONE)
             final URI url = resolve(source, line, warned);
             if (url != null) {
                 final Map<String, String> a = attrs != null ? attrs : Map.of();
@@ -343,7 +285,9 @@ public final class M3UTool {
         return new Iptv(source, List.copyOf(channels));
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
     // KEY=VALUE / KEY="VALUE" PAIRS OF A TAG BODY; IPTV KEYS ARE LOWER-CASED FOR STABLE tvg-* LOOKUPS
     private static Map<String, String> attributes(final String body, final boolean lower) {
         final Map<String, String> attrs = new HashMap<>();
@@ -369,4 +313,66 @@ public final class M3UTool {
         warned[0] = true;
         return null;
     }
+
+    // ==========================================================================
+    // NESTED TYPES: PLAYLISTS
+    // ==========================================================================
+    /** A parsed playlist of one of the three M3U shapes. */
+    public sealed interface Playlist permits Master, Media, Iptv {
+        /** The URI this playlist was parsed from; entry URLs are already resolved against it. */
+        URI source();
+
+        /** Lower-case discriminator ({@code "master"}, {@code "media"}, {@code "iptv"}). */
+        String kind();
+    }
+
+    /** HLS master playlist: a quality ladder ({@code variants}) plus alternate {@code renditions}. */
+    public record Master(URI source, int version, List<Variant> variants, List<Rendition> renditions) implements Playlist {
+        @Override public String kind() { return "master"; }
+    }
+
+    /** HLS media playlist: ordered {@code segments} plus live/VOD timing metadata. */
+    public record Media(URI source, int version, List<Segment> segments, double targetDuration,
+                        long sequence, boolean live, boolean vod, double totalDuration) implements Playlist {
+        @Override public String kind() { return "media"; }
+    }
+
+    /** Flat IPTV catalog: a list of independent {@code channels}. */
+    public record Iptv(URI source, List<Channel> channels) implements Playlist {
+        @Override public String kind() { return "iptv"; }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES: DATA RECORDS
+    // ==========================================================================
+    /** One rendition of a {@link Master}'s quality ladder. URL is absolute. */
+    public record Variant(URI uri, long bandwidth, int width, int height, double fps,
+                          String codecs, String videoGroup, String audioGroup, String name) {
+        /** A metadata-less variant that just points at a stream URL (media playlist / fallback). */
+        public static Variant self(final URI uri) {
+            return new Variant(uri, 0L, 0, 0, 0d, null, null, null, null);
+        }
+    }
+
+    /** One segment of a {@link Media} playlist. URL is absolute. */
+    public record Segment(URI uri, double duration, String title, long sequence, String dateTime) {}
+
+    /** An alternate {@code #EXT-X-MEDIA} rendition (audio/subtitle/video group); {@code preferred} mirrors {@code DEFAULT=YES}. URI may be null. */
+    public record Rendition(String type, String groupId, String name, String language, URI uri,
+                            boolean preferred, boolean autoSelect) {}
+
+    /**
+     * A single channel entry parsed from an IPTV M3U.
+     *
+     * @param title       trailing label, or {@code tvg-name}/URL when missing
+     * @param uri         the stream URI (absolute)
+     * @param tvgId       optional {@code tvg-id} (EPG cross-reference)
+     * @param tvgName     optional {@code tvg-name}
+     * @param tvgLogo     optional {@code tvg-logo} (channel icon URL, passed through verbatim)
+     * @param tvgCountry  optional {@code tvg-country} ISO code
+     * @param tvgGroup    optional {@code group-title}
+     * @param attrs       unmodifiable view of every raw {@code key="value"} attribute, lower-cased
+     */
+    public record Channel(String title, URI uri, String tvgId, String tvgName, String tvgLogo,
+                          String tvgCountry, String tvgGroup, Map<String, String> attrs) {}
 }

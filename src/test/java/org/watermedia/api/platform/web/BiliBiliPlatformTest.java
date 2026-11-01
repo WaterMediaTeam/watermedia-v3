@@ -29,6 +29,10 @@ public class BiliBiliPlatformTest {
     private static final String FINGERPRINT = "buvid3=1E89B18A-7FBC-CC1B-368C-23357A901D0D30789infoc; buvid4=165E753D-F9FF-10B8-DB77-9FE95C44872B30789-026110120-e21OmBqK6Dt+Ule0JaNFRw==";
     private static final String SESSION = "SESSDATA=abc123; bili_jct=def456; DedeUserID=789";
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("Claims")
     class Claims {

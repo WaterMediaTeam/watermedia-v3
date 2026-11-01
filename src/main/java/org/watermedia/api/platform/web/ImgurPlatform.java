@@ -26,6 +26,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class ImgurPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(ImgurPlatform.class.getSimpleName());
     public static final String NAME = "Imgur";
+    private static final String[] HOSTS = { "imgur.com", "www.imgur.com", "m.imgur.com" };
     private static final String API_URL = "https://api.imgur.com/3";
     private static final String API_KEY = "685cdf74b1229b9";
 
@@ -34,7 +35,10 @@ public final class ImgurPlatform implements Platform {
     private static final String GALLERY_URL = API_URL + "/gallery/%s?client_id=" + API_KEY;
     private static final String ALBUM_URL = API_URL + "/album/%s?client_id=" + API_KEY;
     private static final String SEARCH_URL = API_URL + "/gallery/search/top/all/0?client_id=" + API_KEY + "&q=%s";
-    private static final String[] HOSTS = { "imgur.com", "www.imgur.com", "m.imgur.com" };
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -49,7 +53,7 @@ public final class ImgurPlatform implements Platform {
 
         final var pathSplit = path.substring(1).split("/");
 
-        // POST KINDS BY PATH: /a/{id} IS AN ALBUM (MAY BE HIDDEN — MISSING FROM THE GALLERY API),
+        // POST KINDS BY PATH: /a/{id} IS AN ALBUM (MAY BE HIDDEN, SO MISSING FROM THE GALLERY API),
         // /gallery/{id} AND /t/{tag}/{id} ARE GALLERY POSTS; ANYTHING ELSE IS A BARE IMAGE ID
         final boolean isAlbum = path.startsWith("/a/");
         final boolean isGallery = path.startsWith("/gallery/") || (pathSplit.length >= 3 && pathSplit[0].equals("t"));
@@ -69,7 +73,7 @@ public final class ImgurPlatform implements Platform {
                 final String requestUrl = String.format(isAlbum ? ALBUM_URL : GALLERY_URL, id);
 
                 // GALLERY POSTS COME IN TWO SHAPES: ALBUMS CARRY data.images[] WHILE SINGLE-IMAGE
-                // POSTS CARRY THE IMAGE FIELDS DIRECTLY ON data — BIND THE ENVELOPE FIRST, THEN PICK
+                // POSTS CARRY THE IMAGE FIELDS DIRECTLY ON data: BIND THE ENVELOPE FIRST, THEN PICK
                 final JsonObject root = WebRequests.fetchJson(NAME, requestUrl, JsonObject.class);
                 final GalleryResponse res = JSONTool.parse(root, GalleryResponse.class);
                 if (!res.success() || res.data() == null)
@@ -133,8 +137,8 @@ public final class ImgurPlatform implements Platform {
         for (final SearchItem item: res.data()) {
             if (out.size() >= limit) break;
             if (item.id() == null) continue;
-            // ALBUM POSTS HAVE NO IMAGE OF THEIR OWN — THUMBNAIL THE COVER; SINGLE IMAGES THUMBNAIL THEMSELVES.
-            // THE 'm' SUFFIX (MEDIUM, 320px) GOES BEFORE THE EXTENSION AND RETURNS A STATIC FRAME EVEN FOR GIFS.
+            // ALBUM POSTS HAVE NO IMAGE OF THEIR OWN, SO THE COVER THUMBNAILS THEM; SINGLE IMAGES THUMBNAIL THEMSELVES.
+            // THE 'm' SUFFIX (MEDIUM, 320px) GOES BEFORE THE EXTENSION AND RETURNS A STATIC FRAME EVEN FOR GIFS
             final String thumbId = item.isAlbum() && item.cover() != null ? item.cover() : item.id();
             final URI page = DataTool.uri("https://imgur.com/gallery/" + item.id());
             if (page == null) continue;
@@ -142,6 +146,10 @@ public final class ImgurPlatform implements Platform {
         }
         return out;
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private Source entry(final Image img, final String fallbackTitle, final String accountUrl, final URI uri) throws PlatformException {
         if (Boolean.TRUE.equals(img.nsfw()) && !WaterMediaConfig.platforms.allowMatureContent)
@@ -173,7 +181,11 @@ public final class ImgurPlatform implements Platform {
                 null, null);
     }
 
-    // DATA RECORDS — BIND ONLY THE CONSUMED FIELDS: IMGUR SENDS null FOR MANY NUMERIC FIELDS
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    // DATA RECORDS BIND ONLY THE CONSUMED FIELDS: IMGUR SENDS null FOR MANY NUMERIC FIELDS
     // DEPENDING ON THE ENDPOINT, AND A null INTO A PRIMITIVE RECORD COMPONENT MAKES GSON THROW
     private record ImageResponse(Image data, boolean success, int status) {}
     private record GalleryResponse(Gallery data, boolean success, int status) {}

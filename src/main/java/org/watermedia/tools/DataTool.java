@@ -32,6 +32,9 @@ public final class DataTool {
 
     private DataTool() {}
 
+    // ==========================================================================
+    // PUBLIC API: BYTES, TEXT AND REDACTION
+    // ==========================================================================
     public static boolean startsWith(final ByteBuffer buffer, final int offset, final byte[] header) {
         if (buffer.limit() - offset < header.length) return false;
         for (int i = 0; i < header.length; i++) {
@@ -48,6 +51,99 @@ public final class DataTool {
         return false;
     }
 
+    // UNSIGNED FIELD READS AT AN ABSOLUTE OFFSET IN EITHER BYTE ORDER; THE JIT INLINES THEM INTO THE PARSERS
+    public static int u16(final ByteBuffer buffer, final int offset, final ByteOrder order) {
+        final int a = buffer.get(offset) & 0xFF;
+        final int b = buffer.get(offset + 1) & 0xFF;
+        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) : (a << 8) | b;
+    }
+
+    public static int u24(final ByteBuffer buffer, final int offset, final ByteOrder order) {
+        final int a = buffer.get(offset) & 0xFF;
+        final int b = buffer.get(offset + 1) & 0xFF;
+        final int c = buffer.get(offset + 2) & 0xFF;
+        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) | (c << 16) : (a << 16) | (b << 8) | c;
+    }
+
+    public static long u32(final ByteBuffer buffer, final int offset, final ByteOrder order) {
+        final long a = buffer.get(offset) & 0xFF;
+        final long b = buffer.get(offset + 1) & 0xFF;
+        final long c = buffer.get(offset + 2) & 0xFF;
+        final long d = buffer.get(offset + 3) & 0xFF;
+        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) | (c << 16) | (d << 24) : (a << 24) | (b << 16) | (c << 8) | d;
+    }
+
+    /** Converts a configuration value in megabytes (MiB) to bytes. */
+    public static long megabytes(final long megabytes) {
+        return megabytes << 20;
+    }
+
+    // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
+    public static boolean equalsIgnoreCase(final String a, final String b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        return a.equalsIgnoreCase(b);
+    }
+
+    public static boolean equalsAnyIgnoreCase(final String o, final String... arr) {
+        for (final String element: arr)
+            if (element != null && element.equalsIgnoreCase(o)) return true;
+        return false;
+    }
+
+    /** Jaro-Winkler similarity of two texts from 0 (nothing in common) to 1 (equal ignoring case); one keystroke apart scores above 0.8. */
+    public static float similarity(final String a, final String b) {
+        if (a == null || b == null) throw new IllegalArgumentException("Both texts are required");
+        final int la = a.length(), lb = b.length();
+        if (la == 0 || lb == 0) return la == lb ? 1f : 0f;
+        // LETTERS MATCH WHEN THEY SIT WITHIN HALF THE LONGER LENGTH OF EACH OTHER, EACH LETTER AT MOST ONCE
+        final int window = Math.max(0, Math.max(la, lb) / 2 - 1);
+        final boolean[] matchedA = new boolean[la];
+        final boolean[] matchedB = new boolean[lb];
+        int matches = 0;
+        for (int i = 0; i < la; i++) {
+            final char c = Character.toLowerCase(a.charAt(i));
+            for (int j = Math.max(0, i - window), end = Math.min(lb, i + window + 1); j < end; j++) {
+                if (matchedB[j] || Character.toLowerCase(b.charAt(j)) != c) continue;
+                matchedA[i] = matchedB[j] = true;
+                matches++;
+                break;
+            }
+        }
+        if (matches == 0) return 0f;
+        // MATCHED LETTERS OUT OF ORDER ARE TRANSPOSITIONS, EACH PAIR COSTING ONE MATCH
+        int transposed = 0;
+        for (int i = 0, j = 0; i < la; i++) {
+            if (!matchedA[i]) continue;
+            while (!matchedB[j]) j++;
+            if (Character.toLowerCase(a.charAt(i)) != Character.toLowerCase(b.charAt(j))) transposed++;
+            j++;
+        }
+        final float jaro = (matches / (float) la + matches / (float) lb + (matches - transposed / 2) / (float) matches) / 3f;
+        // UP TO FOUR LEADING LETTERS IN COMMON PULL THE SCORE TOWARDS ONE, SO A TYPO LATE IN A WORD STAYS CLOSE
+        int prefix = 0;
+        while (prefix < 4 && prefix < la && prefix < lb && Character.toLowerCase(a.charAt(prefix)) == Character.toLowerCase(b.charAt(prefix))) prefix++;
+        return jaro + prefix * 0.1f * (1f - jaro);
+    }
+
+    public static int parseInt(final String s, final int def) {
+        if (s == null) return def;
+        try { return Integer.parseInt(s.trim()); }
+        catch (final NumberFormatException e) { return def; }
+    }
+
+    public static long parseLong(final String s, final long def) {
+        if (s == null) return def;
+        try { return Long.parseLong(s.trim()); }
+        catch (final NumberFormatException e) { return def; }
+    }
+
+    public static double parseDouble(final String s, final double def) {
+        if (s == null) return def;
+        try { return Double.parseDouble(s.trim()); }
+        catch (final NumberFormatException e) { return def; }
+    }
+
     /** Parses a web URL leniently: a scheme-relative value gets https and anything malformed or not http(s) yields null. */
     public static URI uri(final String uri) {
         if (uri == null || uri.isEmpty()) return null;
@@ -57,6 +153,24 @@ public final class DataTool {
         } catch (final IllegalArgumentException e) {
             return null;
         }
+    }
+
+    // EXPIRY CARRIED BY A SIGNED CDN URL: THE FIRST expire/expires/validto/x-expires QUERY VALUE, IN EPOCH SECONDS
+    // OR MILLISECONDS, OR NULL WHEN THE URL CARRIES NONE
+    public static Instant expiry(final URI uri) {
+        final String query = uri == null ? null : uri.getRawQuery();
+        if (query == null) return null;
+        for (final String param: query.split("&")) {
+            final int eq = param.indexOf('=');
+            if (eq < 0) continue;
+            final String key = param.substring(0, eq).toLowerCase(Locale.ROOT);
+            if (!key.equals("expire") && !key.equals("expires") && !key.equals("validto") && !key.equals("x-expires")) continue;
+            // BELOW 2001 IN SECONDS IT IS A RELATIVE LIFETIME OR GARBAGE, NOT AN EPOCH; ABOVE 100 BILLION IT IS MILLISECONDS
+            final long value = parseLong(param.substring(eq + 1), -1L);
+            if (value < 1_000_000_000L) continue;
+            return value > 100_000_000_000L ? Instant.ofEpochMilli(value) : Instant.ofEpochSecond(value);
+        }
+        return null;
     }
 
     /** Masks every sensitive element in a text: URIs down to their network origin, bare JWTs, session arguments, Authorization values and secret-looking pairs. */
@@ -96,99 +210,18 @@ public final class DataTool {
         return SESSION_TRIPLE.matcher(out).replaceAll("token:" + SECRET_MASK);
     }
 
-    /** Converts a configuration value in megabytes (MiB) to bytes. */
-    public static long megabytes(final long megabytes) {
-        return megabytes << 20;
-    }
-
-    // UNSIGNED FIELD READS AT AN ABSOLUTE OFFSET IN EITHER BYTE ORDER; THE JIT INLINES THEM INTO THE PARSERS
-    public static int u16(final ByteBuffer buffer, final int offset, final ByteOrder order) {
-        final int a = buffer.get(offset) & 0xFF;
-        final int b = buffer.get(offset + 1) & 0xFF;
-        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) : (a << 8) | b;
-    }
-
-    public static int u24(final ByteBuffer buffer, final int offset, final ByteOrder order) {
-        final int a = buffer.get(offset) & 0xFF;
-        final int b = buffer.get(offset + 1) & 0xFF;
-        final int c = buffer.get(offset + 2) & 0xFF;
-        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) | (c << 16) : (a << 16) | (b << 8) | c;
-    }
-
-    public static long u32(final ByteBuffer buffer, final int offset, final ByteOrder order) {
-        final long a = buffer.get(offset) & 0xFF;
-        final long b = buffer.get(offset + 1) & 0xFF;
-        final long c = buffer.get(offset + 2) & 0xFF;
-        final long d = buffer.get(offset + 3) & 0xFF;
-        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) | (c << 16) | (d << 24) : (a << 24) | (b << 16) | (c << 8) | d;
-    }
-
-    // EXPIRY CARRIED BY A SIGNED CDN URL: THE FIRST expire/expires/validto/x-expires QUERY VALUE, IN EPOCH SECONDS
-    // OR MILLISECONDS, OR NULL WHEN THE URL CARRIES NONE
-    public static Instant expiry(final URI uri) {
-        final String query = uri == null ? null : uri.getRawQuery();
-        if (query == null) return null;
-        for (final String param: query.split("&")) {
-            final int eq = param.indexOf('=');
-            if (eq < 0) continue;
-            final String key = param.substring(0, eq).toLowerCase(Locale.ROOT);
-            if (!key.equals("expire") && !key.equals("expires") && !key.equals("validto") && !key.equals("x-expires")) continue;
-            // BELOW 2001 IN SECONDS IT IS A RELATIVE LIFETIME OR GARBAGE, NOT AN EPOCH; ABOVE 100 BILLION IT IS MILLISECONDS
-            final long value = parseLong(param.substring(eq + 1), -1L);
-            if (value < 1_000_000_000L) continue;
-            return value > 100_000_000_000L ? Instant.ofEpochMilli(value) : Instant.ofEpochSecond(value);
+    // ONE-SHOT SHA-256 OF data; SHA-256 IS MANDATED BY THE JVM SPEC, SO ABSENCE MEANS A BROKEN RUNTIME
+    public static byte[] sha256(final byte[] data) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(data);
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
         }
-        return null;
     }
 
-    public static boolean equalsAnyIgnoreCase(final String o, final String... arr) {
-        for (final String element: arr)
-            if (element != null && element.equalsIgnoreCase(o)) return true;
-        return false;
-    }
-
-    // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
-    public static boolean equalsIgnoreCase(final String a, final String b) {
-        if (a == b) return true;
-        if (a == null || b == null) return false;
-        return a.equalsIgnoreCase(b);
-    }
-
-    /** Jaro-Winkler similarity of two texts from 0 (nothing in common) to 1 (equal ignoring case); one keystroke apart scores above 0.8. */
-    public static float similarity(final String a, final String b) {
-        if (a == null || b == null) throw new IllegalArgumentException("Both texts are required");
-        final int la = a.length(), lb = b.length();
-        if (la == 0 || lb == 0) return la == lb ? 1f : 0f;
-        // LETTERS MATCH WHEN THEY SIT WITHIN HALF THE LONGER LENGTH OF EACH OTHER, EACH LETTER AT MOST ONCE
-        final int window = Math.max(0, Math.max(la, lb) / 2 - 1);
-        final boolean[] matchedA = new boolean[la];
-        final boolean[] matchedB = new boolean[lb];
-        int matches = 0;
-        for (int i = 0; i < la; i++) {
-            final char c = Character.toLowerCase(a.charAt(i));
-            for (int j = Math.max(0, i - window), end = Math.min(lb, i + window + 1); j < end; j++) {
-                if (matchedB[j] || Character.toLowerCase(b.charAt(j)) != c) continue;
-                matchedA[i] = matchedB[j] = true;
-                matches++;
-                break;
-            }
-        }
-        if (matches == 0) return 0f;
-        // MATCHED LETTERS OUT OF ORDER ARE TRANSPOSITIONS, EACH PAIR COSTING ONE MATCH
-        int transposed = 0;
-        for (int i = 0, j = 0; i < la; i++) {
-            if (!matchedA[i]) continue;
-            while (!matchedB[j]) j++;
-            if (Character.toLowerCase(a.charAt(i)) != Character.toLowerCase(b.charAt(j))) transposed++;
-            j++;
-        }
-        final float jaro = (matches / (float) la + matches / (float) lb + (matches - transposed / 2) / (float) matches) / 3f;
-        // UP TO FOUR LEADING LETTERS IN COMMON PULL THE SCORE TOWARDS ONE, SO A TYPO LATE IN A WORD STAYS CLOSE
-        int prefix = 0;
-        while (prefix < 4 && prefix < la && prefix < lb && Character.toLowerCase(a.charAt(prefix)) == Character.toLowerCase(b.charAt(prefix))) prefix++;
-        return jaro + prefix * 0.1f * (1f - jaro);
-    }
-
+    // ==========================================================================
+    // PUBLIC API: PIXELS
+    // ==========================================================================
     // CONVERTS BT.601 LIMITED-RANGE YUV 4:2:0 PLANES (VP8) TO PACKED OPAQUE ARGB INTS, WHICH LAND AS [B,G,R,A]
     // BYTES ONCE WRITTEN LITTLE-ENDIAN. STRIDES MAY EXCEED THE WIDTH (MACROBLOCK PADDING)
     public static int[] yuvToBgra(final byte[] yP, final byte[] uP, final byte[] vP, final int w, final int h, final int yS, final int uvS) {
@@ -284,36 +317,10 @@ public final class DataTool {
         dst.position(0).limit(ow * oh * bytesPerPixel);
     }
 
-    public static int parseInt(final String s, final int def) {
-        if (s == null) return def;
-        try { return Integer.parseInt(s.trim()); }
-        catch (final NumberFormatException e) { return def; }
-    }
-
-    public static long parseLong(final String s, final long def) {
-        if (s == null) return def;
-        try { return Long.parseLong(s.trim()); }
-        catch (final NumberFormatException e) { return def; }
-    }
-
-    public static double parseDouble(final String s, final double def) {
-        if (s == null) return def;
-        try { return Double.parseDouble(s.trim()); }
-        catch (final NumberFormatException e) { return def; }
-    }
-
-    // ONE-SHOT SHA-256 OF data; SHA-256 IS MANDATED BY THE JVM SPEC, SO ABSENCE MEANS A BROKEN RUNTIME
-    public static byte[] sha256(final byte[] data) {
-        try {
-            return MessageDigest.getInstance("SHA-256").digest(data);
-        } catch (final NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is unavailable", e);
-        }
-    }
-
-    // ==== PIXEL-PLANE AREA SCALING (TxMediaPlayer, DownscaleFilter) ====
-
-    // FORMATS THE AREA SCALER UNDERSTANDS — PACKED YUYV (PIXEL PAIRS SHARE CHROMA) AND
+    // ==========================================================================
+    // PUBLIC API: PIXEL-PLANE AREA SCALING (TxMediaPlayer, DownscaleFilter)
+    // ==========================================================================
+    // WHETHER THE AREA SCALER UNDERSTANDS format: PACKED YUYV/UYVY (PIXEL PAIRS SHARE CHROMA) AND
     // COMPRESSED BCn (GPU-SIDE BLOCKS) CANNOT BE AVERAGED BYTE-WISE.
     public static boolean scalable(final PixelFormat format) {
         return !format.compressed() && format != PixelFormat.YUYV && format != PixelFormat.UYVY;
@@ -334,6 +341,9 @@ public final class DataTool {
         }
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // AREA-AVERAGE DOWNSCALE OF AN 8-BIT PLANE WITH ch INTERLEAVED COMPONENTS.
     // STRONG REDUCTIONS STAY ALIAS-FREE. READS src ABSOLUTE, WRITES dst RELATIVE.
     private static void scalePlane(final ByteBuffer src, final int srcOff, final int sw, final int sh,

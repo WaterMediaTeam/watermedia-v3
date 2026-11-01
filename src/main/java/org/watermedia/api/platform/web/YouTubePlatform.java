@@ -44,7 +44,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
 
     private static final long BOTGUARD_TIMEOUT_SECONDS = 60; // COLD START RUNS THE BOTGUARD VM + NETWORK
 
-    // INNERTUBE visitor_id ENDPOINT — A po_token MUST BE BOUND TO THE visitorData THEN HANDED TO yt-dlp
+    // INNERTUBE visitor_id ENDPOINT: A po_token MUST BE BOUND TO THE visitorData THEN HANDED TO yt-dlp
     private static final URI VISITOR_ENDPOINT = URI.create("https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false");
     private static final String CLIENT_VERSION = "2.20250601.01.00"; // WEB CLIENT; THE ENDPOINT IS LENIENT
     private static final String VISITOR_BODY =
@@ -54,14 +54,16 @@ public final class YouTubePlatform extends YtDlpPlatform {
     private final BotGuardBinary botGuard = new BotGuardBinary();
     private final Object botGuardLock = new Object(); // SERIALISE MINTS: THE BOTGUARD RUNS SHARE A SNAPSHOT FILE
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     @Override
-    public String name() {
-        return NAME;
-    }
+    public String name() { return NAME; }
 
     @Override
     public Resolution resolve(final URI uri) throws PlatformException {
-        if (!hostMatches(uri.getHost(), HOSTS)) return null;
+        if (!WebRequests.hostMatches(uri.getHost(), HOSTS)) return null;
         // A BARE HOST, A SEARCH PAGE OR A FEED NAMES NOTHING TO PLAY; SPAWNING yt-dlp TO FIND THAT OUT WOULD COST TWO MINUTES
         final String path = uri.getPath() == null ? "" : uri.getPath();
         if (path.length() < 2 || DataTool.startsWith(path, UNPLAYABLE_PATHS)) throw PlatformException.unsupported(NAME, uri);
@@ -86,15 +88,47 @@ public final class YouTubePlatform extends YtDlpPlatform {
         return this.extract(info);
     }
 
-    // THE AGE GATE NEEDS A SIGNED-IN SESSION NO TOKEN CAN REPLACE: A MATURE BLOCK WHEN MATURE CONTENT IS OFF, A PLAIN
-    // FAILURE OTHERWISE, AND null WHEN yt-dlp'S MESSAGE IS NOT AN AGE GATE
-    private static PlatformException ageGate(final URI uri, final IOException e) {
-        final String message = e.getMessage() == null ? "" : e.getMessage().toLowerCase(Locale.ROOT);
-        if (!message.contains("confirm your age") && !message.contains("age-restricted") && !message.contains("inappropriate for some users"))
-            return null;
-        if (!WaterMediaConfig.platforms.allowMatureContent) return new MatureContentException(NAME, "Age-restricted: " + uri, e);
-        return new PlatformException(NAME, "Age-restricted video " + uri + " needs a signed-in session, which WaterMedia cannot provide", e);
+    @Override
+    public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
+        // ytsearchN: HITS ONLY YOUTUBE'S SEARCH ENDPOINT; --flat-playlist KEEPS IT TO RAW RESULT METADATA
+        // (NO PER-VIDEO STREAM EXTRACTION), SO IT IS FAST AND NEEDS NO PO_TOKEN/BOTGUARD RETRY
+        final JsonObject info;
+        try {
+            info = this.info("ytsearch" + limit + ":" + query, List.of("--flat-playlist"), PlatformAPI.SEARCH_TIMEOUT_MS);
+        } catch (final IOException e) {
+            throw new PlatformException(NAME, "yt-dlp could not search '" + query + "': " + e.getMessage(), e);
+        }
+
+        final JsonArray entries = arr(info, "entries");
+        if (entries == null) return List.of();
+
+        final List<PlatformResult> out = new ArrayList<>(Math.min(entries.size(), limit));
+        for (final JsonElement element: entries) {
+            final JsonObject entry = obj(element);
+            // A SEARCH ALSO SURFACES PLAYLISTS/CHANNELS (ie_key YoutubeTab); KEEP ONLY PLAYABLE VIDEOS
+            if (!"Youtube".equals(str(entry, "ie_key"))) continue;
+
+            final String id = str(entry, "id");
+            final String url = str(entry, "url");
+            if (id == null && url == null) continue;
+
+            // DERIVE THE THUMBNAIL FROM THE VIDEO ID: hqdefault EXISTS FOR EVERY VIDEO, UNLIKE THE
+            // VERSION-DEPENDENT (AND OFTEN EXPIRING) thumbnails[] URLS yt-dlp EMITS IN FLAT MODE
+            final URI thumbnail = id != null ? DataTool.uri("https://i.ytimg.com/vi/" + id + "/hqdefault.jpg") : null;
+            // yt-dlp'S FLAT-PLAYLIST url CAN BE A BARE VIDEO ID (NO SCHEME, WHICH DataTool.uri REJECTS);
+            // THEN THE WATCH URL IS BUILT FROM THE ID SO SELECTING THE RESULT PLAYS IT INSTEAD OF RE-SEARCHING
+            final URI parsed = DataTool.uri(url);
+            final URI page = parsed != null ? parsed : id != null ? DataTool.uri("https://www.youtube.com/watch?v=" + id) : null;
+            if (page == null) continue;
+            out.add(new PlatformResult(this, str(entry, "title"), thumbnail, page));
+            if (out.size() >= limit) break;
+        }
+        return out;
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     // RETRIES WITH A po_token BOUND TO A FRESH visitorData FOR EVERY WEB-FAMILY gvs CONTEXT; yt-dlp KEEPS ITS DEFAULT
     // CLIENTS (FORCING THE WEB ONES YIELDS NO FORMATS). A FAILED RETRY REPORTS ITS CAUSE; AN EXTRACTION VERDICT PASSES THROUGH
@@ -122,44 +156,6 @@ public final class YouTubePlatform extends YtDlpPlatform {
         return this.extract(info);
     }
 
-    @Override
-    public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
-        // ytsearchN: HITS ONLY YOUTUBE'S SEARCH ENDPOINT; --flat-playlist KEEPS IT TO RAW RESULT METADATA
-        // (NO PER-VIDEO STREAM EXTRACTION), SO IT IS FAST AND NEEDS NO PO_TOKEN/BOTGUARD RETRY.
-        final JsonObject info;
-        try {
-            info = this.info("ytsearch" + limit + ":" + query, List.of("--flat-playlist"), PlatformAPI.SEARCH_TIMEOUT_MS);
-        } catch (final IOException e) {
-            throw new PlatformException(NAME, "yt-dlp could not search '" + query + "': " + e.getMessage(), e);
-        }
-
-        final JsonArray entries = arr(info, "entries");
-        if (entries == null) return List.of();
-
-        final List<PlatformResult> out = new ArrayList<>(Math.min(entries.size(), limit));
-        for (final JsonElement element: entries) {
-            final JsonObject entry = obj(element);
-            // A SEARCH ALSO SURFACES PLAYLISTS/CHANNELS (ie_key YoutubeTab) — KEEP ONLY PLAYABLE VIDEOS
-            if (!"Youtube".equals(str(entry, "ie_key"))) continue;
-
-            final String id = str(entry, "id");
-            final String url = str(entry, "url");
-            if (id == null && url == null) continue;
-
-            // DERIVE THE THUMBNAIL FROM THE VIDEO ID: hqdefault EXISTS FOR EVERY VIDEO, UNLIKE THE
-            // VERSION-DEPENDENT (AND OFTEN EXPIRING) thumbnails[] URLS yt-dlp EMITS IN FLAT MODE
-            final URI thumbnail = id != null ? DataTool.uri("https://i.ytimg.com/vi/" + id + "/hqdefault.jpg") : null;
-            // yt-dlp'S FLAT-PLAYLIST url CAN BE A BARE VIDEO ID (NO SCHEME, WHICH DataTool.uri REJECTS);
-            // THEN THE WATCH URL IS BUILT FROM THE ID SO SELECTING THE RESULT PLAYS IT INSTEAD OF RE-SEARCHING
-            final URI parsed = DataTool.uri(url);
-            final URI page = parsed != null ? parsed : id != null ? DataTool.uri("https://www.youtube.com/watch?v=" + id) : null;
-            if (page == null) continue;
-            out.add(new PlatformResult(this, str(entry, "title"), thumbnail, page));
-            if (out.size() >= limit) break;
-        }
-        return out;
-    }
-
     // MINTS A po_token FOR visitorData WITH rustypipe-botguard, WHOSE ONLY OUTPUT LINE STARTS WITH THE TOKEN. RUNS ARE
     // SERIALISED (THEY SHARE --snapshot-file) AND NEVER CACHED: EVERY CALL BRINGS A FRESH visitorData
     private String mintToken(final String visitorData) throws IOException {
@@ -185,6 +181,20 @@ public final class YouTubePlatform extends YtDlpPlatform {
             }
         }
         throw new IOException("rustypipe-botguard produced no token");
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    // THE AGE GATE NEEDS A SIGNED-IN SESSION NO TOKEN CAN REPLACE: A MATURE BLOCK WHEN MATURE CONTENT IS OFF, A PLAIN
+    // FAILURE OTHERWISE, AND null WHEN yt-dlp'S MESSAGE IS NOT AN AGE GATE
+    private static PlatformException ageGate(final URI uri, final IOException e) {
+        final String message = e.getMessage() == null ? "" : e.getMessage().toLowerCase(Locale.ROOT);
+        if (!message.contains("confirm your age") && !message.contains("age-restricted") && !message.contains("inappropriate for some users"))
+            return null;
+        if (!WaterMediaConfig.platforms.allowMatureContent) return new MatureContentException(NAME, "Age-restricted: " + uri, e);
+        return new PlatformException(NAME, "Age-restricted video " + uri + " needs a signed-in session, which WaterMedia cannot provide", e);
     }
 
     // A FRESH visitorData FROM YOUTUBE'S INNERTUBE visitor_id ENDPOINT; THE po_token MUST BE BOUND TO THE SAME

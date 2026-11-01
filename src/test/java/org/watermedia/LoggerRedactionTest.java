@@ -34,6 +34,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class LoggerRedactionTest {
     private static final Marker IT = MarkerManager.getMarker(LoggerRedactionTest.class.getSimpleName());
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Events")
     class EventTests {

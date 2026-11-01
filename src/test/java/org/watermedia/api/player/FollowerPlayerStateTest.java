@@ -40,6 +40,10 @@ public class FollowerPlayerStateTest {
     private final List<ServerMediaPlayer> players = new ArrayList<>();
     private Network network;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @AfterEach
     void tearDown() throws InterruptedException {
         final Network network = this.network;
@@ -48,6 +52,52 @@ public class FollowerPlayerStateTest {
         for (final ServerMediaPlayer player: this.players) player.release();
         if (network != null && network.failure != null) throw new AssertionError("The network thread failed", network.failure);
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
+    // A CLOCK FOR A SESSION OF THE GIVEN LENGTH, WITH THE NETWORK THAT CARRIES ITS SNAPSHOTS
+    private ServerMediaPlayer clock(final long durationMs) {
+        final ServerMediaPlayer clock = this.player();
+        clock.syncDuration(durationMs);
+        this.network = new Network(clock);
+        return clock;
+    }
+
+    // A HEADLESS MIRROR THE NETWORK REACHES, WITH A TOLERANCE TIGHT ENOUGH FOR STRICT ASSERTIONS
+    private ServerMediaPlayer mirror() {
+        final ServerMediaPlayer mirror = this.player();
+        mirror.tolerance(TOLERANCE_MS);
+        this.network.join(mirror);
+        return mirror;
+    }
+
+    private ServerMediaPlayer player() {
+        final ServerMediaPlayer player = PlayerAPI.serverPlayer();
+        this.players.add(player);
+        return player;
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static void await(final String what, final BooleanSupplier condition) {
+        assertTrue(PlayerWait.awaitCondition(condition, AWAIT_MS), "timed out waiting for: " + what);
+    }
+
+    // TRUE WHEN THE MIRROR'S POSITION FALLS WITHIN slackMs OF THE CLOCK READ ON BOTH SIDES OF IT
+    private static boolean aligned(final MediaPlayer clock, final MediaPlayer mirror, final long slackMs) {
+        final long before = clock.time();
+        final long position = mirror.time();
+        final long after = clock.time();
+        return position >= before - slackMs && position <= after + slackMs;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Mirror")
@@ -209,42 +259,6 @@ public class FollowerPlayerStateTest {
             await("both to stop", () -> a.stopped() && b.stopped());
             assertTrue(a.following() && b.following(), "the mirrors keep following the stopped session");
         }
-    }
-
-    // UTILITY
-
-    // A CLOCK FOR A SESSION OF THE GIVEN LENGTH, WITH THE NETWORK THAT CARRIES ITS SNAPSHOTS
-    private ServerMediaPlayer clock(final long durationMs) {
-        final ServerMediaPlayer clock = this.player();
-        clock.syncDuration(durationMs);
-        this.network = new Network(clock);
-        return clock;
-    }
-
-    // A HEADLESS MIRROR THE NETWORK REACHES, WITH A TOLERANCE TIGHT ENOUGH FOR STRICT ASSERTIONS
-    private ServerMediaPlayer mirror() {
-        final ServerMediaPlayer mirror = this.player();
-        mirror.tolerance(TOLERANCE_MS);
-        this.network.join(mirror);
-        return mirror;
-    }
-
-    private ServerMediaPlayer player() {
-        final ServerMediaPlayer player = PlayerAPI.serverPlayer();
-        this.players.add(player);
-        return player;
-    }
-
-    private static void await(final String what, final BooleanSupplier condition) {
-        assertTrue(PlayerWait.awaitCondition(condition, AWAIT_MS), "timed out waiting for: " + what);
-    }
-
-    // TRUE WHEN THE MIRROR'S POSITION FALLS WITHIN slackMs OF THE CLOCK READ ON BOTH SIDES OF IT
-    private static boolean aligned(final MediaPlayer clock, final MediaPlayer mirror, final long slackMs) {
-        final long before = clock.time();
-        final long position = mirror.time();
-        final long after = clock.time();
-        return position >= before - slackMs && position <= after + slackMs;
     }
 
     // IN-MEMORY TRANSPORT ON ITS OWN DAEMON THREAD: EVERY PERIOD IT SENDS THE CLOCK'S SNAPSHOT AS BYTES WHEN THE REVISION

@@ -23,6 +23,9 @@ public class RenderEngineBatchTest {
     private RecordingBackend backend;
     private RenderEngine engine;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @BeforeEach
     void setup() {
         this.backend = new RecordingBackend();
@@ -75,6 +78,9 @@ public class RenderEngineBatchTest {
         assertEquals(1, this.backend.draws, "the 1 px lines flush once before the width changes");
     }
 
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     // RECORDS THE ENGINE'S BACKEND CALLS; EVERY GPU METHOD IS AN INERT NO-OP.
     private static final class RecordingBackend implements RenderBackend {
         int draws, projections, lastVertexCount, lineWidths;

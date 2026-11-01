@@ -35,6 +35,10 @@ public final class ListView<D> extends Group<ListView<D>> {
     // INNER HEIGHT OF THE LAST LAYOUT; update() PICKS ITS WINDOW WITH IT BEFORE THE NEXT LAYOUT RUNS
     private int viewport;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public ListView<D> items(final List<D> data) {
         this.items.clear();
         if (data != null) this.items.addAll(data);
@@ -107,6 +111,46 @@ public final class ListView<D> extends Group<ListView<D>> {
         }
         return this;
     }
+
+    @Override
+    public boolean dispatchClick(final double mx, final double my) {
+        return this.contains(mx, my) && super.dispatchClick(mx, my);
+    }
+
+    @Override
+    public Element<?> dispatchPress(final double mx, final double my) {
+        // THE WINDOW HOLDS ROWS PAST THE VIEWPORT EDGES, WHICH MUST NOT CAPTURE A PRESS ON WHAT LIES THERE
+        return this.contains(mx, my) ? super.dispatchPress(mx, my) : null;
+    }
+
+    @Override
+    public boolean dispatchHover(final double mx, final double my) {
+        if (!this.visible || !this.enabled || !this.contains(mx, my)) {
+            this.clearHover();
+            return false;
+        }
+        final boolean result = super.dispatchHover(mx, my);
+        if (this.selectOnHover)
+            for (int i = 0; i < this.children.size(); i++) {
+                if (this.children.get(i).hovered && this.windowFrom + i != this.selectedIndex) {
+                    this.selection(this.windowFrom + i).invalidate();
+                    break;
+                }
+            }
+        return result;
+    }
+
+    @Override
+    public boolean dispatchScroll(final double mx, final double my, final double amount) {
+        if (!this.contains(mx, my) || this.scroll.max <= 0) return false;
+        // MOMENTUM WHEEL: EACH NOTCH SHIFTS THE TARGET AND onUpdate EASES THE OFFSET TOWARD IT
+        if (this.scroll.scroll(amount)) this.invalidate();
+        return true;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onUpdate() {
@@ -202,41 +246,9 @@ public final class ListView<D> extends Group<ListView<D>> {
         }
     }
 
-    @Override
-    public boolean dispatchClick(final double mx, final double my) {
-        return this.contains(mx, my) && super.dispatchClick(mx, my);
-    }
-
-    @Override
-    public Element<?> dispatchPress(final double mx, final double my) {
-        // THE WINDOW HOLDS ROWS PAST THE VIEWPORT EDGES, WHICH MUST NOT CAPTURE A PRESS ON WHAT LIES THERE
-        return this.contains(mx, my) ? super.dispatchPress(mx, my) : null;
-    }
-
-    @Override
-    public boolean dispatchHover(final double mx, final double my) {
-        if (!this.visible || !this.enabled || !this.contains(mx, my)) {
-            this.clearHover();
-            return false;
-        }
-        final boolean result = super.dispatchHover(mx, my);
-        if (this.selectOnHover)
-            for (int i = 0; i < this.children.size(); i++) {
-                if (this.children.get(i).hovered && this.windowFrom + i != this.selectedIndex) {
-                    this.selection(this.windowFrom + i).invalidate();
-                    break;
-                }
-            }
-        return result;
-    }
-
-    @Override
-    public boolean dispatchScroll(final double mx, final double my, final double amount) {
-        if (!this.contains(mx, my) || this.scroll.max <= 0) return false;
-        // MOMENTUM WHEEL: EACH NOTCH SHIFTS THE TARGET AND onUpdate EASES THE OFFSET TOWARD IT
-        if (this.scroll.scroll(amount)) this.invalidate();
-        return true;
-    }
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private void rebuild() {
         this.clear();

@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Netpbm reader")
 public class NetpbmTest {
 
-    // FIRST BGRA PIXEL (0xAARRGGBB) EXPECTED PER FIXTURE — DERIVED BY HAND FROM EACH RASTER'S LEADING SAMPLES
+    // FIRST BGRA PIXEL (0xAARRGGBB) EXPECTED PER FIXTURE, DERIVED BY HAND FROM EACH RASTER'S LEADING SAMPLES
     private static final Map<String, Integer> FIRST_PIXEL = Map.of(
             "test.pbm", 0xFF000000,       // P4: LEADING BIT 1 -> BLACK
             "test.pgm", 0xFF2A2A2A,       // P5 MAXVAL 255: GRAY 0x2A
@@ -51,6 +51,9 @@ public class NetpbmTest {
             "rgba.pam", 0xFF372531        // P7 RGB_ALPHA DEPTH 4 MAXVAL 65535: OPAQUE 0x372531
     );
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @TestFactory
     @DisplayName("Decode first frame and reset")
     Iterable<DynamicTest> testNetpbmDecode() throws IOException {
@@ -89,6 +92,25 @@ public class NetpbmTest {
         return tests;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static ImageData decode(final String text) throws IOException {
+        return decode(text, new byte[0]);
+    }
+
+    private static ImageData decode(final String header, final byte[] raster) throws IOException {
+        return CodecsAPI.decode(bytes(header, raster));
+    }
+
+    private static byte[] bytes(final String header, final byte[] raster) {
+        final byte[] head = header.getBytes(StandardCharsets.US_ASCII);
+        return ByteBuffer.allocate(head.length + raster.length).put(head).put(raster).array();
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Plain and alpha variants")
     class PlainAndAlpha {
@@ -171,19 +193,5 @@ public class NetpbmTest {
         void invalidVersion() {
             assertThrows(IllegalArgumentException.class, () -> new NetpbmReader(ByteBuffer.wrap(bytes(" 1 1 255\n", new byte[1])), 8));
         }
-    }
-
-    // UTILITY
-    private static ImageData decode(final String text) throws IOException {
-        return decode(text, new byte[0]);
-    }
-
-    private static ImageData decode(final String header, final byte[] raster) throws IOException {
-        return CodecsAPI.decode(bytes(header, raster));
-    }
-
-    private static byte[] bytes(final String header, final byte[] raster) {
-        final byte[] head = header.getBytes(StandardCharsets.US_ASCII);
-        return ByteBuffer.allocate(head.length + raster.length).put(head).put(raster).array();
     }
 }

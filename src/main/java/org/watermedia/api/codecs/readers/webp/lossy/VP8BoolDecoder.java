@@ -8,13 +8,13 @@ import java.nio.ByteOrder;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.codecs.readers.webp.lossy.VP8LossyDecoder.IT;
 
-// RFC6386 SECTION 7 - BOOLEAN ENTROPY DECODER
+// RFC6386 SECTION 7: BOOLEAN ENTROPY DECODER
 // MAINTAINS 'VALUE' AND 'RANGE' TO TRACK CURRENT POSITION IN ARITHMETIC CODING INTERVAL
 // KEY CONSTRAINTS: 128 <= RANGE <= 255, VALUE CONTAINS AT LEAST 8 SIGNIFICANT BITS
 final class VP8BoolDecoder {
     // BYTES THE DECODER MAY FABRICATE PAST ITS PARTITION END BEFORE THE STREAM COUNTS AS TRUNCATED: THE RENORMALIZER
     // RUNS UP TO TWO BYTES AHEAD AND ENCODERS FLUSH A SHORT ZERO TAIL, SO A FEW PHANTOM BYTES ARE NORMAL AT THE END
-    // OF A VALID PARTITION — A FRAME'S WORTH OF THEM IS NOT
+    // OF A VALID PARTITION, BUT A FRAME'S WORTH OF THEM IS NOT
     private static final int MAX_PAD_BYTES = 16;
 
     private final ByteBuffer buf;
@@ -24,7 +24,7 @@ final class VP8BoolDecoder {
     private int padBytes; // IMPLICIT ZERO BYTES CONSUMED PAST THE PARTITION END
     private boolean eof;  // SET ONCE padBytes EXCEEDS THE TOLERATED FLUSH TAIL
 
-    // RFC6386 SECTION 7.3 - DECODER INITIALIZATION
+    // RFC6386 SECTION 7.3: DECODER INITIALIZATION
     // READS FIRST TWO BYTES TO INITIALIZE VALUE, SETS RANGE = 255
     VP8BoolDecoder(final ByteBuffer buffer) throws CodecException {
         this.buf = buffer.slice().order(ByteOrder.LITTLE_ENDIAN);
@@ -39,7 +39,10 @@ final class VP8BoolDecoder {
         LOGGER.trace(IT, "Init: val=0x{}, range={}", Integer.toHexString(this.val), this.range);
     }
 
-    // RFC6386 SECTION 7.3 - READ_BOOL: prob IS P(FALSE) * 256, AND THE BIT IS VALUE >= SPLIT << 8
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    // RFC6386 SECTION 7.3, READ_BOOL: prob IS P(FALSE) * 256, AND THE BIT IS VALUE >= SPLIT << 8
     // WITH SPLIT = 1 + (((RANGE - 1) * PROB) >> 8) (EQ 7.1)
     boolean readBool(final int prob) {
         final int split = 1 + (((this.range - 1) * prob) >> 8);
@@ -82,26 +85,26 @@ final class VP8BoolDecoder {
         return bit;
     }
 
-    // TRUE ONCE THE DECODER HAS RUN PAST ITS PARTITION BY MORE THAN A FLUSH TAIL
-    boolean eof() {
-        return this.eof;
-    }
-
-    // RFC6386 SECTION 7.3 - 50% PROBABILITY BOOL (FLAG)
+    // RFC6386 SECTION 7.3: 50% PROBABILITY BOOL (FLAG)
     boolean readBool() {
         return this.readBool(128);
     }
 
-    // RFC6386 SECTION 8 - N-BIT UNSIGNED LITERAL L(N), MSB FIRST
+    // RFC6386 SECTION 8: N-BIT UNSIGNED LITERAL L(N), MSB FIRST
     int readLit(final int n) {
         int r = 0;
         for (int i = 0; i < n; i++) r = (r << 1) | (this.readBool() ? 1 : 0);
         return r;
     }
 
-    // RFC6386 SECTION 8 - SIGNED LITERAL: MAGNITUDE FIRST, THEN THE SIGN BIT (1 = NEGATIVE)
+    // RFC6386 SECTION 8, SIGNED LITERAL: MAGNITUDE FIRST, THEN THE SIGN BIT (1 = NEGATIVE)
     int readSigned(final int n) {
         final int mag = this.readLit(n);
         return this.readBool() ? -mag : mag;
+    }
+
+    // TRUE ONCE THE DECODER HAS RUN PAST ITS PARTITION BY MORE THAN A FLUSH TAIL
+    boolean eof() {
+        return this.eof;
     }
 }

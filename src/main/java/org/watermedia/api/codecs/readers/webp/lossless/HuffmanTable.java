@@ -21,7 +21,7 @@ public final class HuffmanTable {
     // PER-LENGTH START INDICES: LONG ENTRIES OF LENGTH len OCCUPY [longStart[len], longStart[len+1])
     private final int[] longStart;
     private final int longMaxLen;
-    // SINGLE SYMBOL FLAG - IF TRUE, singleSymbolValue IS RETURNED WITHOUT READING BITS
+    // SINGLE SYMBOL FLAG: WHEN SET, singleSymbolValue IS RETURNED WITHOUT READING BITS
     private final boolean isSingleSymbol;
     private final int singleSymbolValue;
 
@@ -36,54 +36,9 @@ public final class HuffmanTable {
         this.singleSymbolValue = singleSymbolValue;
     }
 
-    /** Symbol this table always returns without consuming a bit, or {@code -1} when it reads bits. */
-    public int symbol() {
-        return this.isSingleSymbol ? this.singleSymbolValue : -1;
-    }
-
-    // DECODES THE NEXT SYMBOL FROM THE LSB-FIRST BITSTREAM, OR RETURNS THE SOLE SYMBOL WITHOUT CONSUMING BITS
-    int read(final BitReader reader) throws CodecException {
-        if (this.isSingleSymbol) return this.singleSymbolValue;
-
-        final int idx = reader.peek(LOOKUP_BITS);
-        if (reader.bitsAvail() >= LOOKUP_BITS) {
-            // FAST PATH: PEEK LOOKUP_BITS, RESOLVE IN O(1) FROM THE PREFILLED LOOKUP TABLE
-            final int entry = this.lookup[idx];
-            final int len = entry & 0xFF;
-            if (len > 0) {
-                reader.consume(len);
-                return entry >>> 8;
-            }
-            // LONG CODE: PAST THE 7 PEEKED BITS, EXTEND ONE BIT AT A TIME AND COMPARE AGAINST THE PRE-REVERSED CODES
-            int code = idx;
-            reader.consume(LOOKUP_BITS);
-            for (int curLen = LOOKUP_BITS + 1; curLen <= this.longMaxLen; curLen++) {
-                final int bit = reader.read(1);
-                code |= bit << (curLen - 1);
-                // SCAN ONLY THE CONTIGUOUS RANGE OF ENTRIES OF THIS LENGTH (LENGTH ALREADY MATCHES)
-                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++)
-                    if (this.longCodes[j] == code) return this.longSymbols[j];
-            }
-            throw new CodecException("Invalid huffman code (code=" + code + ")");
-        }
-
-        // SLOW SAFE PATH: NEAR EOF, READ BIT-BY-BIT WHILE PROPAGATING EOF EXCEPTIONS
-        int code = 0;
-        for (int curLen = 1; curLen <= 15; curLen++) {
-            final int bit = reader.read(1);
-            code |= bit << (curLen - 1);
-            if (curLen <= LOOKUP_BITS) {
-                final int entry = this.lookup[code];
-                if ((entry & 0xFF) == curLen) return entry >>> 8;
-            } else if (curLen <= this.longMaxLen) {
-                // SCAN ONLY THE CONTIGUOUS RANGE OF ENTRIES OF THIS LENGTH (LENGTH ALREADY MATCHES)
-                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++)
-                    if (this.longCodes[j] == code) return this.longSymbols[j];
-            }
-        }
-        throw new CodecException("Invalid huffman code (code=" + code + ")");
-    }
-
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Builds a canonical LSB-first table from symbol lengths; rejects over-subscribed codes. */
     public static HuffmanTable build(final int[] codeLengths, final int alphabetSize) throws CodecException {
         // COUNT CODE LENGTHS AND FIND SINGLE SYMBOL IF PRESENT
@@ -102,7 +57,7 @@ public final class HuffmanTable {
 
         // RFC 9649: IF ONLY ONE SYMBOL HAS NON-ZERO CODE LENGTH, IT REQUIRES ZERO BITS
         if (symbolCount == 1) return singleSymbolTable(singleSymbol);
-        // NO SYMBOLS WITH CODES - TREAT AS SINGLE SYMBOL 0
+        // NO SYMBOL HAS A CODE: TREAT IT AS SINGLE SYMBOL 0
         if (symbolCount == 0) return singleSymbolTable(0);
 
         // REJECT OVER-SUBSCRIBED CODES: MORE CODES OF A LENGTH THAN THE TREE HAS ROOM FOR WOULD
@@ -148,7 +103,7 @@ public final class HuffmanTable {
         for (int sym = 0; sym < alphabetSize; sym++) {
             final int len = lengths[sym];
             if (len == 0) continue;
-            final int reversed = reverseBits(codes[sym], len);
+            final int reversed = Integer.reverse(codes[sym]) >>> (32 - len); // THE LOW len BITS, MIRRORED
             if (len <= LOOKUP_BITS) {
                 final int step = 1 << len;
                 final int packed = (sym << 8) | len;
@@ -201,18 +156,63 @@ public final class HuffmanTable {
         return new HuffmanTable(lookup, NO_LONG, NO_LONG, NO_LONG_START, 0, false, 0);
     }
 
+    /** Returns the symbol this table yields without consuming a bit, or {@code -1} when it reads bits. */
+    public int symbol() {
+        return this.isSingleSymbol ? this.singleSymbolValue : -1;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    // DECODES THE NEXT SYMBOL FROM THE LSB-FIRST BITSTREAM, OR RETURNS THE SOLE SYMBOL WITHOUT CONSUMING BITS
+    int read(final BitReader reader) throws CodecException {
+        if (this.isSingleSymbol) return this.singleSymbolValue;
+
+        final int idx = reader.peek(LOOKUP_BITS);
+        if (reader.bitsAvail() >= LOOKUP_BITS) {
+            // FAST PATH: PEEK LOOKUP_BITS, RESOLVE IN O(1) FROM THE PREFILLED LOOKUP TABLE
+            final int entry = this.lookup[idx];
+            final int len = entry & 0xFF;
+            if (len > 0) {
+                reader.consume(len);
+                return entry >>> 8;
+            }
+            // LONG CODE: PAST THE 7 PEEKED BITS, EXTEND ONE BIT AT A TIME AND COMPARE AGAINST THE PRE-REVERSED CODES
+            int code = idx;
+            reader.consume(LOOKUP_BITS);
+            for (int curLen = LOOKUP_BITS + 1; curLen <= this.longMaxLen; curLen++) {
+                final int bit = reader.read(1);
+                code |= bit << (curLen - 1);
+                // SCAN ONLY THE CONTIGUOUS RANGE OF ENTRIES OF THIS LENGTH (LENGTH ALREADY MATCHES)
+                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++)
+                    if (this.longCodes[j] == code) return this.longSymbols[j];
+            }
+            throw new CodecException("Invalid huffman code (code=" + code + ")");
+        }
+
+        // SLOW SAFE PATH: NEAR EOF, READ BIT-BY-BIT WHILE PROPAGATING EOF EXCEPTIONS
+        int code = 0;
+        for (int curLen = 1; curLen <= 15; curLen++) {
+            final int bit = reader.read(1);
+            code |= bit << (curLen - 1);
+            if (curLen <= LOOKUP_BITS) {
+                final int entry = this.lookup[code];
+                if ((entry & 0xFF) == curLen) return entry >>> 8;
+            } else if (curLen <= this.longMaxLen) {
+                // SCAN ONLY THE CONTIGUOUS RANGE OF ENTRIES OF THIS LENGTH (LENGTH ALREADY MATCHES)
+                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++)
+                    if (this.longCodes[j] == code) return this.longSymbols[j];
+            }
+        }
+        throw new CodecException("Invalid huffman code (code=" + code + ")");
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // A ONE-SYMBOL CODE COSTS ZERO BITS (RFC 9649), SO NO LOOKUP ARRAY IS BUILT AT ALL: ALLOCATING
     // ONE WOULD MAKE A 20-BIT HUFFMAN GROUP COST KILOBYTES OF LIVE TABLES NOBODY EVER READS
     private static HuffmanTable singleSymbolTable(final int symbol) {
         return new HuffmanTable(null, NO_LONG, NO_LONG, NO_LONG_START, 0, true, symbol);
-    }
-
-    private static int reverseBits(int value, final int numBits) {
-        int result = 0;
-        for (int i = 0; i < numBits; i++) {
-            result = (result << 1) | (value & 1);
-            value >>>= 1;
-        }
-        return result;
     }
 }

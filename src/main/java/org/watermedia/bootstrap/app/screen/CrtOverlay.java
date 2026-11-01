@@ -25,6 +25,10 @@ final class CrtOverlay extends Element<CrtOverlay> {
         this.enabled = false; // DISABLED SO HOVER AND CLICKS REACH THE ELEMENTS UNDER THE OVERLAY
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @Override
     protected void onDraw(final Canvas canvas) {
         if (this.ctx == null || !this.ctx.crt) return;
@@ -39,6 +43,10 @@ final class CrtOverlay extends Element<CrtOverlay> {
         canvas.live(this.bands);
         canvas.popClip();
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     // THE BAND MOVES 1 px PER STEP FROM FULLY ABOVE THE BOX TO FULLY BELOW IT, SO ONE BAND NEVER NEEDS A WRAP COPY;
     // THE MAIN LOOP WAKES ONCE PER STEP TO COMPOSITE IT

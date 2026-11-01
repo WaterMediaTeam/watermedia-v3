@@ -21,13 +21,13 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>
  * A first-class, user-selectable alternative to {@link ALEngine} that needs no OpenAL context.
  * Unlike it, this engine is stream-based: {@code format(SampleType, int, int)} opens a fresh
- * {@link SourceDataLine} and reconfiguration reopens it. Uploads are non-blocking — the line's
+ * {@link SourceDataLine} and reconfiguration reopens it. Uploads are non-blocking: the line's
  * internal buffer is the backpressure, mirroring {@code ALEngine}'s buffer pool, so the media
  * clock keeps tracking the audible position via {@code pendingMs()}; a chunk larger than that
  * buffer reopens the line with room for it. Every entry point holds the engine monitor, so the
  * player's lifecycle thread and the host's control thread never interleave on the line.
  * <p>
- * Java Sound backend limitations: playback speed has no portable equivalent — {@code speed(float)}
+ * Java Sound backend limitations: playback speed has no portable equivalent, so {@code speed(float)}
  * refuses and audio stays at 1.0×; there is no per-source spatialization, so {@link #source()}
  * reports no handle.
  */
@@ -39,7 +39,7 @@ public final class JSEngine extends SFXEngine {
 
     // CAPABILITY TABLES: JAVA SOUND SUPPORTS U8/S16 PCM MONO/STEREO ON EVERY PLATFORM; IT
     // DOESN'T SUPPORT FLOAT, S32 NOR MULTICHANNEL THROUGH THE DEFAULT MIXER, SO NEGOTIATION
-    // ALWAYS FALLS BACK INSIDE THIS SET (THERE IS NO SECOND FALLBACK IF format() REJECTS).
+    // ALWAYS FALLS BACK INSIDE THIS SET (THERE IS NO SECOND FALLBACK IF format() REJECTS)
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16 };
     private static final ChannelSupport[] SUPPORTED_CHANNELS = {
             new ChannelSupport(1, SampleType.U8, SampleType.S16), // MONO
@@ -48,7 +48,7 @@ public final class JSEngine extends SFXEngine {
 
     private final int bufferMs;
     // LINE + CONTROL ARE REPLACED ON RECONFIGURE (apply) FROM THE PLAYER'S LIFECYCLE THREAD AND READ FROM
-    // THE CONTROL THREAD (volume/pause) — EVERY ACCESS HOLDS THE ENGINE MONITOR
+    // THE CONTROL THREAD (volume/pause); EVERY ACCESS HOLDS THE ENGINE MONITOR
     private SourceDataLine line;
     private FloatControl gainControl;
     // start() WAS CALLED SINCE THE LAST stop(): isActive()/isRunning() STAY FALSE UNTIL DATA FLOWS, SO THEY CANNOT TELL
@@ -59,53 +59,15 @@ public final class JSEngine extends SFXEngine {
     private byte[] scratch = new byte[0]; // REUSABLE COPY TARGET FOR ByteBuffer → line.write
     private boolean dropWarned; // A DROPPED CHUNK IS LOGGED ONCE PER ENGINE
 
+    // JAVA SOUND HAS NO OPENAL-STYLE SOURCE ID, SO source() STAYS 0
     JSEngine(final int bufferMs) {
         if (bufferMs <= 0) throw new IllegalArgumentException("bufferMs must be positive, got " + bufferMs);
         this.bufferMs = bufferMs;
-        // NO NATIVE SOURCE HANDLE — JAVA SOUND HAS NO OPENAL-STYLE SOURCE ID (source() STAYS 0)
     }
 
-    @Override
-    synchronized void pause() {
-        if (this.line != null) this.line.stop();
-        this.started = false;
-    }
-
-    @Override
-    synchronized void play() {
-        // A STARTED LINE RENDERS WHATEVER IS WRITTEN AND AUTO-RESUMES AFTER AN UNDERRUN, SO START ONCE PER PAUSE CYCLE
-        if (this.line == null || this.started) return;
-        this.line.start();
-        this.started = true;
-    }
-
-    @Override
-    public boolean canSpeed() { return false; }
-
-    @Override
-    boolean speed(final float speed) {
-        return false; // JAVA SOUND DOESN'T SUPPORT SPEED — REFUSED, PLAYBACK STAYS AT 1.0×
-    }
-
-    @Override
-    synchronized void gain() {
-        // MASTER_GAIN IS LOGARITHMIC (dB = 20·log10(linearGain)), CLAMPED TO THE CONTROL RANGE; SOME MIXERS EXPOSE NO CONTROL
-        final FloatControl c = this.gainControl;
-        if (c == null) return;
-        final float gain = this.volume;
-        if (gain <= 0.0f) {
-            c.setValue(c.getMinimum()); // SILENCE
-            return;
-        }
-        final float db = (float) (20.0 * Math.log10(gain));
-        c.setValue(Math.min(c.getMaximum(), Math.max(c.getMinimum(), db)));
-    }
-
-    @Override
-    synchronized void destroy() {
-        this.closeLine();
-        this.gainControl = null; // A LATE volume() CAN'T DRIVE A CLOSED LINE
-    }
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public ChannelSupport[] supportedChannels() {
@@ -116,6 +78,13 @@ public final class JSEngine extends SFXEngine {
     public SampleType[] supportedTypes() {
         return SUPPORTED_TYPES.clone();
     }
+
+    @Override
+    public boolean canSpeed() { return false; }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     synchronized boolean apply(final SampleType type, final int channels, final int sampleRate) {
@@ -129,8 +98,8 @@ public final class JSEngine extends SFXEngine {
         // OPENS A FRESH LINE WITH DEPTH ≈ bufferMs, DROPPING QUEUED AUDIO LIKE ALEngine's FLUSH
         final boolean reusable = this.line != null && this.line.isOpen() && fmt.matches(this.line.getFormat());
         if (!reusable && !this.openLine(fmt, (int) ((long) sampleRate * frameSize * this.bufferMs / 1_000L))) {
-            // NO OPENABLE LINE FOR THIS FORMAT (NO DEVICE, UNSUPPORTED COMBINATION, ...) — REPORT
-            // NO AUDIO INSTEAD OF CRASHING PLAYER CREATION
+            // NO OPENABLE LINE FOR THIS FORMAT (NO DEVICE, UNSUPPORTED COMBINATION, ...): REPORT NO AUDIO
+            // INSTEAD OF CRASHING PLAYER CREATION
             LOGGER.error(IT, "Java Sound line unavailable for type={} ch={} rate={}", type, channels, sampleRate);
             return false;
         }
@@ -158,8 +127,8 @@ public final class JSEngine extends SFXEngine {
             if (resume) this.play();
         }
         final SourceDataLine l = this.line;
-        // NON-BLOCKING: available() < len MEANS THE LINE IS FULL — BACKPRESSURE, LIKE ALEngine's
-        // EXHAUSTED POOL. THE MIXER ONLY FREES SPACE, SO A len ≤ available() WRITE CANNOT BLOCK.
+        // NON-BLOCKING: available() < len MEANS THE LINE IS FULL (BACKPRESSURE, LIKE ALEngine's EXHAUSTED POOL).
+        // THE MIXER ONLY FREES SPACE, SO A len ≤ available() WRITE CANNOT BLOCK
         if (l.available() < len) return false;
         if (this.scratch.length < len) this.scratch = new byte[len];
         data.get(data.position(), this.scratch, 0, len); // ABSOLUTE READ: position NEVER MOVES (UPLOAD CONTRACT)
@@ -173,7 +142,7 @@ public final class JSEngine extends SFXEngine {
         final SourceDataLine l = this.line;
         if (l == null) return;
         // STOP + DISCARD (SEEK/QUALITY SWITCH): FLUSHED FRAMES NEVER ADVANCE getLongFramePosition(),
-        // SO ALIGNING framesWritten TO IT ZEROES pendingMs() CORRECTLY.
+        // SO ALIGNING framesWritten TO IT ZEROES pendingMs() CORRECTLY
         l.stop();
         l.flush();
         this.started = false;
@@ -188,8 +157,51 @@ public final class JSEngine extends SFXEngine {
         return pendingFrames <= 0 ? 0 : pendingFrames * 1_000L / this.sampleRate;
     }
 
+    @Override
+    synchronized void pause() {
+        if (this.line != null) this.line.stop();
+        this.started = false;
+    }
+
+    @Override
+    synchronized void play() {
+        // A STARTED LINE RENDERS WHATEVER IS WRITTEN AND AUTO-RESUMES AFTER AN UNDERRUN, SO START ONCE PER PAUSE CYCLE
+        if (this.line == null || this.started) return;
+        this.line.start();
+        this.started = true;
+    }
+
+    @Override
+    boolean speed(final float speed) {
+        return false; // JAVA SOUND DOESN'T SUPPORT SPEED: REFUSED, PLAYBACK STAYS AT 1.0×
+    }
+
+    @Override
+    synchronized void gain() {
+        // MASTER_GAIN IS LOGARITHMIC (dB = 20·log10(linearGain)), CLAMPED TO THE CONTROL RANGE; SOME MIXERS EXPOSE NO CONTROL
+        final FloatControl c = this.gainControl;
+        if (c == null) return;
+        final float gain = this.volume;
+        if (gain <= 0.0f) {
+            c.setValue(c.getMinimum()); // SILENCE
+            return;
+        }
+        final float db = (float) (20.0 * Math.log10(gain));
+        c.setValue(Math.min(c.getMaximum(), Math.max(c.getMinimum(), db)));
+    }
+
+    @Override
+    synchronized void destroy() {
+        this.closeLine();
+        this.gainControl = null; // A LATE volume() CAN'T DRIVE A CLOSED LINE
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     // OPENS A LINE FOR fmt WITH AT LEAST bytes OF BUFFER (FRAME-ALIGNED) AND INSTALLS IT IN PLACE OF THE CURRENT ONE;
-    // FALSE (CURRENT LINE UNTOUCHED, LOGGED AT DEBUG — THE CALLER DECIDES THE SEVERITY) WHEN THE MIXER HAS NO SUCH LINE
+    // FALSE (CURRENT LINE UNTOUCHED, LOGGED AT DEBUG SINCE THE CALLER DECIDES THE SEVERITY) WHEN THE MIXER HAS NO SUCH LINE
     private boolean openLine(final AudioFormat fmt, final int bytes) {
         final int frameSize = fmt.getFrameSize();
         final SourceDataLine fresh;

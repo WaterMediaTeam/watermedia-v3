@@ -60,6 +60,78 @@ public class FFEncoderTest {
     private static final Path DIRECTORY = Path.of("build", "test-ff-encoder");
     private static final int WIDTH = 128, HEIGHT = 96, FPS = 30, RATE_HZ = 48_000, SECONDS = 1;
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // FEEDS SECONDS OF A MOVING GRADIENT AND A 440 HZ TONE, INTERLEAVING AUDIO AFTER EVERY FRAME LIKE A CAPTURE WOULD
+    private static void encode(final Encoder encoder, final Encoder.Video video, final Encoder.Audio audio) throws IOException {
+        try (encoder) {
+            final ByteBuffer frame = video == null ? null : ByteBuffer.allocateDirect((int) video.frameBytes());
+            final int frames = SECONDS * FPS;
+            final int rate = audio == null ? 0 : audio.sampleRate();
+            long sent = 0;
+            for (int f = 0; f < frames; f++) {
+                if (video != null) {
+                    frame.clear();
+                    for (int i = 0; frame.hasRemaining(); i++) frame.put((byte) (i * 7 + f * 11));
+                    frame.flip();
+                    encoder.video(frame, f * 1_000_000L / FPS);
+                }
+                if (audio != null) {
+                    final long until = (long) rate * (f + 1) / FPS;
+                    encoder.audio(tone(audio, sent, (int) (until - sent)));
+                    sent = until;
+                }
+            }
+        }
+    }
+
+    private static ByteBuffer tone(final Encoder.Audio audio, final long start, final int samples) {
+        final ByteBuffer pcm = ByteBuffer.allocate(samples * audio.frameBytes()).order(ByteOrder.LITTLE_ENDIAN);
+        for (int s = 0; s < samples; s++) {
+            final double value = 0.25 * Math.sin(2 * Math.PI * 440 * (start + s) / audio.sampleRate());
+            for (int c = 0; c < audio.channels(); c++) {
+                if (audio.type() == SampleType.FLT) pcm.putFloat((float) value);
+                else pcm.putShort((short) (value * Short.MAX_VALUE));
+            }
+        }
+        return pcm.flip();
+    }
+
+    // READS THE STREAMS, THEIR PACKETS AND WHERE EACH ONE ENDS (LAST PTS PLUS DURATION) BACK WITH LIBAVFORMAT
+    private static Probe probe(final Path file) throws IOException {
+        final AVFormatContext context = new AVFormatContext(null);
+        final int opened = avformat.avformat_open_input(context, file.toAbsolutePath().toString(), null, null);
+        if (opened < 0) throw new IOException("avformat_open_input failed: " + opened);
+        final AVPacket packet = avcodec.av_packet_alloc();
+        try {
+            if (avformat.avformat_find_stream_info(context, (PointerPointer<?>) null) < 0) throw new IOException("avformat_find_stream_info failed");
+            final int streams = context.nb_streams();
+            final int[] packets = new int[streams];
+            final long[] ends = new long[streams];
+            while (avformat.av_read_frame(context, packet) >= 0) {
+                final int index = packet.stream_index();
+                final AVRational base = context.streams(index).time_base();
+                packets[index]++;
+                ends[index] = Math.max(ends[index], (packet.pts() + packet.duration()) * 1_000_000L * base.num() / base.den());
+                avcodec.av_packet_unref(packet);
+            }
+            final List<Track> tracks = new ArrayList<>();
+            for (int i = 0; i < streams; i++) {
+                final AVCodecParameters parameters = context.streams(i).codecpar();
+                tracks.add(new Track(parameters.codec_type(), parameters.width(), parameters.height(),
+                        parameters.sample_rate(), parameters.ch_layout().nb_channels(), packets[i], ends[i]));
+            }
+            return new Probe(context.duration(), tracks);
+        } finally {
+            avcodec.av_packet_free(packet);
+            avformat.avformat_close_input(context);
+        }
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Arguments")
     class Arguments {
@@ -95,7 +167,7 @@ public class FFEncoderTest {
         @Test
         @DisplayName("Wrong frames, timestamps that do not increase, split samples and use after close are refused")
         void misuse() throws IOException {
-            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
+            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
             final Encoder encoder = CodecsAPI.encoder(Container.WEBM, new ByteArrayOutputStream(),
                     new Encoder.Video(VideoCodec.VP9, 16, 16, PixelFormat.BGRA, FPS), new Encoder.Audio(AudioCodec.OPUS, RATE_HZ, 2, SampleType.S16));
             final ByteBuffer frame = ByteBuffer.allocateDirect(16 * 16 * 4);
@@ -121,7 +193,7 @@ public class FFEncoderTest {
         @Test
         @DisplayName("A codec that cannot take the track's channel count is refused with the counts it takes")
         void channels() {
-            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
+            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
             final IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> CodecsAPI.encoder(Container.MKV,
                     new ByteArrayOutputStream(), null, new Encoder.Audio(AudioCodec.MP3, RATE_HZ, 6, SampleType.S16)));
             assertTrue(refused.getMessage().contains("MP3"), refused.getMessage());
@@ -135,7 +207,7 @@ public class FFEncoderTest {
 
         @BeforeAll
         void natives() throws IOException {
-            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
+            assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
             Files.createDirectories(DIRECTORY);
         }
 
@@ -264,81 +336,12 @@ public class FFEncoderTest {
         }
     }
 
-    // ==========================================================================
-    // UTILITY
-    // ==========================================================================
-    // FEEDS SECONDS OF A MOVING GRADIENT AND A 440 HZ TONE, INTERLEAVING AUDIO AFTER EVERY FRAME LIKE A CAPTURE WOULD
-    private static void encode(final Encoder encoder, final Encoder.Video video, final Encoder.Audio audio) throws IOException {
-        try (encoder) {
-            final ByteBuffer frame = video == null ? null : ByteBuffer.allocateDirect((int) video.frameBytes());
-            final int frames = SECONDS * FPS;
-            final int rate = audio == null ? 0 : audio.sampleRate();
-            long sent = 0;
-            for (int f = 0; f < frames; f++) {
-                if (video != null) {
-                    frame.clear();
-                    for (int i = 0; frame.hasRemaining(); i++) frame.put((byte) (i * 7 + f * 11));
-                    frame.flip();
-                    encoder.video(frame, f * 1_000_000L / FPS);
-                }
-                if (audio != null) {
-                    final long until = (long) rate * (f + 1) / FPS;
-                    encoder.audio(tone(audio, sent, (int) (until - sent)));
-                    sent = until;
-                }
-            }
-        }
-    }
-
-    private static ByteBuffer tone(final Encoder.Audio audio, final long start, final int samples) {
-        final ByteBuffer pcm = ByteBuffer.allocate(samples * audio.frameBytes()).order(ByteOrder.LITTLE_ENDIAN);
-        for (int s = 0; s < samples; s++) {
-            final double value = 0.25 * Math.sin(2 * Math.PI * 440 * (start + s) / audio.sampleRate());
-            for (int c = 0; c < audio.channels(); c++) {
-                if (audio.type() == SampleType.FLT) pcm.putFloat((float) value);
-                else pcm.putShort((short) (value * Short.MAX_VALUE));
-            }
-        }
-        return pcm.flip();
-    }
-
     private record Track(int type, int width, int height, int sampleRate, int channels, int packets, long endUs) {}
 
     private record Probe(long durationUs, List<Track> tracks) {
         Track track(final int type) {
             for (final Track track: this.tracks) if (track.type() == type) return track;
             return null;
-        }
-    }
-
-    // READS THE STREAMS, THEIR PACKETS AND WHERE EACH ONE ENDS (LAST PTS PLUS DURATION) BACK WITH LIBAVFORMAT
-    private static Probe probe(final Path file) throws IOException {
-        final AVFormatContext context = new AVFormatContext(null);
-        final int opened = avformat.avformat_open_input(context, file.toAbsolutePath().toString(), null, null);
-        if (opened < 0) throw new IOException("avformat_open_input failed: " + opened);
-        final AVPacket packet = avcodec.av_packet_alloc();
-        try {
-            if (avformat.avformat_find_stream_info(context, (PointerPointer<?>) null) < 0) throw new IOException("avformat_find_stream_info failed");
-            final int streams = context.nb_streams();
-            final int[] packets = new int[streams];
-            final long[] ends = new long[streams];
-            while (avformat.av_read_frame(context, packet) >= 0) {
-                final int index = packet.stream_index();
-                final AVRational base = context.streams(index).time_base();
-                packets[index]++;
-                ends[index] = Math.max(ends[index], (packet.pts() + packet.duration()) * 1_000_000L * base.num() / base.den());
-                avcodec.av_packet_unref(packet);
-            }
-            final List<Track> tracks = new ArrayList<>();
-            for (int i = 0; i < streams; i++) {
-                final AVCodecParameters parameters = context.streams(i).codecpar();
-                tracks.add(new Track(parameters.codec_type(), parameters.width(), parameters.height(),
-                        parameters.sample_rate(), parameters.ch_layout().nb_channels(), packets[i], ends[i]));
-            }
-            return new Probe(context.duration(), tracks);
-        } finally {
-            avcodec.av_packet_free(packet);
-            avformat.avformat_close_input(context);
         }
     }
 }

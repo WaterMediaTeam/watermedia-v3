@@ -13,7 +13,7 @@ import java.util.List;
  * Bridge a Vulkan consumer implements to lend {@link VKEngine}
  * the device it renders with.
  * <p>
- * The engine never creates or owns a Vulkan device — it borrows the consumer's
+ * The engine never creates or owns a Vulkan device: it borrows the consumer's
  * {@link VkInstance}/{@link VkDevice} so the {@code VkImageView} it produces is sampleable by the
  * consumer's own pipeline. Ownership stays with the consumer, and the engine must never destroy
  * any object returned here. Every object must outlive every {@code VKEngine} built over this
@@ -26,6 +26,10 @@ import java.util.List;
  * class's own {@code vkDevice()} accessor verbatim.
  */
 public interface VKContext {
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** The Vulkan instance {@link #vkDevice()} was created from. */
     VkInstance vkInstance();
@@ -42,7 +46,7 @@ public interface VKContext {
      */
     VkQueue queue();
 
-    /** Queue-family index of {@link #queue()} — the engine creates its command pool on it. */
+    /** Queue-family index of {@link #queue()}; the engine creates its command pool on it. */
     int queueFamily();
 
     /**
@@ -118,6 +122,10 @@ public interface VKContext {
      * converts the decoded frames with its own shaders.
      */
     default DeviceInfo deviceInfo() { return null; }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     /**
      * What a device was created with: the feature chain given to {@code vkCreateDevice} (kept allocated and

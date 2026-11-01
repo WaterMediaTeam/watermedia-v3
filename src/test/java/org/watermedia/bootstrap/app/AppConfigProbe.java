@@ -15,6 +15,10 @@ import java.util.Set;
 
 /** Runs the launcher and the app spec against one {@code config/app.properties} in a fresh working directory. */
 public final class AppConfigProbe {
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     public static void main(final String[] arguments) throws Exception {
         final String scenario = arguments[0];
         final Field preferences = AppBootstrap.class.getDeclaredField("PREFERENCES");
@@ -63,6 +67,9 @@ public final class AppConfigProbe {
         System.exit(0);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     private static String launcherEngine() throws Exception {
         final Method engine = AppBootstrap.class.getDeclaredMethod("engine");
         engine.setAccessible(true);

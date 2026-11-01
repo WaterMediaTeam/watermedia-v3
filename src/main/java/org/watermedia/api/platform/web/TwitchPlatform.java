@@ -39,6 +39,10 @@ import static org.watermedia.tools.JSONTool.*;
 public final class TwitchPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(TwitchPlatform.class.getSimpleName());
     public static final String NAME = "Twitch";
+    private static final String[] HOSTS = {
+            "twitch.tv", "www.twitch.tv", "m.twitch.tv", "go.twitch.tv",
+            "player.twitch.tv", "clips.twitch.tv"
+    };
 
     // TWITCH GQL ENDPOINT AND USHER CDN URLS
     private static final URI GQL = URI.create("https://gql.twitch.tv/gql");
@@ -60,7 +64,7 @@ public final class TwitchPlatform implements Platform {
                     " channels { edges { item { ... on User {" +
                     " login displayName profileImageURL(width: 300) broadcastSettings { title } stream { previewImageURL } } } } } } }";
 
-    // PERSISTED QUERY HASHES — ALIGNED WITH YT-DLP'S TWITCH EXTRACTOR
+    // PERSISTED QUERY HASHES, ALIGNED WITH YT-DLP'S TWITCH EXTRACTOR
     private static final String HASH_STREAM_METADATA = "ad022ca32220d5523d03a23cbcb5beaa1e0999889c1f8f78f9f2520dafb5cae6";
     private static final String HASH_COMSCORE = "e1edae8122517d013405f237ffcc124515dc6ded82480a88daef69c83b53ac01";
     private static final String HASH_VIDEO_PREVIEW = "9515480dee68a77e667cb19de634739d33f243572b007e98e67184b1a5d8369f";
@@ -77,17 +81,16 @@ public final class TwitchPlatform implements Platform {
     // USHER PLAYLISTS CARRY SHORT-LIVED ACCESS TOKENS
     private static final Duration TTL = Duration.ofMinutes(30);
 
-    private static final String[] HOSTS = {
-            "twitch.tv", "www.twitch.tv", "m.twitch.tv", "go.twitch.tv",
-            "player.twitch.tv", "clips.twitch.tv"
-    };
-
     // /videos/{id}, /{user}/v/{id}, /{user}/video/{id}
     private static final Pattern VOD_PATH = Pattern.compile("^/(?:[^/]+/v(?:ideo)?|videos)/(\\d+)");
     // /{user}/clip/{slug}
     private static final Pattern CLIP_PATH = Pattern.compile("^/(?:[^/]+/)?clip/([^/?#&]+)");
     // /{channel}
     private static final Pattern CHANNEL_PATH = Pattern.compile("^/([^/#?]+)/?$");
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -160,6 +163,10 @@ public final class TwitchPlatform implements Platform {
         return this.hits(data, limit);
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     // THE PLAYABLE CHANNELS OF A SEARCH: AN OFFLINE ONE (NO stream) FAILS THE MOMENT IT IS OPENED, SO ONLY LIVE ONES ARE HITS
     List<PlatformResult> hits(final JsonObject data, final int limit) {
         final JsonArray edges = arr(obj(data, "searchFor", "channels"), "edges");
@@ -191,7 +198,9 @@ public final class TwitchPlatform implements Platform {
         return out;
     }
 
-    // ==== CONTENT-TYPE HANDLERS ====
+    // ==========================================================================
+    // CONTENT-TYPE HANDLERS
+    // ==========================================================================
 
     private Resolution resolveStream(final String channel) throws IOException {
         ensureNotMature(ContentKind.STREAM, channel);
@@ -291,7 +300,9 @@ public final class TwitchPlatform implements Platform {
                         clipVariants, null, null));
     }
 
-    // ==== HLS PLAYLIST ====
+    // ==========================================================================
+    // HLS PLAYLIST
+    // ==========================================================================
 
     // USHER MASTER PLAYLIST URL SIGNED WITH A FRESH PLAYBACK ACCESS TOKEN
     private static URI playlist(final String id, final boolean isVod) throws IOException {
@@ -326,10 +337,9 @@ public final class TwitchPlatform implements Platform {
                 "&token=" + URLEncoder.encode(value, StandardCharsets.UTF_8));
     }
 
-    // ==== METADATA ====
-
-    // online IS STREAM-ONLY (user.stream != null); IT IS ALWAYS true FOR A RESOLVED VOD
-    private record MetadataWithThumbnail(Metadata metadata, URI thumbnail, boolean online) {}
+    // ==========================================================================
+    // METADATA
+    // ==========================================================================
 
     // null MEANS THE CHANNEL DOES NOT EXIST; TRANSPORT AND SHAPE FAILURES PROPAGATE TO THE CALLER
     private static MetadataWithThumbnail fetchStreamMetadata(final String channel) throws IOException {
@@ -353,7 +363,7 @@ public final class TwitchPlatform implements Platform {
 
         final JsonArray results = gql(batch, JsonArray.class);
 
-        // STREAM METADATA — USER EXISTENCE + STREAM STATE; A MISSING data IS A GQL ERROR, NOT A MISSING CHANNEL
+        // STREAM METADATA: USER EXISTENCE + STREAM STATE; A MISSING data IS A GQL ERROR, NOT A MISSING CHANNEL
         final JsonObject data = obj(results.get(0), "data");
         if (data == null) throw new IOException("Twitch StreamMetadata for '" + channel + "' answered without data");
         final JsonObject user = obj(data, "user");
@@ -367,12 +377,12 @@ public final class TwitchPlatform implements Platform {
             catch (final DateTimeParseException e) { LOGGER.warn(IT, "Twitch unparseable createdAt '{}' for '{}'", createdStr, channel, e); }
         }
 
-        // COMSCORE — TITLE + AUTHOR
+        // COMSCORE: TITLE + AUTHOR
         final JsonObject sqUser = results.size() > 1 ? obj(results.get(1), "data", "user") : null;
         final String displayName = str(sqUser, "displayName");
         String title = str(obj(sqUser, "broadcastSettings"), "title");
 
-        // VIDEO PREVIEW — STREAM THUMBNAIL (NOT PROFILE IMAGE)
+        // VIDEO PREVIEW: STREAM THUMBNAIL (NOT PROFILE IMAGE)
         final URI thumbnailUri = results.size() > 2 ? DataTool.uri(str(obj(results.get(2), "data", "user", "stream"), "previewImageURL")) : null;
 
         if ("rerun".equals(str(stream, "type")) && title != null) title = title + " (rerun)";
@@ -409,9 +419,9 @@ public final class TwitchPlatform implements Platform {
         return new MetadataWithThumbnail(metadata, thumbnailUri, true);
     }
 
-    // ==== MATURE CONTENT ====
-
-    private enum ContentKind { STREAM, VOD, CLIP }
+    // ==========================================================================
+    // MATURE CONTENT
+    // ==========================================================================
 
     // QUERIES TWITCH'S CONTENT CLASSIFICATION SIGN POST AND ABORTS WHEN THE CONTENT IS MATURE
     // AND THE HOST DISABLED MATURE CONTENT. RUNS BEFORE ANY PLAYLIST/CLIP FETCH SO NO DATA IS RETRIEVED.
@@ -441,7 +451,9 @@ public final class TwitchPlatform implements Platform {
             throw new MatureContentException(NAME, kind.name().toLowerCase(Locale.ROOT) + " '" + id + "' is marked as mature content");
     }
 
-    // ==== GQL HELPERS ====
+    // ==========================================================================
+    // GQL HELPERS
+    // ==========================================================================
 
     // POSTS ONE GQL OPERATION (AN OBJECT ANSWER) OR A BATCH (AN ARRAY ANSWER)
     private static <T> T gql(final Object body, final Class<T> type) throws PlatformException {
@@ -466,4 +478,12 @@ public final class TwitchPlatform implements Platform {
         op.put("extensions", Map.of("persistedQuery", Map.of("version", 1, "sha256Hash", hash)));
         return op;
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    // online IS STREAM-ONLY (user.stream != null); IT IS ALWAYS true FOR A RESOLVED VOD
+    private record MetadataWithThumbnail(Metadata metadata, URI thumbnail, boolean online) {}
+    private enum ContentKind { STREAM, VOD, CLIP }
 }

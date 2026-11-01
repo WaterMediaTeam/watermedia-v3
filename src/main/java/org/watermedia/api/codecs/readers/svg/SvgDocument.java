@@ -15,12 +15,12 @@ import java.util.Set;
 /**
  * A parsed SVG document ready to rasterize: resolves the intrinsic size and {@code viewBox}, builds every gradient
  * up front (so {@code url(#id)} resolves in any document order) and walks the element tree per render, deriving
- * {@link RenderState} down the hierarchy into a {@link RasterOutput}; non-rendered containers are skipped.
+ * {@link RenderState} down the hierarchy into a {@link SvgRasterizer}; non-rendered containers are skipped.
  */
 final class SvgDocument {
     // SVG FALLBACK INTRINSIC SIZE WHEN NEITHER width/height NOR viewBox GIVE ONE
     private static final double DEFAULT_W = 300, DEFAULT_H = 150;
-    // GUARD AGAINST ADVERSARIAL DEEP NESTING — REAL DOCUMENTS NEST A FEW LEVELS, NEVER HUNDREDS
+    // GUARD AGAINST ADVERSARIAL DEEP NESTING: REAL DOCUMENTS NEST A FEW LEVELS, NEVER HUNDREDS
     private static final int MAX_DEPTH = 512;
     // THE href TEMPLATE CHAIN IS WALKED ONCE PER GRADIENT AND AGAIN PER ATTRIBUTE LOOKUP, SO AN
     // UNBOUNDED LENGTH IS QUADRATIC IN THE GRADIENT COUNT. REAL DOCUMENTS USE A SINGLE HOP
@@ -80,10 +80,13 @@ final class SvgDocument {
         this.collectGradients(root);
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     double intrinsicWidth() { return this.intrinsicW; }
     double intrinsicHeight() { return this.intrinsicH; }
 
-    void render(final RasterOutput out) throws CodecException {
+    void render(final SvgRasterizer out) throws CodecException {
         // display:none ON THE ROOT HIDES THE WHOLE DOCUMENT
         if (hidden(this.root)) return;
         final Affine view = this.viewTransform(out.width(), out.height());
@@ -92,6 +95,9 @@ final class SvgDocument {
         for (final SvgNode child: this.root.children()) this.renderNode(child, base, out, 1);
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private Affine viewTransform(final int outW, final int outH) {
         if (this.hasViewBox) {
             final double sx = outW / this.vbW, sy = outH / this.vbH;
@@ -104,14 +110,14 @@ final class SvgDocument {
         return Affine.scale(outW / this.intrinsicW, outH / this.intrinsicH);
     }
 
-    private void renderNode(final SvgNode node, final RenderState state, final RasterOutput out, final int depth) throws CodecException {
+    private void renderNode(final SvgNode node, final RenderState state, final SvgRasterizer out, final int depth) throws CodecException {
         if (depth > MAX_DEPTH) throw new CodecException("SVG nesting exceeds " + MAX_DEPTH + " levels");
-        // display:none REMOVES THE ELEMENT AND ITS ENTIRE SUBTREE FROM RENDERING (NOT INHERITED — CHECK PER NODE)
+        // display:none REMOVES THE ELEMENT AND ITS ENTIRE SUBTREE FROM RENDERING (NOT INHERITED, SO CHECKED PER NODE)
         if (hidden(node)) return;
         switch (node.tag()) {
             case "defs", "lineargradient", "radialgradient", "stop", "filter", "clippath",
                  "mask", "pattern", "symbol", "marker", "title", "desc", "metadata", "style", "script", "use" -> {
-                // NON-RENDERED OR UNSUPPORTED — SKIP THE SUBTREE
+                // NON-RENDERED OR UNSUPPORTED: SKIP THE SUBTREE
             }
             case "g", "a", "svg" -> {
                 final RenderState child = state.derive(node, this.gradients, this.refD);
@@ -149,11 +155,6 @@ final class SvgDocument {
                 if (s.stroke() != null && s.strokeWidth() > 0) out.stroke(geo, s.ctm(), s.strokeWidth(), s.stroke(), s.strokeOpacity() * s.opacity());
             }
         }
-    }
-
-    private static boolean hidden(final SvgNode node) {
-        final String display = node.attr("display");
-        return display != null && display.trim().equalsIgnoreCase("none");
     }
 
     private Path geometry(final SvgNode node) throws CodecException {
@@ -202,9 +203,6 @@ final class SvgDocument {
         return p;
     }
 
-    // ==========================================================================
-    // GRADIENTS
-    // ==========================================================================
     private void collectGradients(final SvgNode node) throws CodecException {
         // FIRST INDEX ALL GRADIENT NODES BY id (FOR href TEMPLATE RESOLUTION), THEN BUILD PAINTS
         final Map<String, SvgNode> nodes = new HashMap<>();
@@ -214,22 +212,12 @@ final class SvgDocument {
             if (tag.equals("lineargradient")) {
                 this.gradients.put(e.getKey(), this.buildLinear(e.getValue(), nodes));
             } else if (tag.equals("radialgradient")) {
-                // RADIAL RENDERING IS OUT OF SCOPE — APPROXIMATE WITH A SOLID (AVERAGE OF STOPS) SO A
+                // RADIAL RENDERING IS OUT OF SCOPE: APPROXIMATE WITH A SOLID (AVERAGE OF STOPS) SO A
                 // SHAPE PAINTED WITH url(#radial) STILL SHOWS A PLAUSIBLE COLOUR INSTEAD OF VANISHING
                 final SvgPaint fallback = buildRadialFallback(e.getValue(), nodes);
                 if (fallback != null) this.gradients.put(e.getKey(), fallback);
             }
         }
-    }
-
-    private static void indexGradients(final SvgNode node, final Map<String, SvgNode> out, final int depth) throws CodecException {
-        if (depth > MAX_DEPTH) throw new CodecException("SVG nesting exceeds " + MAX_DEPTH + " levels");
-        final String tag = node.tag();
-        if (tag.equals("lineargradient") || tag.equals("radialgradient")) {
-            final String id = node.attr("id");
-            if (id != null) out.put(id, node);
-        }
-        for (final SvgNode c: node.children()) indexGradients(c, out, depth + 1);
     }
 
     private SvgPaint buildLinear(final SvgNode node, final Map<String, SvgNode> nodes) throws CodecException {
@@ -256,6 +244,24 @@ final class SvgDocument {
             cols[i] = stopColor(stop);
         }
         return new SvgPaint.Linear(x1, y1, x2, y2, userSpace, gt, offs, cols);
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static boolean hidden(final SvgNode node) {
+        final String display = node.attr("display");
+        return display != null && display.trim().equalsIgnoreCase("none");
+    }
+
+    private static void indexGradients(final SvgNode node, final Map<String, SvgNode> out, final int depth) throws CodecException {
+        if (depth > MAX_DEPTH) throw new CodecException("SVG nesting exceeds " + MAX_DEPTH + " levels");
+        final String tag = node.tag();
+        if (tag.equals("lineargradient") || tag.equals("radialgradient")) {
+            final String id = node.attr("id");
+            if (id != null) out.put(id, node);
+        }
+        for (final SvgNode c: node.children()) indexGradients(c, out, depth + 1);
     }
 
     // PARSES A <stop>: stop-color (BLACK BY DEFAULT) WITH stop-opacity FOLDED INTO THE ALPHA

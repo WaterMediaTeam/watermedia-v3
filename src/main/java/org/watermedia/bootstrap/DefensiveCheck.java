@@ -23,7 +23,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class DefensiveCheck {
     private static final Marker IT = MarkerManager.getMarker(DefensiveCheck.class.getSimpleName());
 
-    // ==== TLAUNCHER SIGNATURES ====
+    // TLAUNCHER SIGNATURES
     // THE LAUNCHER RUNS THE GAME IN ITS OWN JVM; WHAT REACHES IT IS THE SKIN MOD IT COPIES INTO mods/, ITS PATCHED
     // authlib/patchy/netty LIBRARIES UNDER org/tlauncher AND, ON OLDER SETUPS, THE JAVA RUNTIME OF ITS DATA FOLDER
     private static final String PACKAGE = "org.tlauncher.";
@@ -58,6 +58,9 @@ public final class DefensiveCheck {
 
     private DefensiveCheck() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Throws when this game process belongs to TLauncher; leftovers of a past install only warn. A null game directory is the working directory. */
     public static void run(final Path gameDir) {
         final List<String> evidence = new ArrayList<>();
@@ -180,7 +183,9 @@ public final class DefensiveCheck {
         else LOGGER.warn(IT, "TLauncher leftovers found but another launcher started the game; remove them: {}", footprints);
     }
 
-    // ==== UTILITY ====
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // RETURNS THE FIRST SIGNATURE IN THE TEXT WITH ITS SURROUNDING CONTEXT, OR NULL
     static String found(final String text) {
         if (text == null) return null;

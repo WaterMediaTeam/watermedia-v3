@@ -29,6 +29,10 @@ public final class Header extends Group<Header> {
         this.height = H;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /** Sets the screen name (rendered bold uppercase). */
     public Header name(final String value) {
         this.name = value == null ? "" : value;
@@ -54,6 +58,10 @@ public final class Header extends Group<Header> {
         if (element != null) this.add(element);
         return this;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
@@ -139,6 +147,10 @@ public final class Header extends Group<Header> {
         }
         super.onDraw(canvas);
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private int tagWidth(final String label) {
         return this.ctx.text.width(label.toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY) + 28;

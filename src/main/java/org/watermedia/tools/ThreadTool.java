@@ -16,19 +16,14 @@ public final class ThreadTool {
 
     private ThreadTool() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Starts a daemon thread with normal priority named {@code name-N}. */
     public static Thread thread(final String name, final Runnable task) {
         final Thread t = factory(name, Thread.NORM_PRIORITY).newThread(task);
         t.start();
         return t;
-    }
-
-    public static boolean tryAcquire(final Semaphore semaphore, final long timeout, final TimeUnit unit) {
-        try { return semaphore.tryAcquire(timeout, unit); }
-        catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
     }
 
     /** Creates daemon threads named {@code name-N}; the priority is clamped to the valid range. */
@@ -62,13 +57,21 @@ public final class ThreadTool {
     /** Whether this thread is executing an owned service worker. */
     public static boolean workerThread() { return Boolean.TRUE.equals(WORKER.get()); }
 
+    public static boolean tryAcquire(final Semaphore semaphore, final long timeout, final TimeUnit unit) {
+        try { return semaphore.tryAcquire(timeout, unit); }
+        catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
     public static boolean join(final Thread target) {
         boolean interrupted = false;
         while (target.isAlive()) {
             try {
                 target.join();
             } catch (final InterruptedException e) {
-                interrupted = true; // KEEP WAITING — RESTORE THE STATUS ONCE THE TARGET DIES
+                interrupted = true; // KEEP WAITING, THEN RESTORE THE STATUS ONCE THE TARGET DIES
             }
         }
         if (interrupted) Thread.currentThread().interrupt();

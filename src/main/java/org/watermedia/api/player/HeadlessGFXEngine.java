@@ -6,8 +6,8 @@ import java.nio.ByteBuffer;
  * Headless {@link GFXEngine} that records frames into memory instead of a GPU.
  * <p>
  * There is no OpenGL or Vulkan context: uploads are captured, not rendered. It lets a
- * {@link MediaPlayer} run its full decode/upload pipeline where no display is available — CI,
- * headless validation, image processing — and lets callers introspect what the pipeline pushed
+ * {@link MediaPlayer} run its full decode/upload pipeline where no display is available (CI,
+ * headless validation, image processing) and lets callers introspect what the pipeline pushed
  * ({@link #uploadCount()}, {@link #lastUpload()}, {@link #format()}, {@link #activeFrame()}). It
  * needs no GPU but, like every engine and media player, it only exists on a client.
  * <p>
@@ -30,6 +30,10 @@ public final class HeadlessGFXEngine extends GFXEngine {
         this.preload = preload;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     @Override
     public boolean preload() { return this.preload; }
 
@@ -45,6 +49,10 @@ public final class HeadlessGFXEngine extends GFXEngine {
         final ByteBuffer[] frames = this.preloaded;
         return frames == null ? null : frames.clone();
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     boolean preload(final ByteBuffer[] frames) {

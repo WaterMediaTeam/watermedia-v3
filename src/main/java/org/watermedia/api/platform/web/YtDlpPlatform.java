@@ -33,7 +33,6 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -60,7 +59,7 @@ import static org.watermedia.tools.JSONTool.str;
 public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
     private static final Marker IT = MarkerManager.getMarker(YtDlpPlatform.class.getSimpleName());
     public static final String NAME = "yt-dlp";
-    // HOST SUFFIXES, MATCHED CASE-INSENSITIVELY WITH endsWith SO SUBDOMAINS (www./m./web.) ARE COVERED
+    // HOST SUFFIXES, MATCHED WITH A DOT BOUNDARY SO SUBDOMAINS (www./m./web.) ARE COVERED
     private static final String[] HOSTS = {
             "soundcloud.com", "snd.sc",     // SOUNDCLOUD
             "facebook.com", "fb.watch",     // FACEBOOK
@@ -77,14 +76,16 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
 
     private final YtDlpBinary binary = new YtDlpBinary();
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     @Override
-    public String name() {
-        return NAME;
-    }
+    public String name() { return NAME; }
 
     @Override
     public Resolution resolve(final URI uri) throws PlatformException {
-        if (!hostMatches(uri.getHost(), HOSTS)) return null;
+        if (!WebRequests.hostMatches(uri.getHost(), HOSTS)) return null;
         // A BARE HOST NAMES NOTHING TO PLAY; SPAWNING yt-dlp TO FIND THAT OUT WOULD COST TWO MINUTES
         if (uri.getPath() == null || uri.getPath().length() < 2) throw PlatformException.unsupported(this.name(), uri);
         final JsonObject info;
@@ -96,20 +97,9 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         return this.extract(info);
     }
 
-    // ====================================================================================================
-    // yt-dlp ENGINE — SHARED WITH YouTubePlatform
-    // ====================================================================================================
-
-    // CASE-INSENSITIVE HOST-SUFFIX MATCH WITH A DOT BOUNDARY: host EQUALS OR ENDS WITH ".<suffix>",
-    // SO SUBDOMAINS (www./m.) MATCH BUT LOOKALIKES LIKE "notyoutube.com"/"xinstagr.am" DO NOT
-    protected static boolean hostMatches(final String host, final String[] suffixes) {
-        if (host == null) return false;
-        final String h = host.toLowerCase(Locale.ROOT);
-        for (final String suffix: suffixes) {
-            if (h.equals(suffix) || h.endsWith("." + suffix)) return true;
-        }
-        return false;
-    }
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     /** Runs yt-dlp with the configured network timeout; shorthand for {@link #info(String, List, int)}. */
     protected JsonObject info(final String url, final List<String> extraArgs) throws IOException {
@@ -192,18 +182,6 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         return out.toString();
     }
 
-    private static String readAll(final InputStream in) {
-        try (in) {
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (final IOException e) {
-            return "";
-        }
-    }
-
-    // ====================================================================================================
-    // JSON → Resolution EXTRACTION — SHARED WITH YouTubePlatform
-    // ====================================================================================================
-
     /** Builds the {@link Resolution} from yt-dlp's JSON, one source per media object or playlist entry; failures carry {@link #name()}, so YouTube names itself. */
     protected Resolution extract(final JsonObject info) throws PlatformException {
         try {
@@ -239,6 +217,10 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
             throw new PlatformException(this.name(), "Unexpected yt-dlp JSON", e);
         }
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private Result single(final JsonObject media) throws PlatformException {
         // RESPECT THE MATURE-CONTENT GATE (yt-dlp REPORTS age_limit; >=18 IS AGE-RESTRICTED)
@@ -286,7 +268,7 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
                 if (height > 0 && !seenHeights.add(height)) continue;
                 final URI url = DataTool.uri(str(f, "url"));
                 if (url == null) continue;
-                // PER Quality'S CONTRACT, PASS 0 FOR AN UNKNOWN DIMENSION — NEVER FABRICATE A 16:9 WIDTH
+                // PER Quality'S CONTRACT, PASS 0 FOR AN UNKNOWN DIMENSION; NEVER FABRICATE A 16:9 WIDTH
                 final int width = Math.max(0, intOr(f, "width", 0));
                 variants.add(new Quality(url, width, height, (float) Math.max(0d, num(f, "fps"))));
                 if (headerSource == null) headerSource = f;
@@ -313,6 +295,18 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         }
 
         throw new PlatformException(this.name(), "No usable streams for " + str(media, "webpage_url"));
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static String readAll(final InputStream in) {
+        try (in) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (final IOException e) {
+            return "";
+        }
     }
 
     private static int heightOf(final JsonObject f) {
@@ -395,6 +389,10 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         final Instant signed = DataTool.expiry(uri);
         return signed != null ? signed : Instant.now().plus(FALLBACK_TTL);
     }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     // PAIRS A RESOLVED SOURCE WITH ITS EXPIRATION
     private record Result(Instant expires, Source source) {}

@@ -26,7 +26,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class JFXEngine extends SWEngine {
     private static final Marker IT = MarkerManager.getMarker(JFXEngine.class.getSimpleName());
-    // BOTH ARE REPLACED ON THE DECODE THREAD AND READ FROM THE FX THREAD (repaint) — HENCE volatile
+    // BOTH ARE REPLACED ON THE DECODE THREAD AND READ FROM THE FX THREAD (repaint), HENCE volatile
     private volatile WritableImage image;
     private volatile PixelBuffer<ByteBuffer> pixelBuffer;
     private volatile boolean loggedPresent;
@@ -34,6 +34,10 @@ public final class JFXEngine extends SWEngine {
     JFXEngine(final Runnable onFrame) {
         super(onFrame);
     }
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     /** The current frame image; changes on a resolution change, so re-read it after each frame. */
     public Image image() {
@@ -45,6 +49,10 @@ public final class JFXEngine extends SWEngine {
         final PixelBuffer<ByteBuffer> pb = this.pixelBuffer;
         if (pb != null) Platform.runLater(() -> pb.updateBuffer(b -> null));
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     void allocSurface(final int width, final int height, final ByteBuffer bgra) {
@@ -65,7 +73,7 @@ public final class JFXEngine extends SWEngine {
             LOGGER.debug(IT, "First frame presented ({}x{})", this.width, this.height);
         }
         // updateBuffer MUST RUN ON THE FX THREAD; null MARKS THE WHOLE BUFFER DIRTY. THE NEXT DECODE-THREAD
-        // WRITE INTO bgra MAY RACE PRISM'S READ — ACCEPTED: OPAQUE VIDEO FRAMES TEAR AT WORST ONE PULSE.
+        // WRITE INTO bgra MAY RACE PRISM'S READ, ACCEPTED: OPAQUE VIDEO FRAMES TEAR AT WORST ONE PULSE
         Platform.runLater(() -> pb.updateBuffer(b -> null));
     }
 

@@ -13,6 +13,9 @@ import java.util.Map;
  */
 record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd, SvgPaint stroke,
                    double strokeWidth, float strokeOpacity, float opacity, int color, boolean visible) {
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     // SVG INITIAL VALUES: BLACK FILL, NO STROKE, FULL OPACITY, NON-ZERO FILL RULE, VISIBLE
     static RenderState root(final Affine ctm) {
         return new RenderState(ctm, SvgPaint.solid(0xFF000000), 1f, false, null, 1.0, 1f, 1f, 0xFF000000, true);
@@ -68,6 +71,9 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
         return new RenderState(ctm, fill, fillOpacity, evenOdd, stroke, strokeWidth, strokeOpacity, opacity, color, visible);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // RESOLVES A fill/stroke VALUE: none → NULL, url(#id) → GRADIENT, A COLOUR → SOLID, ANYTHING ELSE → INHERITED
     private static SvgPaint resolvePaint(final String value, final SvgPaint inherited,
                                          final Map<String, SvgPaint> gradients, final int color) {

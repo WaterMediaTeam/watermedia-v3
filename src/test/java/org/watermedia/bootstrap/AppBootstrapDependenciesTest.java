@@ -51,6 +51,51 @@ import static org.junit.jupiter.api.Assertions.fail;
 public class AppBootstrapDependenciesTest {
     private static final String PIN = "[0-9a-f]{64}";
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static Properties catalog() throws IOException {
+        final Properties catalog = new Properties();
+        try (final InputStream source = AppBootstrap.class.getResourceAsStream("/bootstrap.properties")) {
+            assertNotNull(source, "The bootstrap must carry its processed catalog");
+            catalog.load(source);
+        }
+        return catalog;
+    }
+
+    private static void expect(final List<?> dependencies, final Properties versions, final String artifact,
+                               final String key, final String classifier, final boolean optional) throws Exception {
+        final String version = versions.getProperty(key + "_version");
+        final String name = artifact + "-" + version + (classifier == null ? "" : "-" + classifier) + ".jar";
+        for (final Object dependency: dependencies) {
+            if (!name.equals(value(dependency, "name"))) continue;
+            assertTrue(dependency.getClass().isRecord());
+            assertEquals(optional, value(dependency, "optional"));
+            final String group = artifact.startsWith("log4j") ? "org/apache/logging/log4j"
+                    : artifact.startsWith("lwjgl") ? "org/lwjgl"
+                    : artifact.equals("gson") ? "com/google/code/gson" : "org/joml";
+            assertEquals(URI.create("https://repo1.maven.org/maven2/" + group + "/" + artifact + "/" + version + "/" + name), value(dependency, "source"));
+            return;
+        }
+        fail("Missing dependency: " + name);
+    }
+
+    private static Object value(final Object dependency, final String name) throws Exception {
+        final Method method = dependency.getClass().getDeclaredMethod(name);
+        method.setAccessible(true);
+        return method.invoke(dependency);
+    }
+
+    private static void download(final URI source, final Path destination, final String sha256) throws Exception {
+        final Method download = Arrays.stream(AppBootstrap.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("download")).findFirst().orElseThrow();
+        download.setAccessible(true);
+        download.invoke(null, source, destination, sha256, null);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Catalog")
     class Catalog {
@@ -294,45 +339,5 @@ public class AppBootstrapDependenciesTest {
             }
             try (final var files = Files.list(directory)) { assertEquals(0, files.count()); }
         }
-    }
-
-    // UTILITY
-    private static Properties catalog() throws IOException {
-        final Properties catalog = new Properties();
-        try (final InputStream source = AppBootstrap.class.getResourceAsStream("/bootstrap.properties")) {
-            assertNotNull(source, "The bootstrap must carry its processed catalog");
-            catalog.load(source);
-        }
-        return catalog;
-    }
-
-    private static void expect(final List<?> dependencies, final Properties versions, final String artifact,
-                               final String key, final String classifier, final boolean optional) throws Exception {
-        final String version = versions.getProperty(key + "_version");
-        final String name = artifact + "-" + version + (classifier == null ? "" : "-" + classifier) + ".jar";
-        for (final Object dependency: dependencies) {
-            if (!name.equals(value(dependency, "name"))) continue;
-            assertTrue(dependency.getClass().isRecord());
-            assertEquals(optional, value(dependency, "optional"));
-            final String group = artifact.startsWith("log4j") ? "org/apache/logging/log4j"
-                    : artifact.startsWith("lwjgl") ? "org/lwjgl"
-                    : artifact.equals("gson") ? "com/google/code/gson" : "org/joml";
-            assertEquals(URI.create("https://repo1.maven.org/maven2/" + group + "/" + artifact + "/" + version + "/" + name), value(dependency, "source"));
-            return;
-        }
-        fail("Missing dependency: " + name);
-    }
-
-    private static Object value(final Object dependency, final String name) throws Exception {
-        final Method method = dependency.getClass().getDeclaredMethod(name);
-        method.setAccessible(true);
-        return method.invoke(dependency);
-    }
-
-    private static void download(final URI source, final Path destination, final String sha256) throws Exception {
-        final Method download = Arrays.stream(AppBootstrap.class.getDeclaredMethods())
-                .filter(method -> method.getName().equals("download")).findFirst().orElseThrow();
-        download.setAccessible(true);
-        download.invoke(null, source, destination, sha256, null);
     }
 }

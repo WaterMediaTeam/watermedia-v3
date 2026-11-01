@@ -75,7 +75,9 @@ public class JFXEngineTest {
         }
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
 
     // READS THE IMAGE AS PREMULTIPLIED BGRA ON THE FX THREAD; runLater IS FIFO, SO EVERY updateBuffer POSTED BY present() RAN FIRST
     private static byte[] pixels(final Image image) throws Exception {

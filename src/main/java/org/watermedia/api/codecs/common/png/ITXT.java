@@ -17,6 +17,9 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
     // CAP DECOMPRESSED TEXT: A FEW COMPRESSED BYTES CAN INFLATE TO GIGABYTES (DECOMPRESSION BOMB)
     private static final int MAX_DECOMPRESSED_BYTES = 2 * 1_024 * 1_024;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Reads a complete iTXt chunk (length, type, data and CRC) from the buffer. */
     public static ITXT read(final ByteBuffer buffer) throws IOException {
         return convert(PngChunk.read(buffer, SIGNATURE));
@@ -96,6 +99,9 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
         return PngChunk.create(SIGNATURE, this.toBytes());
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // INDEX OF THE FIRST NUL IN [start, limit), OR data.length WHEN THERE IS NONE
     private static int findNull(final byte[] data, final int start, final int limit) {
         for (int i = start; i < Math.min(data.length, limit); i++)

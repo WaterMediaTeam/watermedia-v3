@@ -23,6 +23,17 @@ import static org.junit.jupiter.api.Assertions.assertThrowsExactly;
 @DisplayName("DDS container")
 public class DdsHeaderTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // A VALID 4x4 BC1 HEADER WITH ONE LITTLE-ENDIAN FIELD OVERWRITTEN
+    private static ByteBuffer patched(final int offset, final int value) {
+        return ByteBuffer.wrap(DdsFixture.write(4, 4, PixelFormat.BC1, 1)).order(ByteOrder.LITTLE_ENDIAN).putInt(offset, value);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Parsing")
     class Parsing {
@@ -118,10 +129,5 @@ public class DdsHeaderTest {
             assertEquals(128 * 8, DdsHeader.read(ByteBuffer.wrap(DdsFixture.write(61, 30, PixelFormat.BC1, 1))).frameBytes());
             assertEquals(128 * 16, PixelFormat.BC3.frameBytes(61, 30, 8));
         }
-    }
-
-    // A VALID 4x4 BC1 HEADER WITH ONE LITTLE-ENDIAN FIELD OVERWRITTEN
-    private static ByteBuffer patched(final int offset, final int value) {
-        return ByteBuffer.wrap(DdsFixture.write(4, 4, PixelFormat.BC1, 1)).order(ByteOrder.LITTLE_ENDIAN).putInt(offset, value);
     }
 }

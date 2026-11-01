@@ -62,6 +62,10 @@ public final class Dialog extends Group<Dialog> {
         this.add(this.panel);
     }
 
+    // ==========================================================================
+    // PUBLIC API: SETUP
+    // ==========================================================================
+
     public Dialog title(final String text) {
         if (this.titleBand == null) {
             this.titleBand = new TitleBand();
@@ -157,72 +161,11 @@ public final class Dialog extends Group<Dialog> {
         return this;
     }
 
-    @Override
-    protected void onUpdate() {
-        // THE FADE-IN ARMS ON THE HIDDEN-TO-VISIBLE EDGE, WHICH update SEES BECAUSE IT RUNS FOR HIDDEN CHILDREN
-        // TOO; CLOSING IS INSTANT
-        if (this.visible && !this.wasVisible) this.fadeStart = System.currentTimeMillis();
-        else if (!this.visible) this.fadeStart = 0L; // HIDDEN MID-FADE: DROP THE ANIMATION SO THE LOOP CAN GO IDLE
-        this.wasVisible = this.visible;
-        if (this.fadeStart != 0L) {
-            if (System.currentTimeMillis() - this.fadeStart >= FADE_MS) this.fadeStart = 0L; // DONE: STOP SELF-SUSTAINING
-            else this.invalidate();
-        }
-    }
-
-    @Override
-    protected void onDraw(final Canvas canvas) {
-        // A MODAL COVERS THE SCREEN, SO IT STAYS OVER EVERY LIVE PAINTER MET BEFORE IT, EVEN WHEN THE TREE IS CACHED
-        canvas.raise();
-        if (this.fadeStart == 0L) {
-            super.onDraw(canvas);
-            return;
-        }
-        // EASE-IN FADE OVER THE WHOLE DIALOG (SCRIM, PANEL AND CHILDREN) THROUGH THE CANVAS ALPHA MULTIPLIER
-        final float t = Math.min(1f, (System.currentTimeMillis() - this.fadeStart) / (float) FADE_MS);
-        canvas.pushAlpha(t * t);
-        super.onDraw(canvas);
-        canvas.popAlpha();
-    }
-
-    @Override
-    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-        this.scrim.measure(innerAvailWidth, innerAvailHeight);
-        this.panel.measure(innerAvailWidth, innerAvailHeight);
-        this.contentWidth = innerAvailWidth;
-        this.contentHeight = innerAvailHeight;
-    }
-
-    @Override
-    protected void onLayout() {
-        this.scrim.layout(this.innerLeft(), this.innerTop());
-        final int px = this.innerLeft() + Math.max(0, (this.innerWidth() - this.panel.measuredWidth) / 2);
-        final int py = this.innerTop() + Math.max(0, (this.innerHeight() - this.panel.measuredHeight) / 2);
-        this.panel.layout(px, py);
-    }
-
-    private void layoutSlots() {
-        // THE PANEL CHILDREN FOLLOW THE BAND ORDER (SKIPPING ABSENT SLOTS), SO DRAW AND DISPATCH MATCH THE STACK
-        this.panel.clear();
-        if (this.titleBand != null) this.panel.add(this.titleBand);
-        if (this.headerBand != null) this.panel.add(this.headerBand);
-        this.panel.add(this.contentCol);
-        if (this.footerBand != null) this.panel.add(this.footerBand);
-    }
-
-    private void applyAccent() {
-        this.panel.border(this.accent == null ? AppTheme.STROKE_BRIGHT : this.accent, Theme.BORDER_ACTIVE)
-                .glow(this.accent == null ? AppTheme.NEON : this.accent, Theme.GLOW_MED);
-    }
-
-    private void refreshClose() {
-        if (this.titleBand != null) this.titleBand.close.visible(this.closable && this.onDismiss != null);
-    }
-
     // ==========================================================================
-    // MODAL INPUT: WHILE VISIBLE, EVERYTHING IS CONSUMED AFTER THE CONTENT HAD ITS CHANCE
+    // PUBLIC API: MODAL INPUT
     // ==========================================================================
 
+    // WHILE VISIBLE, EVERYTHING IS CONSUMED AFTER THE CONTENT HAD ITS CHANCE
     @Override
     public boolean dispatchKey(final int key, final int action) {
         if (!this.visible) return false;
@@ -270,9 +213,80 @@ public final class Dialog extends Group<Dialog> {
     }
 
     // ==========================================================================
-    // PANEL: A VERTICAL BAND STACK STRETCHED TO ONE WIDTH, WITH AMBER CORNER CUBES
+    // INTERNAL API
     // ==========================================================================
 
+    @Override
+    protected void onUpdate() {
+        // THE FADE-IN ARMS ON THE HIDDEN-TO-VISIBLE EDGE, WHICH update SEES BECAUSE IT RUNS FOR HIDDEN CHILDREN
+        // TOO; CLOSING IS INSTANT
+        if (this.visible && !this.wasVisible) this.fadeStart = System.currentTimeMillis();
+        else if (!this.visible) this.fadeStart = 0L; // HIDDEN MID-FADE: DROP THE ANIMATION SO THE LOOP CAN GO IDLE
+        this.wasVisible = this.visible;
+        if (this.fadeStart != 0L) {
+            if (System.currentTimeMillis() - this.fadeStart >= FADE_MS) this.fadeStart = 0L; // DONE: STOP SELF-SUSTAINING
+            else this.invalidate();
+        }
+    }
+
+    @Override
+    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+        this.scrim.measure(innerAvailWidth, innerAvailHeight);
+        this.panel.measure(innerAvailWidth, innerAvailHeight);
+        this.contentWidth = innerAvailWidth;
+        this.contentHeight = innerAvailHeight;
+    }
+
+    @Override
+    protected void onLayout() {
+        this.scrim.layout(this.innerLeft(), this.innerTop());
+        final int px = this.innerLeft() + Math.max(0, (this.innerWidth() - this.panel.measuredWidth) / 2);
+        final int py = this.innerTop() + Math.max(0, (this.innerHeight() - this.panel.measuredHeight) / 2);
+        this.panel.layout(px, py);
+    }
+
+    @Override
+    protected void onDraw(final Canvas canvas) {
+        // A MODAL COVERS THE SCREEN, SO IT STAYS OVER EVERY LIVE PAINTER MET BEFORE IT, EVEN WHEN THE TREE IS CACHED
+        canvas.raise();
+        if (this.fadeStart == 0L) {
+            super.onDraw(canvas);
+            return;
+        }
+        // EASE-IN FADE OVER THE WHOLE DIALOG (SCRIM, PANEL AND CHILDREN) THROUGH THE CANVAS ALPHA MULTIPLIER
+        final float t = Math.min(1f, (System.currentTimeMillis() - this.fadeStart) / (float) FADE_MS);
+        canvas.pushAlpha(t * t);
+        super.onDraw(canvas);
+        canvas.popAlpha();
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
+    private void layoutSlots() {
+        // THE PANEL CHILDREN FOLLOW THE BAND ORDER (SKIPPING ABSENT SLOTS), SO DRAW AND DISPATCH MATCH THE STACK
+        this.panel.clear();
+        if (this.titleBand != null) this.panel.add(this.titleBand);
+        if (this.headerBand != null) this.panel.add(this.headerBand);
+        this.panel.add(this.contentCol);
+        if (this.footerBand != null) this.panel.add(this.footerBand);
+    }
+
+    private void applyAccent() {
+        this.panel.border(this.accent == null ? AppTheme.STROKE_BRIGHT : this.accent, Theme.BORDER_ACTIVE)
+                .glow(this.accent == null ? AppTheme.NEON : this.accent, Theme.GLOW_MED);
+    }
+
+    private void refreshClose() {
+        if (this.titleBand != null) this.titleBand.close.visible(this.closable && this.onDismiss != null);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    // PANEL: A VERTICAL BAND STACK STRETCHED TO ONE WIDTH, WITH AMBER CORNER CUBES
     private final class Panel extends Group<Panel> {
 
         @Override
@@ -283,9 +297,9 @@ public final class Dialog extends Group<Dialog> {
             if (this.width > 0) {
                 width = innerAvailWidth;
             } else {
-                width = bandWidth(Dialog.this.contentCol, innerAvailWidth, innerAvailHeight);
-                width = Math.max(width, bandWidth(Dialog.this.headerBand, innerAvailWidth, innerAvailHeight));
-                width = Math.max(width, bandWidth(Dialog.this.footerBand, innerAvailWidth, innerAvailHeight));
+                width = this.bandWidth(Dialog.this.contentCol, innerAvailWidth, innerAvailHeight);
+                width = Math.max(width, this.bandWidth(Dialog.this.headerBand, innerAvailWidth, innerAvailHeight));
+                width = Math.max(width, this.bandWidth(Dialog.this.footerBand, innerAvailWidth, innerAvailHeight));
                 width = Math.min(width, innerAvailWidth);
             }
             this.contentWidth = width;
@@ -293,14 +307,6 @@ public final class Dialog extends Group<Dialog> {
                     + this.stretch(Dialog.this.headerBand, width, innerAvailHeight)
                     + this.stretch(Dialog.this.contentCol, width, innerAvailHeight)
                     + this.stretch(Dialog.this.footerBand, width, innerAvailHeight);
-        }
-
-        private int stretch(final Element<?> band, final int width, final int availHeight) {
-            // THE BAND MEASURES AT THE PANEL WIDTH AND FILLS IT; AN ABSENT ONE IS 0 HIGH
-            if (band == null || !band.visible) return 0;
-            band.measure(width, availHeight);
-            band.measuredWidth = width;
-            return band.measuredHeight;
         }
 
         @Override
@@ -312,12 +318,6 @@ public final class Dialog extends Group<Dialog> {
             this.place(Dialog.this.footerBand, y);
         }
 
-        private int place(final Element<?> band, final int y) {
-            if (band == null || !band.visible) return y;
-            band.layout(this.innerLeft(), y);
-            return y + band.measuredHeight;
-        }
-
         @Override
         protected void onDraw(final Canvas canvas) {
             super.onDraw(canvas);
@@ -326,18 +326,29 @@ public final class Dialog extends Group<Dialog> {
             canvas.cube(this.left + 4, by, CUBE);
             canvas.cube(this.left + this.measuredWidth - CUBE - 4, by, CUBE);
         }
+
+        private int bandWidth(final Element<?> band, final int availW, final int availH) {
+            if (band == null || !band.visible) return 0;
+            band.measure(availW, availH);
+            return band.measuredWidth;
+        }
+
+        private int stretch(final Element<?> band, final int width, final int availHeight) {
+            // THE BAND MEASURES AT THE PANEL WIDTH AND FILLS IT; AN ABSENT ONE IS 0 HIGH
+            if (band == null || !band.visible) return 0;
+            band.measure(width, availHeight);
+            band.measuredWidth = width;
+            return band.measuredHeight;
+        }
+
+        private int place(final Element<?> band, final int y) {
+            if (band == null || !band.visible) return y;
+            band.layout(this.innerLeft(), y);
+            return y + band.measuredHeight;
+        }
     }
 
-    private static int bandWidth(final Element<?> band, final int availW, final int availH) {
-        if (band == null || !band.visible) return 0;
-        band.measure(availW, availH);
-        return band.measuredWidth;
-    }
-
-    // ==========================================================================
     // TITLE BAND: DARKER STRIP, ACCENT TITLE LEFT, RED X RIGHT, FULL-WIDTH HAIRLINE UNDER IT
-    // ==========================================================================
-
     private final class TitleBand extends Group<TitleBand> {
 
         private final IconButton close;
@@ -385,10 +396,7 @@ public final class Dialog extends Group<Dialog> {
         }
     }
 
-    // ==========================================================================
     // HEADER / FOOTER BAND: A PADDED SINGLE-CHILD COLUMN WITH A FULL-WIDTH HAIRLINE (TOP OR BOTTOM)
-    // ==========================================================================
-
     private static final class Band extends Parent {
 
         private final boolean hairlineTop;

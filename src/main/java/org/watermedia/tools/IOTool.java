@@ -29,6 +29,9 @@ public final class IOTool {
 
     private IOTool() {}
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     // NORMALISED OS TOKEN ("windows"/"macos"/"linux"), OR null IF UNSUPPORTED; platformClassifier NAMES THE ffmpeg
     // ZIPS WHILE platform() RESOLVES THE PER-OS/ARCH ASSETS OF DOWNLOADED NATIVE BINARIES
     public static String os() {
@@ -200,6 +203,12 @@ public final class IOTool {
         }
     }
 
+    /** Opens a bundled resource by its path inside the jar, or null when there is none. */
+    public static InputStream jarOpenFile(final String name) {
+        // A CLASS LOOKUP REACHES THE MODULE'S OWN PACKAGES ON A MODULE-AWARE LOADER (FORGE), WHERE THE CLASS LOADER'S DOES NOT
+        return IOTool.class.getResourceAsStream(name.startsWith("/") ? name : "/" + name);
+    }
+
     /** Reads a bundled shader by its path under the shaders folder, splicing each {@code #include "file"} line with that file of the same folder. */
     public static String shader(final String name) throws IOException {
         final StringBuilder source = new StringBuilder();
@@ -217,13 +226,9 @@ public final class IOTool {
         return source.toString();
     }
 
-    /** Opens a bundled resource by its path inside the jar, or null when there is none. */
-    public static InputStream jarOpenFile(final String name) {
-        // A CLASS LOOKUP REACHES THE MODULE'S OWN PACKAGES ON A MODULE-AWARE LOADER (FORGE), WHERE THE CLASS LOADER'S DOES NOT
-        return IOTool.class.getResourceAsStream(name.startsWith("/") ? name : "/" + name);
-    }
-
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
     // NORMALISED ARCH TOKEN ("x86_64"/"aarch64"), OR null IF UNSUPPORTED
     private static String arch() {
         final String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);

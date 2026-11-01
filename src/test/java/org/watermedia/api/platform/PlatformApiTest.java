@@ -38,11 +38,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("PlatformAPI registry")
 public class PlatformApiTest {
+    // STUB PLATFORMS REGISTERED BY THE CURRENT TEST, REMOVED IN @AfterEach
+    private final List<Platform> registered = new ArrayList<>();
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @BeforeAll
     static void clientBootstrap() { MediaBootstrap.client(); }
-
-    // STUB PLATFORMS REGISTERED BY THE CURRENT TEST — REMOVED IN @AfterEach
-    private final List<Platform> registered = new ArrayList<>();
 
     @AfterEach
     void cleanup() {
@@ -51,7 +55,41 @@ public class PlatformApiTest {
     }
 
     // ==========================================================================
-    // CLAIM RESOLUTION TESTS
+    // HELPERS
+    // ==========================================================================
+
+    private Platform register(final Resolver resolver) {
+        final Platform platform = stub("stub", resolver);
+        PlatformAPI.register(platform);
+        this.registered.add(platform);
+        return platform;
+    }
+
+    // A BUILT-IN STAND-IN: THE SESSION OWNS IT AND IT IS PROBED AFTER EVERY APPLICATION HANDLER
+    private Platform builtin(final Resolver resolver) {
+        final Platform platform = stub("builtin", resolver);
+        PlatformAPI.BUILTIN.add(platform);
+        this.registered.add(platform);
+        return platform;
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static Platform stub(final String name, final Resolver resolver) {
+        return new Platform() {
+            @Override public String name() { return name; }
+            @Override public Resolution resolve(final URI uri) throws PlatformException { return resolver.resolve(uri); }
+        };
+    }
+
+    private static Resolution marker(final String url) {
+        return new Resolution(null, new Source(MediaType.VIDEO, null, null, new HttpHeaders(), List.of(new Quality(URI.create(url), 0, 0)), null, null));
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
     // ==========================================================================
 
     @Nested
@@ -119,10 +157,6 @@ public class PlatformApiTest {
         }
     }
 
-    // ==========================================================================
-    // EXCEPTION PROPAGATION TESTS
-    // ==========================================================================
-
     @Nested
     @DisplayName("Exception Propagation")
     class ExceptionTests {
@@ -152,10 +186,6 @@ public class PlatformApiTest {
             assertTrue(thrown.getMessage().startsWith("stub: "), "The message names the handler");
         }
     }
-
-    // ==========================================================================
-    // RECORD VALIDATION TESTS
-    // ==========================================================================
 
     @Nested
     @DisplayName("Record Validation")
@@ -192,38 +222,9 @@ public class PlatformApiTest {
         }
     }
 
-    // ==========================================================================
-    // UTILITY
-    // ==========================================================================
     // RESOLVER SUPPLIES THE RESOLUTION WHILE name() STAYS FIXED, SO EVERY STUB IS A ONE-LINER
     @FunctionalInterface
     private interface Resolver {
         Resolution resolve(URI uri) throws PlatformException;
-    }
-
-    private static Platform stub(final String name, final Resolver resolver) {
-        return new Platform() {
-            @Override public String name() { return name; }
-            @Override public Resolution resolve(final URI uri) throws PlatformException { return resolver.resolve(uri); }
-        };
-    }
-
-    private Platform register(final Resolver resolver) {
-        final Platform platform = stub("stub", resolver);
-        PlatformAPI.register(platform);
-        this.registered.add(platform);
-        return platform;
-    }
-
-    // A BUILT-IN STAND-IN: THE SESSION OWNS IT AND IT IS PROBED AFTER EVERY APPLICATION HANDLER
-    private Platform builtin(final Resolver resolver) {
-        final Platform platform = stub("builtin", resolver);
-        PlatformAPI.BUILTIN.add(platform);
-        this.registered.add(platform);
-        return platform;
-    }
-
-    private static Resolution marker(final String url) {
-        return new Resolution(null, new Source(MediaType.VIDEO, null, null, new HttpHeaders(), List.of(new Quality(URI.create(url), 0, 0)), null, null));
     }
 }

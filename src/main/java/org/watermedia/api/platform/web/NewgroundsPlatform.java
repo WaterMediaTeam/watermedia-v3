@@ -33,7 +33,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -52,10 +51,11 @@ import static org.watermedia.tools.JSONTool.str;
 public final class NewgroundsPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(NewgroundsPlatform.class.getSimpleName());
     public static final String NAME = "Newgrounds";
+    // HOST SUFFIXES, MATCHED WITH A DOT BOUNDARY SO EVERY SUBDOMAIN IS COVERED
+    private static final String[] HOSTS = { "newgrounds.com" };
 
     // SITE
     private static final String ORIGIN = "https://www.newgrounds.com";
-    private static final String HOST = "newgrounds.com";
     private static final Pattern PORTAL_PATH = Pattern.compile("^/portal/view/(\\d+)");
     private static final Pattern AUDIO_PATH = Pattern.compile("^/audio/listen/(\\d+)");
     private static final Pattern ART_PATH = Pattern.compile("^/art/view/([^/?#]+)/([^/?#]+)");
@@ -98,13 +98,16 @@ public final class NewgroundsPlatform implements Platform {
     private final Object guardLock = new Object();
     private long clearedAt = System.nanoTime();
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     @Override
     public String name() { return NAME; }
 
     @Override
     public Resolution resolve(final URI uri) throws PlatformException {
-        final String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
-        if (!host.equals(HOST) && !host.endsWith("." + HOST)) return null;
+        if (!WebRequests.hostMatches(uri.getHost(), HOSTS)) return null;
         final String path = uri.getPath() == null ? "" : uri.getPath();
         try {
             final Matcher portal = PORTAL_PATH.matcher(path);
@@ -121,9 +124,9 @@ public final class NewgroundsPlatform implements Platform {
         }
     }
 
-    // ====================================================================================================
+    // ==========================================================================
     // MOVIES, AUDIO AND ART
-    // ====================================================================================================
+    // ==========================================================================
 
     // THE PAGE CARRIES THE RATING AND METADATA; THE PLAYER JSON THE FILES. GUESTS HIT A LOGIN WALL ON ADULT MOVIES,
     // YET THE JSON IS STILL SERVED, SO WITH THE GATE OPEN THEY PLAY WITH THE JSON'S OWN TITLE AND AUTHOR
@@ -234,9 +237,9 @@ public final class NewgroundsPlatform implements Platform {
         return sources;
     }
 
-    // ====================================================================================================
+    // ==========================================================================
     // PAGE HELPERS
-    // ====================================================================================================
+    // ==========================================================================
 
     // THE E/T/M/A RATING OF A PAGE: MATURE (17+) AND ADULT (18+) ARE BLOCKED WHILE THE GATE IS OFF; AUDIO PAGES SHOW NONE
     private static void gate(final String html, final String item) throws MatureContentException {
@@ -288,16 +291,6 @@ public final class NewgroundsPlatform implements Platform {
         return m.appendTail(out).toString();
     }
 
-    // A SITE RESPONSE AFTER THE GUARD: WHERE IT LANDED, ITS STATUS AND BODY
-    private record Fetched(URI uri, int status, String body) {
-        // WHETHER THIS IS THE "LOGIN REQUIRED" WALL GUESTS GET ON ADULT ITEMS, A MATURE BLOCK WHILE THE GATE IS OFF
-        boolean adultWall(final String item) throws MatureContentException {
-            if (this.status != 403 || !this.body.contains(LOGIN_TITLE)) return false;
-            if (!WaterMediaConfig.platforms.allowMatureContent) throw new MatureContentException(NAME, item + " is rated Adult");
-            return true;
-        }
-    }
-
     // GETS url, CLEARING THE GUARD AND RETRYING ONCE WHEN IT ANSWERS WITH ITS PUZZLE PAGE INSTEAD; xhr ASKS THE
     // PLAYER JSON THE WAY THE SITE'S OWN SCRIPTS DO
     private Fetched fetch(final String url, final boolean xhr) throws IOException {
@@ -318,9 +311,9 @@ public final class NewgroundsPlatform implements Platform {
         }
     }
 
-    // ====================================================================================================
-    // NG GUARD — THE PROOF-OF-WORK INTERSTITIAL EVERY GUEST REQUEST MEETS
-    // ====================================================================================================
+    // ==========================================================================
+    // NG GUARD: THE PROOF-OF-WORK INTERSTITIAL EVERY GUEST REQUEST MEETS
+    // ==========================================================================
 
     // SOLVES THE GUARD'S PUZZLE AND SUBMITS THE ANSWER, WHICH CLEARS THIS MACHINE'S ADDRESS SERVER-SIDE (NO COOKIE IS
     // GRANTED); CONCURRENT CALLERS WAIT FOR ONE SOLVE, AND ONE BLOCKED BEFORE THE LAST CLEARANCE IS COVERED BY IT
@@ -400,10 +393,71 @@ public final class NewgroundsPlatform implements Platform {
         }
     }
 
-    // ====================================================================================================
-    // ARGON2ID (RFC 9106) — ONE INSTANCE HASHES EVERY NONCE OF A PUZZLE OVER THE SAME MEMORY MATRIX
-    // ====================================================================================================
+    // ==========================================================================
+    // BLAKE2B (RFC 7693), UNKEYED, DIGESTS OF 1 TO 64 BYTES
+    // ==========================================================================
 
+    static byte[] blake2b(final int length, final byte[] data) {
+        final long[] h = BLAKE2B_IV.clone();
+        h[0] ^= 0x0101_0000L ^ length; // PARAMETER BLOCK: DIGEST LENGTH, NO KEY, FANOUT 1, DEPTH 1
+        final long[] m = new long[16];
+        final long[] v = new long[16];
+        final int blocks = Math.max(1, (data.length + 127) / 128);
+        for (int block = 0; block < blocks; block++) {
+            final int offset = block * 128;
+            final int count = Math.min(128, data.length - offset);
+            for (int i = 0; i < 16; i++) {
+                long word = 0;
+                for (int j = 7; j >= 0; j--) {
+                    final int at = i * 8 + j;
+                    word = (word << 8) | (at < count ? data[offset + at] & 0xFFL : 0L);
+                }
+                m[i] = word;
+            }
+            System.arraycopy(h, 0, v, 0, 8);
+            System.arraycopy(BLAKE2B_IV, 0, v, 8, 8);
+            v[12] ^= offset + count; // BYTES HASHED SO FAR; THE HIGH COUNTER WORD STAYS ZERO BELOW 16 EiB
+            if (block == blocks - 1) v[14] = ~v[14];
+            for (int round = 0; round < 12; round++) {
+                final byte[] s = BLAKE2B_SIGMA[round];
+                blake2bMix(v, 0, 4, 8, 12, m[s[0]], m[s[1]]); blake2bMix(v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
+                blake2bMix(v, 2, 6, 10, 14, m[s[4]], m[s[5]]); blake2bMix(v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
+                blake2bMix(v, 0, 5, 10, 15, m[s[8]], m[s[9]]); blake2bMix(v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
+                blake2bMix(v, 2, 7, 8, 13, m[s[12]], m[s[13]]); blake2bMix(v, 3, 4, 9, 14, m[s[14]], m[s[15]]);
+            }
+            for (int i = 0; i < 8; i++) h[i] ^= v[i] ^ v[i + 8];
+        }
+        final byte[] out = new byte[length];
+        for (int i = 0; i < length; i++) out[i] = (byte) (h[i >>> 3] >>> ((i & 7) * 8));
+        return out;
+    }
+
+    private static void blake2bMix(final long[] v, final int a, final int b, final int c, final int d, final long x, final long y) {
+        v[a] += v[b] + x;
+        v[d] = Long.rotateRight(v[d] ^ v[a], 32);
+        v[c] += v[d];
+        v[b] = Long.rotateRight(v[b] ^ v[c], 24);
+        v[a] += v[b] + y;
+        v[d] = Long.rotateRight(v[d] ^ v[a], 16);
+        v[c] += v[d];
+        v[b] = Long.rotateRight(v[b] ^ v[c], 63);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    // A SITE RESPONSE AFTER THE GUARD: WHERE IT LANDED, ITS STATUS AND BODY
+    private record Fetched(URI uri, int status, String body) {
+        // WHETHER THIS IS THE "LOGIN REQUIRED" WALL GUESTS GET ON ADULT ITEMS, A MATURE BLOCK WHILE THE GATE IS OFF
+        boolean adultWall(final String item) throws MatureContentException {
+            if (this.status != 403 || !this.body.contains(LOGIN_TITLE)) return false;
+            if (!WaterMediaConfig.platforms.allowMatureContent) throw new MatureContentException(NAME, item + " is rated Adult");
+            return true;
+        }
+    }
+
+    // ARGON2ID (RFC 9106): ONE INSTANCE HASHES EVERY NONCE OF A PUZZLE OVER THE SAME MEMORY MATRIX
     static final class Argon2id {
         private static final int BLOCK_LONGS = 128; // 1 KiB BLOCKS
         private static final int VERSION = 0x13;
@@ -550,55 +604,5 @@ public final class NewgroundsPlatform implements Platform {
             System.arraycopy(v, 0, out, rounds * 32, v.length);
             return out;
         }
-    }
-
-    // ====================================================================================================
-    // BLAKE2B (RFC 7693), UNKEYED, DIGESTS OF 1 TO 64 BYTES
-    // ====================================================================================================
-
-    static byte[] blake2b(final int length, final byte[] data) {
-        final long[] h = BLAKE2B_IV.clone();
-        h[0] ^= 0x0101_0000L ^ length; // PARAMETER BLOCK: DIGEST LENGTH, NO KEY, FANOUT 1, DEPTH 1
-        final long[] m = new long[16];
-        final long[] v = new long[16];
-        final int blocks = Math.max(1, (data.length + 127) / 128);
-        for (int block = 0; block < blocks; block++) {
-            final int offset = block * 128;
-            final int count = Math.min(128, data.length - offset);
-            for (int i = 0; i < 16; i++) {
-                long word = 0;
-                for (int j = 7; j >= 0; j--) {
-                    final int at = i * 8 + j;
-                    word = (word << 8) | (at < count ? data[offset + at] & 0xFFL : 0L);
-                }
-                m[i] = word;
-            }
-            System.arraycopy(h, 0, v, 0, 8);
-            System.arraycopy(BLAKE2B_IV, 0, v, 8, 8);
-            v[12] ^= offset + count; // BYTES HASHED SO FAR; THE HIGH COUNTER WORD STAYS ZERO BELOW 16 EiB
-            if (block == blocks - 1) v[14] = ~v[14];
-            for (int round = 0; round < 12; round++) {
-                final byte[] s = BLAKE2B_SIGMA[round];
-                blake2bMix(v, 0, 4, 8, 12, m[s[0]], m[s[1]]); blake2bMix(v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
-                blake2bMix(v, 2, 6, 10, 14, m[s[4]], m[s[5]]); blake2bMix(v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
-                blake2bMix(v, 0, 5, 10, 15, m[s[8]], m[s[9]]); blake2bMix(v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
-                blake2bMix(v, 2, 7, 8, 13, m[s[12]], m[s[13]]); blake2bMix(v, 3, 4, 9, 14, m[s[14]], m[s[15]]);
-            }
-            for (int i = 0; i < 8; i++) h[i] ^= v[i] ^ v[i + 8];
-        }
-        final byte[] out = new byte[length];
-        for (int i = 0; i < length; i++) out[i] = (byte) (h[i >>> 3] >>> ((i & 7) * 8));
-        return out;
-    }
-
-    private static void blake2bMix(final long[] v, final int a, final int b, final int c, final int d, final long x, final long y) {
-        v[a] += v[b] + x;
-        v[d] = Long.rotateRight(v[d] ^ v[a], 32);
-        v[c] += v[d];
-        v[b] = Long.rotateRight(v[b] ^ v[c], 24);
-        v[a] += v[b] + y;
-        v[d] = Long.rotateRight(v[d] ^ v[a], 16);
-        v[c] += v[d];
-        v[b] = Long.rotateRight(v[b] ^ v[c], 63);
     }
 }

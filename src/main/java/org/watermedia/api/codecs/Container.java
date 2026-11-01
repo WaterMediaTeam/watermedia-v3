@@ -50,7 +50,6 @@ public enum Container {
 
     /** Returns the video codecs the container accepts when encoding. */
     public Set<VideoCodec> video() { return this.video; }
-
     /** Returns the audio codecs the container accepts when encoding, empty when it carries no sound. */
     public Set<AudioCodec> audio() { return this.audio; }
 }

@@ -541,7 +541,9 @@ public class SFXEngineTest {
         }
     }
 
+    // ==========================================================================
     // UTILITY
+    // ==========================================================================
 
     // OPENS AN S16 STEREO LINE OF bufferMs, SKIPPING THE CASE WHEN JAVA SOUND HAS NO OUTPUT LINE (HEADLESS CI)
     private static JSEngine open(final int bufferMs) {

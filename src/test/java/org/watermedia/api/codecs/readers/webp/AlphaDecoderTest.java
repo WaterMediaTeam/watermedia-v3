@@ -22,6 +22,17 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @DisplayName("AlphaDecoder")
 public class AlphaDecoderTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // ONE HEADER BYTE FOLLOWED BY THE PLANE BYTES
+    private static ByteBuffer alph(final int header, final int... plane) {
+        return ByteBuffer.wrap(new ImageBytes().u8(header).raw(plane).bytes());
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Uncompressed filter modes")
     class Filters {
@@ -114,10 +125,5 @@ public class AlphaDecoderTest {
             final UnsupportedFormatException e = assertThrows(UnsupportedFormatException.class, () -> AlphaDecoder.decode(buffer, 4, 4));
             assertEquals("Unsupported WebP alpha compression method: 2", e.getMessage());
         }
-    }
-
-    // ONE HEADER BYTE FOLLOWED BY THE PLANE BYTES
-    private static ByteBuffer alph(final int header, final int... plane) {
-        return ByteBuffer.wrap(new ImageBytes().u8(header).raw(plane).bytes());
     }
 }

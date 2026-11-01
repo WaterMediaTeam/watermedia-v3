@@ -24,6 +24,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("ListView interaction")
 public class ListViewInteractionTest {
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static ListView<String> list(final List<String> activations) {
+        final ListView<String> list = new ListView<String>().rowHeight(40)
+                .rowFactory((item, index) -> new Box())
+                .items(List.of("first", "second", "third"))
+                .onSelect((item, index) -> activations.add(item))
+                .size(200, 80);
+        list.measure(200, 80);
+        list.layout(10, 10);
+        return list;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
     @Nested
     @DisplayName("Hover and click")
     class HoverAndClick {
@@ -313,8 +332,6 @@ public class ListViewInteractionTest {
         }
     }
 
-    // UTILITY
-
     private static final class FocusRow extends Element<FocusRow> {
         private final List<String> events = new ArrayList<>();
 
@@ -361,16 +378,5 @@ public class ListViewInteractionTest {
         protected void onUpdate() {
             this.binder.run();
         }
-    }
-
-    private static ListView<String> list(final List<String> activations) {
-        final ListView<String> list = new ListView<String>().rowHeight(40)
-                .rowFactory((item, index) -> new Box())
-                .items(List.of("first", "second", "third"))
-                .onSelect((item, index) -> activations.add(item))
-                .size(200, 80);
-        list.measure(200, 80);
-        list.layout(10, 10);
-        return list;
     }
 }

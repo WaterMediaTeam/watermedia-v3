@@ -53,6 +53,9 @@ final class SvgParser {
 
     private SvgParser() {}
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     static SvgNode parse(final InputStream in) throws CodecException {
         XMLStreamReader r = null;
         try {
@@ -64,7 +67,7 @@ final class SvgParser {
             while (r.hasNext()) {
                 final int ev = r.next();
                 if (ev == XMLStreamConstants.START_ELEMENT) {
-                    // BUDGETS CHECKED BEFORE ANY ALLOCATION — THE WHOLE POINT IS TO NOT RETAIN THE NODE
+                    // BUDGETS CHECKED BEFORE ANY ALLOCATION: THE WHOLE POINT IS TO NOT RETAIN THE NODE
                     if (++elements > MAX_ELEMENTS) throw new CodecException("SVG element count exceeds " + MAX_ELEMENTS);
                     final Map<String, String> attrs = new HashMap<>();
                     final int count = r.getAttributeCount();
@@ -108,7 +111,7 @@ final class SvgParser {
             return root;
         } catch (final XMLStreamException e) {
             // EVERY StAX FAILURE FUNNELS HERE, INCLUDING EACH JDK ENTITY-LIMIT TRIP. THE JDK MESSAGE IS
-            // LOCALE-DEPENDENT, SO IT IS ONLY EVER CARRIED ALONG — NEVER INSPECTED
+            // LOCALE-DEPENDENT, SO IT IS ONLY EVER CARRIED ALONG, NEVER INSPECTED
             throw new CodecException("Malformed SVG document: " + e.getMessage(), e);
         } finally {
             if (r != null) {
@@ -118,14 +121,6 @@ final class SvgParser {
         }
     }
 
-    private static void setProperty(final XMLInputFactory factory, final String name, final Object value) {
-        try { factory.setProperty(name, value); }
-        catch (final IllegalArgumentException ignored) {} // SOME IMPLEMENTATIONS REJECT UNKNOWN PROPERTIES: BEST EFFORT
-    }
-
-    // ==========================================================================
-    // VALUE PARSERS
-    // ==========================================================================
     // TRANSFORM LIST → AFFINE, FUNCTIONS COMPOSED LEFT TO RIGHT
     static Affine parseTransform(final String s) throws CodecException {
         if (s == null || s.isBlank()) return Affine.IDENTITY;
@@ -154,14 +149,6 @@ final class SvgParser {
             });
         }
         return m;
-    }
-
-    // NO NUMBER PARSED OUT OF A DOCUMENT MAY BE NON-FINITE: THE SCANNERS ACCEPT EXPONENTS, SO "1e999" READS AS
-    // INFINITY, WHICH MAKES FLATNESS TESTS FALSE-BY-NaN (FULL-DEPTH SUBDIVISION) AND SCANLINE CROSSINGS NaN.
-    // THE DOCUMENT IS REJECTED INSTEAD OF RENDERED WRONG
-    private static double finite(final double v) throws CodecException {
-        if (!Double.isFinite(v)) throw new CodecException("Non-finite number in SVG document");
-        return v;
     }
 
     // PARSES A LENGTH INTO USER UNITS (px). UNKNOWN UNITS AND "%" FALL BACK TO THE RAW NUMBER.
@@ -269,5 +256,21 @@ final class SvgParser {
             out[k++] = finite(num);
         }
         return k == out.length ? out : Arrays.copyOf(out, k);
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static void setProperty(final XMLInputFactory factory, final String name, final Object value) {
+        try { factory.setProperty(name, value); }
+        catch (final IllegalArgumentException ignored) {} // SOME IMPLEMENTATIONS REJECT UNKNOWN PROPERTIES: BEST EFFORT
+    }
+
+    // NO NUMBER PARSED OUT OF A DOCUMENT MAY BE NON-FINITE: THE SCANNERS ACCEPT EXPONENTS, SO "1e999" READS AS
+    // INFINITY, WHICH MAKES FLATNESS TESTS FALSE-BY-NaN (FULL-DEPTH SUBDIVISION) AND SCANLINE CROSSINGS NaN.
+    // THE DOCUMENT IS REJECTED INSTEAD OF RENDERED WRONG
+    private static double finite(final double v) throws CodecException {
+        if (!Double.isFinite(v)) throw new CodecException("Non-finite number in SVG document");
+        return v;
     }
 }

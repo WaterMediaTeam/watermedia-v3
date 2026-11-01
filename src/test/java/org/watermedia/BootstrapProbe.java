@@ -19,6 +19,9 @@ import java.nio.file.Path;
 
 /** Exercises one WaterMedia load per process: the load is final, so every scenario gets its own JVM. */
 public final class BootstrapProbe {
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     public static void main(final String[] arguments) throws Exception {
         final String scenario = arguments[0];
         final Path root = Path.of("").toAbsolutePath();
@@ -39,6 +42,9 @@ public final class BootstrapProbe {
         System.out.println("PROBE_OK " + scenario);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // AN INSTALLED BINARIES MODULE THAT CANNOT PROVISION ITS NATIVES ENDS THE LOAD BEFORE THE MODULES BEHIND IT
     private static void nativeFailure(final Path root) throws Exception {
         Files.createDirectories(root.resolve("temp"));

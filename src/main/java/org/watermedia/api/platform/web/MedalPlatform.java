@@ -25,10 +25,14 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class MedalPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(MedalPlatform.class.getSimpleName());
     public static final String NAME = "Medal";
+    private static final String[] HOSTS = { "medal.tv", "www.medal.tv" };
     private static final String API_URL = "https://medal.tv/api/content/%s";
     // MEDAL SWAPS THE REAL CLIP FOR THIS PLACEHOLDER FILE WHEN A GUEST IS NOT ALLOWED TO WATCH IT
     private static final String PRIVACY_PROTECTED = "video/privacy-protected-guest";
-    private static final String[] HOSTS = { "medal.tv", "www.medal.tv" };
+
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public String name() { return NAME; }
@@ -63,7 +67,7 @@ public final class MedalPlatform implements Platform {
             if (progressive != null && !privacyProtected(progressive))
                 variants.add(new Quality(progressive, Math.max(0, content.sourceWidth), Math.max(0, content.sourceHeight)));
         }
-        // LAST RESORT: THE PRE-RENDERED SOCIAL-SHARE MP4 (NO RELIABLE DIMENSIONS — LET FFMediaPlayer PROBE)
+        // LAST RESORT: THE PRE-RENDERED SOCIAL-SHARE MP4 (NO RELIABLE DIMENSIONS, SO FFMediaPlayer PROBES THEM)
         if (variants.isEmpty()) {
             final URI social = DataTool.uri(content.socialMediaVideo);
             if (social != null && !privacyProtected(social))
@@ -95,8 +99,12 @@ public final class MedalPlatform implements Platform {
         return new Resolution(expires, entry);
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
     // RESOLVES THE CLIP ID FROM EVERY KNOWN MEDAL SHAPE: /games/<slug>/clips/<id>, /<locale>/games/<slug>/clips/<id>,
-    // THE SHORT /clip|/clips/<id> REDIRECTS, AND THE /?contentId=<id> QUERY. RETURNS NULL FOR NON-CLIP MEDAL URLS.
+    // THE SHORT /clip|/clips/<id> REDIRECTS, AND THE /?contentId=<id> QUERY; NULL FOR NON-CLIP MEDAL URLS
     private static String clipId(final URI uri) {
         final String path = uri.getPath();
         if (path != null && path.length() > 1) {
@@ -114,7 +122,11 @@ public final class MedalPlatform implements Platform {
         return uri.toString().contains(PRIVACY_PROTECTED);
     }
 
-    // ONLY THE FIELDS ACTUALLY CONSUMED ARE BOUND — GSON IGNORES THE REST OF MEDAL'S LARGE PAYLOAD
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    // ONLY THE FIELDS ACTUALLY CONSUMED ARE BOUND; GSON IGNORES THE REST OF MEDAL'S LARGE PAYLOAD
     private record Content(String contentTitle, String contentDescription, String contentUrl, String contentUrlHls,
                            String socialMediaVideo, String thumbnailUrl, int sourceWidth, int sourceHeight,
                            double videoLengthSeconds, long created, long urlsExpireAt, boolean requireLogin,

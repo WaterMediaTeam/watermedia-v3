@@ -134,7 +134,7 @@ public final class PngReader extends ImageReader {
     private int animFrames; // fcTL-DRIVEN FRAMES EMITTED SO FAR, CHECKED AGAINST scan.frameCount()
     private final ImageData.Scan scan;
 
-    // RESET SNAPSHOT — STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
+    // RESET SNAPSHOT: STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
     private final int resetPos;
     private final PngChunk resetChunk;
     private final boolean resetDone;
@@ -225,28 +225,17 @@ public final class PngReader extends ImageReader {
         }
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     @Override public int width() { return this.ihdr.width(); }
     @Override public int height() { return this.ihdr.height(); }
-    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return this.scan; }
 
-    @Override
-    protected void dispose() {
-        if (this.inflater != null) this.inflater.end();
-    }
-
-    @Override
-    protected boolean rewind() {
-        this.data.position(this.resetPos);
-        this.pendingChunk = this.resetChunk;
-        this.done = this.resetDone;
-        this.animFrames = 0;
-        // RE-INIT THE CANVAS EXACTLY AS THE CONSTRUCTOR LEAVES IT (BKGD COLOR OR TRANSPARENT);
-        // frameBuffer AND previousBuffer NEED NO CLEARING BECAUSE EACH next() FULLY WRITES THE
-        // REGIONS IT LATER READS
-        Arrays.fill(this.outputBuffer, this.bkgd != null ? this.background() : 0);
-        return true;
-    }
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
 
     @Override
     protected boolean hasMore() {
@@ -266,7 +255,7 @@ public final class PngReader extends ImageReader {
         } else if (c.type() == IDAT.SIGNATURE) {
             compressed.add(new ChunkSlice(c.data(), 0, c.data().length));
         } else {
-            // UNREACHABLE IN A WELL-FORMED STREAM: parseUntilFirstFrame ONLY STOPS ON IDAT/fcTL — FAIL FAST
+            // UNREACHABLE IN A WELL-FORMED STREAM (parseUntilFirstFrame ONLY STOPS ON IDAT/fcTL), SO FAIL FAST
             this.done = true;
             throw new CodecException("Unexpected PNG frame boundary: " + c.typeName());
         }
@@ -300,7 +289,7 @@ public final class PngReader extends ImageReader {
         }
 
         if (compressed.isEmpty()) {
-            // A FRAME WITHOUT IDAT/fdAT IS MALFORMED — TERMINATE AND FAIL FAST (NOT SKIPPED)
+            // A FRAME WITHOUT IDAT/fdAT IS MALFORMED: TERMINATE AND FAIL FAST INSTEAD OF SKIPPING IT
             this.done = true;
             throw new CodecException("PNG frame without compressed data");
         }
@@ -357,6 +346,24 @@ public final class PngReader extends ImageReader {
         return this.directOut;
     }
 
+    @Override
+    protected boolean rewind() {
+        this.data.position(this.resetPos);
+        this.pendingChunk = this.resetChunk;
+        this.done = this.resetDone;
+        this.animFrames = 0;
+        // RE-INIT THE CANVAS EXACTLY AS THE CONSTRUCTOR LEAVES IT (BKGD COLOR OR TRANSPARENT);
+        // frameBuffer AND previousBuffer NEED NO CLEARING BECAUSE EACH next() FULLY WRITES THE
+        // REGIONS IT LATER READS
+        Arrays.fill(this.outputBuffer, this.bkgd != null ? this.background() : 0);
+        return true;
+    }
+
+    @Override
+    protected void dispose() {
+        if (this.inflater != null) this.inflater.end();
+    }
+
     // ==========================================================================
     // CHUNKS
     // ==========================================================================
@@ -366,7 +373,7 @@ public final class PngReader extends ImageReader {
         try { c = PngChunk.read(this.data); }
         catch (final EOFException eof) { return null; }
         if (WaterMediaConfig.codecs.png.failOnCorruptedData && c.corrupted())
-            throw new CodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
+            throw new CodecException("Chunk CRC mismatch on " + c.typeName() + ": data corrupted");
         return c;
     }
 
@@ -595,47 +602,6 @@ public final class PngReader extends ImageReader {
     // ==========================================================================
     // PIXELS
     // ==========================================================================
-    private static float[] buildGammaLUT(final GAMA gamma, final SRGB srgb, final CICP cicp) {
-        final float fileGamma;
-        if (srgb != null) {
-            fileGamma = SRGB_GAMMA;
-        } else if (cicp != null) {
-            if (cicp.isSRGB()) fileGamma = SRGB_GAMMA;
-            else if (cicp.isHDR()) return null;
-            else fileGamma = DEFAULT_GAMMA;
-        } else if (gamma != null) {
-            fileGamma = gamma.decodingExponent();
-        } else {
-            return null;
-        }
-        if (Math.abs(fileGamma - DISPLAY_GAMMA) < 0.01f) return null;
-
-        final float[] lut = new float[256];
-        final float exponent = fileGamma / DISPLAY_GAMMA;
-        for (int i = 0; i < 256; i++) lut[i] = (float) Math.pow(i / 255.0, exponent);
-        return lut;
-    }
-
-    private static void applyGammaCorrection(final int[] pixels, final int w, final int h, final int stride, final float[] lut) {
-        for (int y = 0; y < h; y++) {
-            final int rowBase = y * stride;
-            for (int x = 0; x < w; x++) {
-                final int argb = pixels[rowBase + x];
-                final int a = (argb >>> 24) & 0xFF;
-                final int r = (argb >>> 16) & 0xFF;
-                final int g = (argb >>> 8) & 0xFF;
-                final int b = argb & 0xFF;
-                // CLAMP EACH CHANNEL: AN OUT-OF-RANGE LUT ENTRY (Math.round SATURATES Infinity TO
-                // 0x7FFFFFFF) WOULD OTHERWISE SHIFT STRAIGHT OVER THE ALPHA BYTE AND TURN A FULLY
-                // TRANSPARENT PIXEL OPAQUE — A SILENT MASK BYPASS, WITH NO EXCEPTION ANYWHERE
-                final int cr = MathUtil.clip255(Math.round(lut[r] * 255));
-                final int cg = MathUtil.clip255(Math.round(lut[g] * 255));
-                final int cb = MathUtil.clip255(Math.round(lut[b] * 255));
-                pixels[rowBase + x] = (a << 24) | (cr << 16) | (cg << 8) | cb;
-            }
-        }
-    }
-
     private void flattenAlpha(final int[] pixels, final int w, final int h, final int stride) {
         final int bgColor = this.background();
         final int bgR = (bgColor >> 16) & 0xFF;
@@ -816,6 +782,209 @@ public final class PngReader extends ImageReader {
         return (width * bitsPerPixel + 7) / 8;
     }
 
+    // DISPATCHES TO A SPECIALISED ROW WRITER BASED ON THE PRECOMPUTED COLOUR TYPE AND DEPTH
+    private void writeRowPixels(final byte[] row, final int[] pixels, final int rowBase,
+                                final int xStart, final int xStep, final int passWidth, final int imageWidth) throws IOException {
+        if (this.depth == 8) {
+            switch (this.colorType) {
+                case TRUECOLOR_ALPHA -> writeRow8TruecolorAlpha(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
+                case TRUECOLOR -> writeRow8Truecolor(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth,
+                        this.trnsR8, this.trnsG8, this.trnsB8);
+                case INDEXED -> writeRow8Indexed(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth, this.indexedARGB);
+                case GREYSCALE -> writeRow8Greyscale(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth, this.trnsGray8);
+                case GREYSCALE_ALPHA -> writeRow8GreyscaleAlpha(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
+                case FORBIDDEN_1, FORBIDDEN_5 -> throw new CodecException("Forbidden color type: " + this.ihdr.colorType());
+            }
+            return;
+        }
+        this.writeRowGeneric(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
+    }
+
+    // GENERIC FALLBACK FOR THE RARE DEPTHS 1, 2, 4 AND 16
+    private void writeRowGeneric(final byte[] row, final int[] pixels, final int rowBase,
+                                 final int xStart, final int xStep, final int passWidth, final int imageWidth) throws IOException {
+        final int d = this.depth;
+        int bitOffset = 0;
+
+        for (int passX = 0; passX < passWidth; passX++) {
+            final int x = xStart + passX * xStep;
+            if (x >= imageWidth) break;
+
+            pixels[rowBase + x] = switch (this.colorType) {
+                // tRNS HOLDS RAW SAMPLES AT THE IMAGE DEPTH, SO THE KEY IS MATCHED BEFORE SCALING TO 8 BITS
+                case GREYSCALE -> {
+                    final int raw = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int gray = scaleTo8Bit(raw, d);
+                    final int alpha = this.trns != null && raw == this.trns.gray() ? 0 : 255;
+                    yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+                }
+                case TRUECOLOR -> {
+                    final int r = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int g = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int b = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int alpha = this.trns != null && r == this.trns.red() && g == this.trns.green() && b == this.trns.blue() ? 0 : 255;
+                    yield (alpha << 24) | (scaleTo8Bit(r, d) << 16) | (scaleTo8Bit(g, d) << 8) | scaleTo8Bit(b, d);
+                }
+                case INDEXED -> {
+                    final int index = extractSample(row, bitOffset, d); bitOffset += d;
+                    if (this.indexedARGB == null) throw new CodecException("Indexed-color image without PLTE");
+                    yield this.indexedARGB[index];
+                }
+                case GREYSCALE_ALPHA -> {
+                    int gray = extractSample(row, bitOffset, d); bitOffset += d;
+                    int alpha = extractSample(row, bitOffset, d); bitOffset += d;
+                    gray = scaleTo8Bit(gray, d);
+                    alpha = scaleTo8Bit(alpha, d);
+                    yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+                }
+                case TRUECOLOR_ALPHA -> {
+                    int r = extractSample(row, bitOffset, d); bitOffset += d;
+                    int g = extractSample(row, bitOffset, d); bitOffset += d;
+                    int b = extractSample(row, bitOffset, d); bitOffset += d;
+                    int alpha = extractSample(row, bitOffset, d); bitOffset += d;
+                    r = scaleTo8Bit(r, d); g = scaleTo8Bit(g, d); b = scaleTo8Bit(b, d);
+                    alpha = scaleTo8Bit(alpha, d);
+                    yield (alpha << 24) | (r << 16) | (g << 8) | b;
+                }
+                case FORBIDDEN_1, FORBIDDEN_5 -> throw new CodecException("Forbidden color type: " + this.ihdr.colorType());
+            };
+        }
+    }
+
+    // ==========================================================================
+    // COMPOSITING
+    // ==========================================================================
+    // DISPOSES THE FRAME RECTANGLE FOR THE NEXT ONE: LEFT ALONE, FILLED WITH THE BACKGROUND OR RESTORED FROM THE SNAPSHOT
+    private void applyDispose(final FCTL fctl) {
+        switch (fctl.dispose() & 0xFF) {
+            case FCTL.DISPOSE_OP_BACKGROUND -> Canvas.fill(this.outputBuffer, this.canvasWidth, this.canvasHeight, fctl.xOffset(), fctl.yOffset(),
+                    fctl.width(), fctl.height(), this.bkgd != null ? this.background() : 0);
+            case FCTL.DISPOSE_OP_PREVIOUS -> {
+                if (this.previousBuffer != null)
+                    Canvas.restore(this.outputBuffer, this.previousBuffer, this.canvasWidth, this.canvasHeight, fctl.xOffset(), fctl.yOffset(), fctl.width(), fctl.height());
+            }
+            default -> { }
+        }
+    }
+
+    private void applyBlendOp(final int[] outputBuffer, final int[] framePixels, final FCTL fctl) {
+        final int xOff = fctl.xOffset();
+        final int yOff = fctl.yOffset();
+        final int fw = Math.min(fctl.width(), this.canvasWidth - xOff);
+        final int fh = Math.min(fctl.height(), this.canvasHeight - yOff);
+        if (fw <= 0 || fh <= 0) return;
+        final int stride = this.canvasWidth;
+
+        // FCTL.validate ALREADY REJECTED ANY OTHER OP: OVER COMPOSITES, SOURCE REPLACES ALPHA INCLUDED
+        final boolean over = (fctl.blend() & 0xFF) == FCTL.BLEND_OP_OVER;
+        for (int y = 0; y < fh; y++) {
+            final int srcBase = y * stride;
+            final int dstBase = (yOff + y) * stride + xOff;
+            if (!over) {
+                System.arraycopy(framePixels, srcBase, outputBuffer, dstBase, fw);
+                continue;
+            }
+            for (int x = 0; x < fw; x++)
+                outputBuffer[dstBase + x] = DataTool.blendOver(framePixels[srcBase + x], outputBuffer[dstBase + x]);
+        }
+    }
+
+    // ==========================================================================
+    // STREAM SCAN
+    // ==========================================================================
+    // WALKS THE CHUNK LAYOUT WITHOUT CRC OR PIXEL WORK: acTL PLAYS AND THE fcTL DELAYS; SETS fctlSeen
+    private ImageData.Scan scan(final ByteBuffer source) {
+        final ByteBuffer buffer = source.slice().order(ByteOrder.BIG_ENDIAN);
+        final List<Long> delays = new ArrayList<>();
+        int declaredFrameCount = 0;
+        int declaredRepeat = 1;
+
+        while (buffer.remaining() >= 12) {
+            final int length = buffer.getInt();
+            final int type = buffer.getInt();
+            // LONG MATH: length+4 OVERFLOWS int FOR length >= 0x7FFFFFFC, BYPASSING THE BOUNDS CHECK
+            if (length < 0 || buffer.remaining() < (long) length + 4) break;
+
+            final int dataPos = buffer.position();
+            if (type == ACTL.SIGNATURE && length >= ACTL.LENGTH) {
+                declaredFrameCount = buffer.getInt(dataPos);
+                final int plays = buffer.getInt(dataPos + 4);
+                // num_plays IS UNSIGNED IN THE APNG SPEC, SO A HIGH-BIT VALUE READS BACK NEGATIVE AND
+                // ImageData'S COMPACT CONSTRUCTOR REJECTS IT. TREAT ANY NON-POSITIVE COUNT AS "LOOP FOREVER"
+                declaredRepeat = (plays <= 0) ? ImageData.REPEAT_FOREVER : plays;
+            } else if (type == FCTL.SIGNATURE && length == FCTL.LENGTH) {
+                final int delayNum = ((buffer.get(dataPos + 20) & 0xFF) << 8) | (buffer.get(dataPos + 21) & 0xFF);
+                int delayDen = ((buffer.get(dataPos + 22) & 0xFF) << 8) | (buffer.get(dataPos + 23) & 0xFF);
+                if (delayDen == 0) delayDen = 100;
+                delays.add(((long) delayNum * 1_000L) / delayDen);
+            }
+
+            buffer.position(Math.min(buffer.limit(), dataPos + length + 4));
+            if (type == IEND.SIGNATURE) break;
+        }
+
+        // RECONCILE acTL num_frames WITH THE fcTL RECORDS ACTUALLY WALKED: THE DECLARED COUNT IS
+        // ATTACKER-CONTROLLED, AND TRUSTING IT OVER THE STREAM LETS A FILE DECLARE TWO FRAMES WHILE
+        // CARRYING FIVE HUNDRED, SO EVERY DOWNSTREAM MEMORY GATE COMPUTES FROM A LIE
+        final int frameCount = (declaredFrameCount > 0 && !delays.isEmpty())
+                ? Math.min(declaredFrameCount, delays.size())
+                : delays.size();
+        this.fctlSeen = !delays.isEmpty();
+        if (frameCount <= 1) return ImageData.Scan.EMPTY;
+
+        final long[] delayArray = new long[frameCount];
+        long total = 0L;
+        for (int i = 0; i < frameCount; i++) {
+            delayArray[i] = delays.get(i);
+            total += delayArray[i];
+        }
+        return new ImageData.Scan(frameCount, delayArray, total, declaredRepeat);
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static float[] buildGammaLUT(final GAMA gamma, final SRGB srgb, final CICP cicp) {
+        final float fileGamma;
+        if (srgb != null) {
+            fileGamma = SRGB_GAMMA;
+        } else if (cicp != null) {
+            if (cicp.isSRGB()) fileGamma = SRGB_GAMMA;
+            else if (cicp.isHDR()) return null;
+            else fileGamma = DEFAULT_GAMMA;
+        } else if (gamma != null) {
+            fileGamma = gamma.decodingExponent();
+        } else {
+            return null;
+        }
+        if (Math.abs(fileGamma - DISPLAY_GAMMA) < 0.01f) return null;
+
+        final float[] lut = new float[256];
+        final float exponent = fileGamma / DISPLAY_GAMMA;
+        for (int i = 0; i < 256; i++) lut[i] = (float) Math.pow(i / 255.0, exponent);
+        return lut;
+    }
+
+    private static void applyGammaCorrection(final int[] pixels, final int w, final int h, final int stride, final float[] lut) {
+        for (int y = 0; y < h; y++) {
+            final int rowBase = y * stride;
+            for (int x = 0; x < w; x++) {
+                final int argb = pixels[rowBase + x];
+                final int a = (argb >>> 24) & 0xFF;
+                final int r = (argb >>> 16) & 0xFF;
+                final int g = (argb >>> 8) & 0xFF;
+                final int b = argb & 0xFF;
+                // CLAMP EACH CHANNEL: AN OUT-OF-RANGE LUT ENTRY (Math.round SATURATES Infinity TO
+                // 0x7FFFFFFF) WOULD OTHERWISE SHIFT STRAIGHT OVER THE ALPHA BYTE AND TURN A FULLY
+                // TRANSPARENT PIXEL OPAQUE: A SILENT MASK BYPASS, WITH NO EXCEPTION ANYWHERE
+                final int cr = MathUtil.clip255(Math.round(lut[r] * 255));
+                final int cg = MathUtil.clip255(Math.round(lut[g] * 255));
+                final int cb = MathUtil.clip255(Math.round(lut[b] * 255));
+                pixels[rowBase + x] = (a << 24) | (cr << 16) | (cg << 8) | cb;
+            }
+        }
+    }
+
     private static void unfilterRow(final byte[] currentRow, final byte[] previousRow, final int length,
                                     final int filterType, final int bpp) throws IOException {
         switch (filterType) {
@@ -861,24 +1030,6 @@ public final class PngReader extends ImageReader {
             }
             default -> throw new CodecException("Unknown filter type: " + filterType);
         }
-    }
-
-    // DISPATCHES TO A SPECIALISED ROW WRITER BASED ON THE PRECOMPUTED COLOUR TYPE AND DEPTH
-    private void writeRowPixels(final byte[] row, final int[] pixels, final int rowBase,
-                                final int xStart, final int xStep, final int passWidth, final int imageWidth) throws IOException {
-        if (this.depth == 8) {
-            switch (this.colorType) {
-                case TRUECOLOR_ALPHA -> writeRow8TruecolorAlpha(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
-                case TRUECOLOR -> writeRow8Truecolor(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth,
-                        this.trnsR8, this.trnsG8, this.trnsB8);
-                case INDEXED -> writeRow8Indexed(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth, this.indexedARGB);
-                case GREYSCALE -> writeRow8Greyscale(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth, this.trnsGray8);
-                case GREYSCALE_ALPHA -> writeRow8GreyscaleAlpha(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
-                case FORBIDDEN_1, FORBIDDEN_5 -> throw new CodecException("Forbidden color type: " + this.ihdr.colorType());
-            }
-            return;
-        }
-        this.writeRowGeneric(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
     }
 
     private static void writeRow8TruecolorAlpha(final byte[] row, final int[] pixels, final int rowBase,
@@ -1010,57 +1161,6 @@ public final class PngReader extends ImageReader {
         }
     }
 
-    // GENERIC FALLBACK FOR THE RARE DEPTHS 1, 2, 4 AND 16
-    private void writeRowGeneric(final byte[] row, final int[] pixels, final int rowBase,
-                                 final int xStart, final int xStep, final int passWidth, final int imageWidth) throws IOException {
-        final int d = this.depth;
-        int bitOffset = 0;
-
-        for (int passX = 0; passX < passWidth; passX++) {
-            final int x = xStart + passX * xStep;
-            if (x >= imageWidth) break;
-
-            pixels[rowBase + x] = switch (this.colorType) {
-                // tRNS HOLDS RAW SAMPLES AT THE IMAGE DEPTH, SO THE KEY IS MATCHED BEFORE SCALING TO 8 BITS
-                case GREYSCALE -> {
-                    final int raw = extractSample(row, bitOffset, d); bitOffset += d;
-                    final int gray = scaleTo8Bit(raw, d);
-                    final int alpha = this.trns != null && raw == this.trns.gray() ? 0 : 255;
-                    yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
-                }
-                case TRUECOLOR -> {
-                    final int r = extractSample(row, bitOffset, d); bitOffset += d;
-                    final int g = extractSample(row, bitOffset, d); bitOffset += d;
-                    final int b = extractSample(row, bitOffset, d); bitOffset += d;
-                    final int alpha = this.trns != null && r == this.trns.red() && g == this.trns.green() && b == this.trns.blue() ? 0 : 255;
-                    yield (alpha << 24) | (scaleTo8Bit(r, d) << 16) | (scaleTo8Bit(g, d) << 8) | scaleTo8Bit(b, d);
-                }
-                case INDEXED -> {
-                    final int index = extractSample(row, bitOffset, d); bitOffset += d;
-                    if (this.indexedARGB == null) throw new CodecException("Indexed-color image without PLTE");
-                    yield this.indexedARGB[index];
-                }
-                case GREYSCALE_ALPHA -> {
-                    int gray = extractSample(row, bitOffset, d); bitOffset += d;
-                    int alpha = extractSample(row, bitOffset, d); bitOffset += d;
-                    gray = scaleTo8Bit(gray, d);
-                    alpha = scaleTo8Bit(alpha, d);
-                    yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
-                }
-                case TRUECOLOR_ALPHA -> {
-                    int r = extractSample(row, bitOffset, d); bitOffset += d;
-                    int g = extractSample(row, bitOffset, d); bitOffset += d;
-                    int b = extractSample(row, bitOffset, d); bitOffset += d;
-                    int alpha = extractSample(row, bitOffset, d); bitOffset += d;
-                    r = scaleTo8Bit(r, d); g = scaleTo8Bit(g, d); b = scaleTo8Bit(b, d);
-                    alpha = scaleTo8Bit(alpha, d);
-                    yield (alpha << 24) | (r << 16) | (g << 8) | b;
-                }
-                case FORBIDDEN_1, FORBIDDEN_5 -> throw new CodecException("Forbidden color type: " + this.ihdr.colorType());
-            };
-        }
-    }
-
     private static int extractSample(final byte[] row, final int bitOffset, final int depth) {
         final int byteOffset = bitOffset >> 3;
         if (depth >= 8) {
@@ -1073,95 +1173,8 @@ public final class PngReader extends ImageReader {
     }
 
     // ==========================================================================
-    // COMPOSITING
+    // NESTED TYPES
     // ==========================================================================
-    // DISPOSES THE FRAME RECTANGLE FOR THE NEXT ONE: LEFT ALONE, FILLED WITH THE BACKGROUND OR RESTORED FROM THE SNAPSHOT
-    private void applyDispose(final FCTL fctl) {
-        switch (fctl.dispose() & 0xFF) {
-            case FCTL.DISPOSE_OP_BACKGROUND -> Canvas.fill(this.outputBuffer, this.canvasWidth, this.canvasHeight, fctl.xOffset(), fctl.yOffset(),
-                    fctl.width(), fctl.height(), this.bkgd != null ? this.background() : 0);
-            case FCTL.DISPOSE_OP_PREVIOUS -> {
-                if (this.previousBuffer != null)
-                    Canvas.restore(this.outputBuffer, this.previousBuffer, this.canvasWidth, this.canvasHeight, fctl.xOffset(), fctl.yOffset(), fctl.width(), fctl.height());
-            }
-            default -> { }
-        }
-    }
-
-    private void applyBlendOp(final int[] outputBuffer, final int[] framePixels, final FCTL fctl) {
-        final int xOff = fctl.xOffset();
-        final int yOff = fctl.yOffset();
-        final int fw = Math.min(fctl.width(), this.canvasWidth - xOff);
-        final int fh = Math.min(fctl.height(), this.canvasHeight - yOff);
-        if (fw <= 0 || fh <= 0) return;
-        final int stride = this.canvasWidth;
-
-        // FCTL.validate ALREADY REJECTED ANY OTHER OP: OVER COMPOSITES, SOURCE REPLACES ALPHA INCLUDED
-        final boolean over = (fctl.blend() & 0xFF) == FCTL.BLEND_OP_OVER;
-        for (int y = 0; y < fh; y++) {
-            final int srcBase = y * stride;
-            final int dstBase = (yOff + y) * stride + xOff;
-            if (!over) {
-                System.arraycopy(framePixels, srcBase, outputBuffer, dstBase, fw);
-                continue;
-            }
-            for (int x = 0; x < fw; x++) {
-                outputBuffer[dstBase + x] = DataTool.blendOver(framePixels[srcBase + x], outputBuffer[dstBase + x]);
-            }
-        }
-    }
-
-    // ==========================================================================
-    // STREAM SCAN
-    // ==========================================================================
-    // WALKS THE CHUNK LAYOUT WITHOUT CRC OR PIXEL WORK: acTL PLAYS AND THE fcTL DELAYS; SETS fctlSeen
-    private ImageData.Scan scan(final ByteBuffer source) {
-        final ByteBuffer buffer = source.slice().order(ByteOrder.BIG_ENDIAN);
-        final List<Long> delays = new ArrayList<>();
-        int declaredFrameCount = 0;
-        int declaredRepeat = 1;
-
-        while (buffer.remaining() >= 12) {
-            final int length = buffer.getInt();
-            final int type = buffer.getInt();
-            // LONG MATH: length+4 OVERFLOWS int FOR length >= 0x7FFFFFFC, BYPASSING THE BOUNDS CHECK
-            if (length < 0 || buffer.remaining() < (long) length + 4) break;
-
-            final int dataPos = buffer.position();
-            if (type == ACTL.SIGNATURE && length >= ACTL.LENGTH) {
-                declaredFrameCount = buffer.getInt(dataPos);
-                final int plays = buffer.getInt(dataPos + 4);
-                // num_plays IS UNSIGNED IN THE APNG SPEC, SO A HIGH-BIT VALUE READS BACK NEGATIVE AND
-                // ImageData'S COMPACT CONSTRUCTOR REJECTS IT. TREAT ANY NON-POSITIVE COUNT AS "LOOP FOREVER"
-                declaredRepeat = (plays <= 0) ? ImageData.REPEAT_FOREVER : plays;
-            } else if (type == FCTL.SIGNATURE && length == FCTL.LENGTH) {
-                final int delayNum = ((buffer.get(dataPos + 20) & 0xFF) << 8) | (buffer.get(dataPos + 21) & 0xFF);
-                int delayDen = ((buffer.get(dataPos + 22) & 0xFF) << 8) | (buffer.get(dataPos + 23) & 0xFF);
-                if (delayDen == 0) delayDen = 100;
-                delays.add(((long) delayNum * 1_000L) / delayDen);
-            }
-
-            buffer.position(Math.min(buffer.limit(), dataPos + length + 4));
-            if (type == IEND.SIGNATURE) break;
-        }
-
-        // RECONCILE acTL num_frames WITH THE fcTL RECORDS ACTUALLY WALKED: THE DECLARED COUNT IS
-        // ATTACKER-CONTROLLED, AND TRUSTING IT OVER THE STREAM LETS A FILE DECLARE TWO FRAMES WHILE
-        // CARRYING FIVE HUNDRED, SO EVERY DOWNSTREAM MEMORY GATE COMPUTES FROM A LIE
-        final int frameCount = (declaredFrameCount > 0 && !delays.isEmpty())
-                ? Math.min(declaredFrameCount, delays.size())
-                : delays.size();
-        this.fctlSeen = !delays.isEmpty();
-        if (frameCount <= 1) return ImageData.Scan.EMPTY;
-
-        final long[] delayArray = new long[frameCount];
-        long total = 0L;
-        for (int i = 0; i < frameCount; i++) {
-            delayArray[i] = delays.get(i);
-            total += delayArray[i];
-        }
-        return new ImageData.Scan(frameCount, delayArray, total, declaredRepeat);
-    }
-
+    // ONE COMPRESSED PAYLOAD: AN IDAT BODY, OR AN fdAT BODY PAST ITS SEQUENCE NUMBER
     private record ChunkSlice(byte[] data, int offset, int length) {}
 }

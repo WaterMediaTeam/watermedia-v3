@@ -31,6 +31,10 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         this.height = Theme.BUTTON;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public SegmentedControl segments(final String[] values) {
         this.segments = values == null ? new String[0] : values;
         return this;
@@ -65,6 +69,27 @@ public final class SegmentedControl extends Element<SegmentedControl> {
     public static int segmentWidth(final TextRenderer text, final String label, final float scale) {
         return Math.max(72, text.width(label, scale) + 40);
     }
+
+    @Override
+    public boolean dispatchClick(final double mx, final double my) {
+        if (!this.visible || !this.enabled) return false;
+        final int n = this.segments.length;
+        if (n == 0 || !this.contains(mx, my)) return false;
+        final int segW = this.innerWidth() / n;
+        final int idx = MathUtil.clamp(segW > 0 ? (int) ((mx - this.innerLeft()) / segW) : 0, 0, n - 1);
+        if (idx != this.selectedIndex) {
+            // THE LOGICAL SELECTION FLIPS IMMEDIATELY; ONLY THE THUMB DRAW TRAILS BEHIND WITH THE EASE
+            this.slide();
+            this.selectedIndex = idx;
+            this.invalidate();
+            if (this.onSelect != null) this.onSelect.accept(idx);
+        }
+        return true;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onUpdate() {
@@ -125,22 +150,9 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         canvas.stroke(base, y, w, h, AppTheme.alpha(this.accent, 120), 1f);
     }
 
-    @Override
-    public boolean dispatchClick(final double mx, final double my) {
-        if (!this.visible || !this.enabled) return false;
-        final int n = this.segments.length;
-        if (n == 0 || !this.contains(mx, my)) return false;
-        final int segW = this.innerWidth() / n;
-        final int idx = MathUtil.clamp(segW > 0 ? (int) ((mx - this.innerLeft()) / segW) : 0, 0, n - 1);
-        if (idx != this.selectedIndex) {
-            // THE LOGICAL SELECTION FLIPS IMMEDIATELY; ONLY THE THUMB DRAW TRAILS BEHIND WITH THE EASE
-            this.slide();
-            this.selectedIndex = idx;
-            this.invalidate();
-            if (this.onSelect != null) this.onSelect.accept(idx);
-        }
-        return true;
-    }
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private void slide() {
         // RESTARTS THE EASE FROM THE CURRENT VISUAL THUMB POSITION; A CONTROL THAT NEVER DREW (A FRESHLY REBUILT ROW

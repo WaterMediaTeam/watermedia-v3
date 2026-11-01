@@ -25,6 +25,10 @@ public final class StatusText extends Element<StatusText> {
         this.label(label);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     /** Sets the chip label (rendered uppercase). */
     public StatusText label(final String value) {
         this.label = value == null ? "" : value.toUpperCase(Locale.ROOT);
@@ -55,6 +59,10 @@ public final class StatusText extends Element<StatusText> {
         this.strike = supplier == null ? () -> false : supplier;
         return this;
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {

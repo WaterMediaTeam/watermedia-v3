@@ -21,34 +21,6 @@ import java.util.Arrays;
 public record ImageData(ByteBuffer[] frames, PixelFormat format, int width, int height, long[] delays, long duration, int repeat) {
     public static final int REPEAT_FOREVER = 0;
 
-    /**
-     * Lightweight scan result produced by an {@link ImageReader} at construction time.
-     * Carries the animation shape (frame count, per-frame delays, total duration, repeat count)
-     * without holding any decoded pixel data.
-     */
-    public record Scan(int frameCount, long[] delays, long duration, int repeat) {
-        public static final Scan EMPTY = new Scan(1, new long[] { 0L }, 0L, 1);
-
-        public Scan {
-            if (delays == null || delays.length != frameCount) throw new IllegalArgumentException("Delay array must match the frame count");
-            for (final long delay: delays) if (delay < 0) throw new IllegalArgumentException("Delays must not be negative");
-            if (duration < 0) throw new IllegalArgumentException("Total duration must not be negative");
-            if (repeat < REPEAT_FOREVER) throw new IllegalArgumentException("Repeat must be REPEAT_FOREVER (0) or the number of plays");
-        }
-
-        /** Creates a scan of one frame per delay, summing the duration. */
-        public static Scan of(final long[] delays, final int repeat) {
-            if (delays == null) throw new IllegalArgumentException("Delays are required");
-            return new Scan(delays.length, delays, sum(delays), repeat);
-        }
-
-        /** Per-frame delays in milliseconds, as a copy the caller owns. */
-        @Override
-        public long[] delays() {
-            return this.delays.clone();
-        }
-    }
-
     public ImageData {
         if (frames == null || frames.length == 0) throw new IllegalArgumentException("At least one image is required");
         if (format == null) throw new IllegalArgumentException("Pixel format cannot be null");
@@ -64,6 +36,9 @@ public record ImageData(ByteBuffer[] frames, PixelFormat format, int width, int 
         this(frames, format, width, height, delays, sum(delays), repeat);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Per-frame delays in milliseconds, as a copy the caller owns. */
     @Override
     public long[] delays() {
@@ -93,11 +68,45 @@ public record ImageData(ByteBuffer[] frames, PixelFormat format, int width, int 
                 '}';
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
     // SUM OF THE DELAYS; A NULL ARRAY IS REJECTED BY THE CONSTRUCTOR CHECK THAT FOLLOWS
     private static long sum(final long[] delays) {
         if (delays == null) return 0L;
         long total = 0L;
         for (final long delay: delays) total += delay;
         return total;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+    /**
+     * Lightweight scan result produced by an {@link ImageReader} at construction time.
+     * Carries the animation shape (frame count, per-frame delays, total duration, repeat count)
+     * without holding any decoded pixel data.
+     */
+    public record Scan(int frameCount, long[] delays, long duration, int repeat) {
+        public static final Scan EMPTY = new Scan(1, new long[] { 0L }, 0L, 1);
+
+        public Scan {
+            if (delays == null || delays.length != frameCount) throw new IllegalArgumentException("Delay array must match the frame count");
+            for (final long delay: delays) if (delay < 0) throw new IllegalArgumentException("Delays must not be negative");
+            if (duration < 0) throw new IllegalArgumentException("Total duration must not be negative");
+            if (repeat < REPEAT_FOREVER) throw new IllegalArgumentException("Repeat must be REPEAT_FOREVER (0) or the number of plays");
+        }
+
+        /** Creates a scan of one frame per delay, summing the duration. */
+        public static Scan of(final long[] delays, final int repeat) {
+            if (delays == null) throw new IllegalArgumentException("Delays are required");
+            return new Scan(delays.length, delays, sum(delays), repeat);
+        }
+
+        /** Per-frame delays in milliseconds, as a copy the caller owns. */
+        @Override
+        public long[] delays() {
+            return this.delays.clone();
+        }
     }
 }

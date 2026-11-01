@@ -50,25 +50,9 @@ public final class RegionSelectorScreen extends Screen {
         this.navigator = navigator;
     }
 
-    @Override
-    protected Element<?> build() {
-        this.list = new ListView<Integer>()
-                .rowHeight(ROW_H)
-                .spacing(ROW_GAP)
-                .rowFactory((index, pos) -> this.regionRow(index))
-                .onSelect((index, pos) -> this.openSelected())
-                .selectOnHover(true)
-                // THE ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
-                .selectionColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
-                .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
-                .width(Element.MAX_PARENT)
-                .height(Element.MAX_PARENT);
-        return Parent.column()
-                .width(Element.MAX_PARENT)
-                .height(Element.MAX_PARENT)
-                .add(new Header().name("Television").sub("region selector").right("v" + WaterMedia.VERSION))
-                .add(new PanelPane().width(Element.MAX_PARENT).weight(1f).add(this.list));
-    }
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
 
     @Override
     public void onEnter() {
@@ -108,6 +92,34 @@ public final class RegionSelectorScreen extends Screen {
         return true;
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
+    @Override
+    protected Element<?> build() {
+        this.list = new ListView<Integer>()
+                .rowHeight(ROW_H)
+                .spacing(ROW_GAP)
+                .rowFactory((index, pos) -> this.regionRow(index))
+                .onSelect((index, pos) -> this.openSelected())
+                .selectOnHover(true)
+                // THE ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
+                .selectionColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                .width(Element.MAX_PARENT)
+                .height(Element.MAX_PARENT);
+        return Parent.column()
+                .width(Element.MAX_PARENT)
+                .height(Element.MAX_PARENT)
+                .add(new Header().name("Television").sub("region selector").right("v" + WaterMedia.VERSION))
+                .add(new PanelPane().width(Element.MAX_PARENT).weight(1f).add(this.list));
+    }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
     private void rebuildRegions() {
         this.regions.clear();
         this.counts.clear();
@@ -143,7 +155,12 @@ public final class RegionSelectorScreen extends Screen {
         final List<MediaCatalog.TestURI> uris = new ArrayList<>(channels.size());
         this.ctx.media.groupMRLs.clear();
         for (final MediaCatalog.IptvChannel channel: channels) {
-            final String name = this.channelName(channel, names);
+            // UNIQUE ROW NAME: THE CHANNEL NAME (OR TVG ID, OR URL), THEN ITS GROUP, THEN A COPY NUMBER
+            final String base = (blank(channel.name()) ? blank(channel.tvgId()) ? channel.url() : channel.tvgId() : channel.name()).trim();
+            String name = base;
+            if (names.contains(name) && !blank(channel.group())) name = base + " - " + channel.group().trim();
+            int copy = 2;
+            while (!names.add(name)) name = base + " #" + copy++;
             uris.add(new MediaCatalog.TestURI(name, channel.url(), false));
         }
 
@@ -180,63 +197,6 @@ public final class RegionSelectorScreen extends Screen {
         }
         // ONLY SURFACE A DETECTED REGION THAT ACTUALLY HAS CHANNELS; OTHERWISE FALL BACK TO GLOBAL (NULL)
         return null;
-    }
-
-    private String channelName(final MediaCatalog.IptvChannel channel, final Set<String> used) {
-        final String base = (blank(channel.name()) ? blank(channel.tvgId()) ? channel.url() : channel.tvgId() : channel.name()).trim();
-        String name = base;
-        if (used.contains(name) && !blank(channel.group())) name = base + " - " + channel.group().trim();
-        int copy = 2;
-        while (!used.add(name)) name = base + " #" + copy++;
-        return name;
-    }
-
-    private static String cleanRegion(final String region) {
-        return region == null ? "" : region.trim();
-    }
-
-    private static boolean blank(final String value) {
-        return value == null || value.isBlank();
-    }
-
-    // CENTERED PANEL FRAMING THE REGION LIST UNDER ITS SECTION HEAD
-    private final class PanelPane extends Group<PanelPane> {
-        private int panelX;
-        private int panelY;
-        private int panelW;
-        private int panelH;
-
-        @Override
-        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            // 28px VERTICAL INSET ON EACH SIDE: A 10px CONTENT GAP PLUS THE 18px STACK MARGIN
-            this.panelW = Math.min(760, innerAvailWidth - 64);
-            this.panelH = Math.max(260, innerAvailHeight - 56);
-            final int rowsW = this.panelW - 48;
-            final int rowsH = Math.max(ROW_H, this.panelH - 78);
-            for (final Element<?> child: this.children) child.measure(rowsW, rowsH);
-            this.contentWidth = innerAvailWidth;
-            this.contentHeight = innerAvailHeight;
-        }
-
-        @Override
-        protected void onLayout() {
-            this.panelX = this.innerLeft() + (this.innerWidth() - this.panelW) / 2;
-            this.panelY = this.innerTop() + 28;
-            for (final Element<?> child: this.children) child.layout(this.panelX + 24, this.panelY + 58);
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            canvas.gradientV(this.panelX, this.panelY, this.panelW, this.panelH,
-                    AppTheme.alpha(AppTheme.BG_2, 217), AppTheme.alpha(AppTheme.BG_1, 217));
-            canvas.stroke(this.panelX, this.panelY, this.panelW, this.panelH, AppTheme.STROKE_BRIGHT, 1f);
-            canvas.cube(this.panelX - 1, this.panelY - 1, 10);
-            canvas.cube(this.panelX + this.panelW - 9, this.panelY + this.panelH - 9, 10);
-
-            SectionHead.draw(canvas, "REGIONS", RegionSelectorScreen.this.optionCount() + " AVAILABLE",
-                    this.panelX + 18, this.panelY + 18, this.panelW - 36);
-            super.onDraw(canvas);
-        }
     }
 
     // ONE REGION ROW: INDEX 0 IS GLOBAL, THEN THE SYSTEM ROW WHEN A REGION WAS DETECTED, THEN THE REMAINING REGIONS;
@@ -281,5 +241,61 @@ public final class RegionSelectorScreen extends Screen {
         final String region = this.regionFor(index);
         final int count = index == 0 || region == null ? this.totalChannels : this.counts.getOrDefault(region, 0);
         return count + (count == 1 ? " CHANNEL" : " CHANNELS");
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static String cleanRegion(final String region) {
+        return region == null ? "" : region.trim();
+    }
+
+    private static boolean blank(final String value) {
+        return value == null || value.isBlank();
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
+
+    // CENTERED PANEL FRAMING THE REGION LIST UNDER ITS SECTION HEAD
+    private final class PanelPane extends Group<PanelPane> {
+        private int panelX;
+        private int panelY;
+        private int panelW;
+        private int panelH;
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            // 28px VERTICAL INSET ON EACH SIDE: A 10px CONTENT GAP PLUS THE 18px STACK MARGIN
+            this.panelW = Math.min(760, innerAvailWidth - 64);
+            this.panelH = Math.max(260, innerAvailHeight - 56);
+            final int rowsW = this.panelW - 48;
+            final int rowsH = Math.max(ROW_H, this.panelH - 78);
+            for (final Element<?> child: this.children) child.measure(rowsW, rowsH);
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            this.panelX = this.innerLeft() + (this.innerWidth() - this.panelW) / 2;
+            this.panelY = this.innerTop() + 28;
+            for (final Element<?> child: this.children) child.layout(this.panelX + 24, this.panelY + 58);
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            canvas.gradientV(this.panelX, this.panelY, this.panelW, this.panelH,
+                    AppTheme.alpha(AppTheme.BG_2, 217), AppTheme.alpha(AppTheme.BG_1, 217));
+            canvas.stroke(this.panelX, this.panelY, this.panelW, this.panelH, AppTheme.STROKE_BRIGHT, 1f);
+            canvas.cube(this.panelX - 1, this.panelY - 1, 10);
+            canvas.cube(this.panelX + this.panelW - 9, this.panelY + this.panelH - 9, 10);
+
+            SectionHead.draw(canvas, "REGIONS", RegionSelectorScreen.this.optionCount() + " AVAILABLE",
+                    this.panelX + 18, this.panelY + 18, this.panelW - 36);
+            super.onDraw(canvas);
+        }
     }
 }

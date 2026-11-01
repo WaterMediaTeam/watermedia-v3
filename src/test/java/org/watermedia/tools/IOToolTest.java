@@ -30,7 +30,9 @@ import static org.junit.jupiter.api.Assumptions.abort;
 /** Verifies {@link IOTool}'s platform identification, verified native files, bounded stream reads and resource helpers. */
 @DisplayName("IOTool")
 public class IOToolTest {
-
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     @Nested
     @DisplayName("Platform")
     class Platform {

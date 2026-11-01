@@ -20,10 +20,37 @@ public class FollowerClockTest {
 
     private ServerMediaPlayer follower;
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
+
     @AfterEach
     void tearDown() {
         if (this.follower != null) this.follower.release();
     }
+
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
+
+    // A HEADLESS MIRROR THE TEST FEEDS SNAPSHOTS BY HAND
+    private ServerMediaPlayer follower() {
+        this.follower = PlayerAPI.serverPlayer();
+        return this.follower;
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+
+    private static MediaPlayer.PlayerState sync(final int revision, final Status status, final long time, final long duration,
+                                                final boolean repeat, final float speed) {
+        return new MediaPlayer.PlayerState(revision, status, time, duration, speed, repeat, false);
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
 
     @Nested
     @DisplayName("Ageing")
@@ -217,18 +244,5 @@ public class FollowerClockTest {
             follower.sync(sync(2, Status.PLAYING, 100L, 60_000L, false, 1f));
             assertTrue(PlayerWait.awaitCondition(follower::playing, 2_000L), "a rewound session must replay the ended media");
         }
-    }
-
-    // UTILITY
-
-    // A HEADLESS MIRROR THE TEST FEEDS SNAPSHOTS BY HAND
-    private ServerMediaPlayer follower() {
-        this.follower = PlayerAPI.serverPlayer();
-        return this.follower;
-    }
-
-    private static MediaPlayer.PlayerState sync(final int revision, final Status status, final long time, final long duration,
-                                                final boolean repeat, final float speed) {
-        return new MediaPlayer.PlayerState(revision, status, time, duration, speed, repeat, false);
     }
 }

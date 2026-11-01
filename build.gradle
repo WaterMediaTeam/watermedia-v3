@@ -78,7 +78,10 @@ dependencies {
 
 test {
     maxHeapSize = test_max_heap
-    jvmArgs "-XX:MaxDirectMemorySize=$test_max_direct_memory"
+    // THE TESTS LOAD THE LWJGL AND FFMPEG NATIVES FROM THE CLASSPATH, AS THE APP DOES
+    jvmArgs "-XX:MaxDirectMemorySize=$test_max_direct_memory", '--enable-native-access=ALL-UNNAMED'
+    // LWJGL READS MEMORY THROUGH sun.misc.Unsafe, WHICH JAVA 24+ WARNS ABOUT; THE FLAG DOES NOT EXIST BEFORE JAVA 23
+    if (javaLauncher.get().metadata.languageVersion.asInt() >= 23) jvmArgs '--sun-misc-unsafe-memory-access=allow'
     systemProperty 'watermedia.test.requireNatives', require_natives
     systemProperty 'org.lwjgl.system.stackSize', test_lwjgl_stack
     // ISOLATED JVM PROBES AND LAUNCHER PIN CHECKS READ THE TEST CLASSPATH FROM HERE
@@ -168,31 +171,12 @@ processResources {
 }
 
 // ==== PACKAGING ====
-// THE DESCRIPTOR COMPILES APART, AGAINST THE BUILT CLASSES, SO SOURCES AND TESTS STAY ON THE CLASSPATH.
-// THE OTHER MODULES UNDER src/main/module ONLY NAME HOST MODULES THAT ARE NOT COMPILE DEPENDENCIES
-def moduleSources = layout.projectDirectory.dir('src/main/module')
-def moduleClasses = sourceSets.main.java.classesDirectory
-def modulePath = configurations.compileClasspath
-def compileModuleInfo = tasks.register('compileModuleInfo', JavaCompile) {
-    group = 'build'
-    description = 'Compiles the module descriptor that keeps internal packages hidden on module-aware loaders'
-    source = moduleSources
-    classpath = files()
-    destinationDirectory = layout.buildDirectory.dir('module')
-    modularity.inferModulePath = false
-    inputs.files(moduleClasses, modulePath)
-    options.compilerArgumentProviders.add({
-        ['--module-source-path', moduleSources.asFile.path, '--module-path', modulePath.asPath,
-         '--patch-module', 'org.watermedia=' + moduleClasses.get().asFile.path]
-    } as CommandLineArgumentProvider)
-}
-
 // THE BINARIES CLASSES SHIP ONLY IN THE BINARIES JAR
 jar {
     manifest.attributes 'Main-Class': mainclass
-    from(compileModuleInfo.flatMap { it.destinationDirectory.dir('org.watermedia') })
     from { configurations.include.collect { zipTree(it) } }
-    exclude 'META-INF/versions/', 'META-INF/maven/', 'org/watermedia/binaries/**'
+    // JAVACPP CHECKS THE FFMPEG PRESET VERSION AGAINST ITS OWN THROUGH THEIR pom.properties, SO ONLY THOSE STAY
+    exclude 'META-INF/versions/', 'META-INF/maven/**/*.xml', 'org/watermedia/binaries/**'
     filesMatching('META-INF/*') { duplicatesStrategy = DuplicatesStrategy.INCLUDE }
 }
 sourcesJar { exclude 'org/watermedia/binaries/**' }
@@ -219,18 +203,17 @@ tasks.named('build') { dependsOn gradle.includedBuild('binaries').task(':build')
 check.dependsOn tasks.named('compileToolsJava')
 
 // ==== MAINTENANCE ====
-// LISTS PUBLIC METHODS WITHOUT JAVADOC IN THE PACKAGES THE DESCRIPTOR EXPORTS TO EVERYONE, SKIPPING OVERRIDES.
+// LISTS PUBLIC METHODS WITHOUT JAVADOC IN THE PUBLIC API PACKAGES OF gradle.properties, SKIPPING OVERRIDES.
 def inventorySources = sourceSets.main.java
 def inventoryRoot = layout.projectDirectory.asFile.toPath()
-def inventoryDescriptor = moduleSources.file('org.watermedia/module-info.java')
+def inventoryPackages = public_packages.split(',')*.trim() as Set
 tasks.register('javadocInventory') {
     group = 'documentation'
-    description = 'Lists public methods without local Javadoc in exported packages, excluding overrides'
+    description = 'Lists public methods without local Javadoc in public API packages, excluding overrides'
     doLast {
-        def exported = (inventoryDescriptor.asFile.getText('UTF-8') =~ /(?m)^\s*exports\s+([\w.]+)\s*;/).collect { it[1] } as Set
         def declaration = ~/^\s*public\s+(?:(?:static|final|synchronized|abstract|native|default)\s+)*(?!class\b|interface\b|enum\b|record\b)[\w<>?,.\[\] ]+\s+(\w+)\s*\(/
         def (included, excluded) = inventorySources.files.sort { it.path }.collect { [it, it.readLines('UTF-8')] }
-                .split { File file, List<String> lines -> lines.any { line -> exported.any { line.startsWith("package $it;") } } }
+                .split { File file, List<String> lines -> lines.any { line -> inventoryPackages.any { line.startsWith("package $it;") } } }
         int missing = 0
         included.each { File file, List<String> lines ->
             lines.eachWithIndex { line, i ->

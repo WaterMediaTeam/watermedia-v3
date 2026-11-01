@@ -32,17 +32,17 @@ import static org.watermedia.WaterMedia.LOGGER;
  * render-thread work to one upload per engine per render frame regardless of how fast the
  * producer decodes.
  * <p>
- * <b>The engine is self-contained — no host integration is required.</b> Every piece of GL context
+ * <b>The engine is self-contained: no host integration is required.</b> Every piece of GL context
  * state it touches (texture bindings, active unit, sampler bindings, pixel-store parameters,
  * buffer/VAO/framebuffer bindings, program, viewport and draw toggles) is captured before a batch
  * of work and restored to its exact prior value afterwards, so any state cache the host keeps
  * (Minecraft's {@code GlStateManager}, Sodium/Iris trackers, or none at all) stays truthful.
  * Texture names exposed through {@link #texture()} are deleted safely: storage is freed
  * immediately on release, but the name itself is only handed back to the driver once no texture
- * unit binds it anymore — which proves no host binding cache still references it — so a cached
+ * unit binds it anymore (which proves no host binding cache still references it), so a cached
  * binding can never point at a driver-reused name. All engines sharing a render thread drain
- * through one batched task per frame, so the capture/restore cost is constant per frame — not per
- * player — at any scale.
+ * through one batched task per frame, so the capture/restore cost is constant per frame, not per
+ * player, at any scale.
  * <p>
  * When {@code ARB_buffer_storage} (OpenGL 4.4) is available, pixel data is written by the
  * <em>producer</em> thread directly into a persistently-mapped PBO ring, so the render thread only
@@ -76,7 +76,7 @@ public final class GLEngine extends GFXEngine {
     private static final String VERTEX_SHADER = "opengl/convert.vert";
     private static final String[] FRAGMENTS = { "opengl/gray.frag", "opengl/nv.frag", "opengl/yuv3.frag", "opengl/yuva.frag", "opengl/yuyv.frag" };
 
-    // CONVERSION KINDS — INDEX INTO FRAGMENTS/programs/uniforms; CONV_NONE = DIRECT UPLOAD
+    // CONVERSION KINDS: INDEX INTO FRAGMENTS/programs/uniforms; CONV_NONE = DIRECT UPLOAD
     private static final int CONV_NONE = -1;
     private static final int CONV_GRAY = 0;
     private static final int CONV_NV = 1;
@@ -87,6 +87,10 @@ public final class GLEngine extends GFXEngine {
     // -1, WHICH glUniform* IGNORES. SLOTS: [plane0..plane3, bitScale, uvSwap, outputWidth, colorimetry]
     private static final String[] UNIFORMS = { "plane0", "plane1", "plane2", "plane3", "bitScale", "uvSwap", "outputWidth", "colorimetry" };
 
+    // TEXTURE UNITS SCANNED BY THE ORPHAN SWEEP: MINECRAFT'S 12-UNIT BINDING CACHE WITH MARGIN; HOSTS BINDING BEYOND THIS
+    // USE DSA OR UNCACHED PATHS
+    private static final int ORPHAN_SCAN_UNITS = 32;
+
     // ONE DRAIN HUB PER RENDER THREAD (ONE BATCHED TASK/FRAME IN ONE ENVELOPE); ORPHANS, KEYED
     // BY GLCapabilities IDENTITY, HOLDS EXPOSED TEXTURE NAMES AWAITING PROVABLY-SAFE DELETION.
     private static final Map<Thread, Hub> HUBS = new ConcurrentHashMap<>();
@@ -95,10 +99,6 @@ public final class GLEngine extends GFXEngine {
     // ONE CONVERSION KIT PER CONTEXT BY GLCapabilities IDENTITY, GUARDED BY ITS OWN MONITOR; THE LAST ENGINE OUT REMOVES ITS
     // ENTRY, SO THE MAP HOLDS ONLY CONTEXTS WITH A LIVE CONVERTING ENGINE (SEE Kit)
     private static final Map<GLCapabilities, Kit> KITS = new HashMap<>();
-
-    // TEXTURE UNITS SCANNED BY THE ORPHAN SWEEP — COVERS MINECRAFT'S 12-UNIT BINDING CACHE
-    // WITH MARGIN; HOSTS BINDING BEYOND THIS USE DSA OR UNCACHED PATHS
-    private static final int ORPHAN_SCAN_UNITS = 32;
 
     // THREAD CONTEXT (OPENGL-SPECIFIC)
     private final Thread renderThread;
@@ -139,14 +139,14 @@ public final class GLEngine extends GFXEngine {
     // FBO FOR YUV TO RGBA CONVERSION
     private int fbo = 0;
 
-    // FULLSCREEN QUAD (CORE PROFILE — NO IMMEDIATE MODE)
+    // FULLSCREEN QUAD (CORE PROFILE, NO IMMEDIATE MODE)
     private int quadVAO = 0;
     private int quadVBO = 0;
 
     // PLANE LAYOUT FOR THE CURRENT FORMAT (BUILT IN format() ON THE RENDER THREAD)
     private Plane[] planes = new Plane[0];
 
-    // LEGACY PER-PLANE PBO STATE — pbos[PLANE * NUM_PBOS + BUFFER_INDEX]
+    // LEGACY PER-PLANE PBO STATE: pbos[PLANE * NUM_PBOS + BUFFER_INDEX]
     private final int[] pbos = new int[MAX_PLANES * NUM_PBOS];
     private int pboWriteIdx = 0;
     private boolean pboInitialized = false;
@@ -190,11 +190,11 @@ public final class GLEngine extends GFXEngine {
                 this.hub = HUBS.computeIfAbsent(renderThread, t -> new Hub(renderThreadEx));
                 this.hub.engines++;
             }
-            // VALIDATE THE THREAD PAIR ASYNCHRONOUSLY. A MISMATCH IS LOGGED, NOT THROWN — THROWING RUNS ON
+            // VALIDATE THE THREAD PAIR ASYNCHRONOUSLY. A MISMATCH IS LOGGED, NOT THROWN: THROWING RUNS ON
             // THE EXECUTOR AND WOULD CRASH THE HOST RENDER LOOP INSTEAD OF THE MISCONFIGURED CALLER.
             renderThreadEx.execute(() -> {
                 if (Thread.currentThread() != renderThread)
-                    LOGGER.error(IT, "renderThreadEx does not dispatch to renderThread — uploads will corrupt the GL context");
+                    LOGGER.error(IT, "renderThreadEx does not dispatch to renderThread; uploads will corrupt the GL context");
             });
         } else {
             this.hub = null;
@@ -238,6 +238,9 @@ public final class GLEngine extends GFXEngine {
         };
     }
 
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
     @Override
     boolean preload(final ByteBuffer[] frames) {
         if (frames == null || frames.length == 0 || this.released) return false;
@@ -321,16 +324,6 @@ public final class GLEngine extends GFXEngine {
         return true;
     }
 
-    // PREPARES THE ENGINE FOR A FRESH FRAME-TEXTURE SET: DROPS STREAMING RESOURCES (RING, PBOS)
-    // AND ANY PREVIOUS SET, THEN CLAIMS A NEW GENERATION.
-    private void beginFrameTextures() {
-        this.releaseFrameTextures();
-        this.releasePBOs();
-        this.destroyRing();
-        this.firstFrame = true;
-        this.frameTexGen++;
-    }
-
     @Override
     void frame(final int index) {
         final int ready = this.frameTexReady;
@@ -350,6 +343,64 @@ public final class GLEngine extends GFXEngine {
         }
         this.applyNow(format, width, height, bits, color);
         return true;
+    }
+
+    // WRITES THE FRAME INTO THE PERSISTENT RING (PRODUCER-SIDE MEMCPY) OR PARKS THE CLIENT BUFFERS
+    // IN THE LATEST-WINS SLOT; THE SHARED HUB QUEUES AT MOST ONE BATCHED DRAIN PER RENDER THREAD.
+    @Override
+    void push(final ByteBuffer[] bufs, final int[] strides) {
+        try {
+            if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
+                // SYNCHRONOUS PATH: ALREADY ON THE RENDER THREAD (OR NO THREAD CONTRACT AT ALL)
+                final Env env = Env.save(this.conv != CONV_NONE);
+                try {
+                    this.renderSubmission(client(bufs, strides));
+                } finally {
+                    env.restore();
+                }
+                return;
+            }
+
+            // RING CONGESTION (DROPPED) SKIPS THE FRAME BUT STILL SCHEDULES A DRAIN SO FENCES
+            // RETIRE AND THE RING RECOVERS.
+            final Submission ring = this.ringWrite(bufs, strides);
+            if (ring != DROPPED) this.pending = ring != null ? ring : client(bufs, strides);
+            this.hub.schedule(this);
+        } catch (final RuntimeException e) {
+            // A GL FAILURE OR A REJECTING EXECUTOR DROPS THE FRAME; UPLOADS NEVER THROW AT THE DECODER
+            if (!this.failWarned) LOGGER.error(IT, "Upload failed; frame dropped", e);
+            this.failWarned = true;
+        }
+    }
+
+    // released IS ALREADY SET: PRODUCERS STOP AT ONCE AND STALE RENDER TASKS BECOME NO-OPS; THE GPU
+    // TEARDOWN RUNS ONCE, DEFERRED TO THE RENDER THREAD WHEN THERE IS ONE
+    @Override
+    void destroy() {
+        // DROP OUR HUB REFERENCE; THE LAST ENGINE LEAVING EVICTS THE HUB, SO A DEAD THREAD LEAKS NOTHING
+        if (this.hub != null) {
+            synchronized (HUBS) {
+                if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
+            }
+        }
+        if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
+            this.renderThreadEx.execute(this::destroyGL);
+            return;
+        }
+        this.destroyGL();
+    }
+
+    // ==========================================================================
+    // PIPELINE RESETS (RENDER THREAD)
+    // ==========================================================================
+    // PREPARES THE ENGINE FOR A FRESH FRAME-TEXTURE SET: DROPS STREAMING RESOURCES (RING, PBOS)
+    // AND ANY PREVIOUS SET, THEN CLAIMS A NEW GENERATION.
+    private void beginFrameTextures() {
+        this.releaseFrameTextures();
+        this.releasePBOs();
+        this.destroyRing();
+        this.firstFrame = true;
+        this.frameTexGen++;
     }
 
     private void applyNow(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
@@ -407,48 +458,8 @@ public final class GLEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // SUBMISSION — PRODUCER SIDE
+    // SUBMISSION: PRODUCER SIDE
     // ==========================================================================
-    // WRITES THE FRAME INTO THE PERSISTENT RING (PRODUCER-SIDE MEMCPY) OR PARKS THE CLIENT BUFFERS
-    // IN THE LATEST-WINS SLOT; THE SHARED HUB QUEUES AT MOST ONE BATCHED DRAIN PER RENDER THREAD.
-    @Override
-    void push(final ByteBuffer[] bufs, final int[] strides) {
-        try {
-            if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
-                // SYNCHRONOUS PATH: ALREADY ON THE RENDER THREAD (OR NO THREAD CONTRACT AT ALL)
-                final Env env = Env.save(this.conv != CONV_NONE);
-                try {
-                    this.renderSubmission(client(bufs, strides));
-                } finally {
-                    env.restore();
-                }
-                return;
-            }
-
-            // RING CONGESTION (DROPPED) SKIPS THE FRAME BUT STILL SCHEDULES A DRAIN SO FENCES
-            // RETIRE AND THE RING RECOVERS.
-            final Submission ring = this.ringWrite(bufs, strides);
-            if (ring != DROPPED) this.pending = ring != null ? ring : client(bufs, strides);
-            this.hub.schedule(this);
-        } catch (final RuntimeException e) {
-            // A GL FAILURE OR A REJECTING EXECUTOR DROPS THE FRAME; UPLOADS NEVER THROW AT THE DECODER
-            if (!this.failWarned) LOGGER.error(IT, "Upload failed; frame dropped", e);
-            this.failWarned = true;
-        }
-    }
-
-    // SNAPSHOTS SIZES AND BASE ADDRESSES NOW: THE DRAIN RUNS LATER ON THE RENDER THREAD AND MUST NOT
-    // DEPEND ON WHERE position SITS BY THEN (THE CONTRACT ONLY PROMISES THE BYTES STAY VALID)
-    private static Submission client(final ByteBuffer[] bufs, final int[] strides) {
-        final int[] sizes = new int[bufs.length];
-        final long[] addrs = new long[bufs.length];
-        for (int i = 0; i < bufs.length; i++) {
-            sizes[i] = bufs[i].remaining();
-            addrs[i] = MemoryUtil.memAddress(bufs[i]);
-        }
-        return new Submission(bufs, addrs, strides, sizes, -1L, 0);
-    }
-
     // COPIES ALL PLANES INTO THE NEXT FREE SLOT; RETURNS null WHEN THE RING IS UNAVAILABLE/TOO
     // SMALL (CALLER FALLS BACK TO CLIENT BUFFERS) OR DROPPED WHEN EVERY SLOT IS IN FLIGHT.
     private Submission ringWrite(final ByteBuffer[] bufs, final int[] strides) {
@@ -473,7 +484,7 @@ public final class GLEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // SUBMISSION — RENDER THREAD SIDE
+    // SUBMISSION: RENDER THREAD SIDE
     // ==========================================================================
     // ONE ENGINE'S SHARE OF A HUB WAVE: CONSUME THE LATEST-WINS SLOT AND RETIRE RING FENCES.
     // THE CALLER OWNS THE STATE ENVELOPE.
@@ -527,7 +538,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         if (!this.pboInitialized) {
-            // LAZY LEGACY PBO PAIRS — ONE DOUBLE BUFFER PER PLANE
+            // LAZY LEGACY PBO PAIRS: ONE DOUBLE BUFFER PER PLANE
             final int count = this.planes.length * NUM_PBOS;
             final int[] ids = new int[count];
             GL15.glGenBuffers(ids);
@@ -629,7 +640,7 @@ public final class GLEngine extends GFXEngine {
         if (this.ringCapable == null) {
             final GLCapabilities caps = GL.getCapabilities();
             this.ringCapable = caps.GL_ARB_buffer_storage || caps.OpenGL44;
-            if (!this.ringCapable) LOGGER.debug(IT, "ARB_buffer_storage unavailable — using legacy PBO uploads");
+            if (!this.ringCapable) LOGGER.debug(IT, "ARB_buffer_storage unavailable; using legacy PBO uploads");
         }
         if (!this.ringCapable || slotBytes <= 0L) return;
         this.destroyRing();
@@ -685,23 +696,6 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // RELEASE
     // ==========================================================================
-    // released IS ALREADY SET: PRODUCERS STOP AT ONCE AND STALE RENDER TASKS BECOME NO-OPS; THE GPU
-    // TEARDOWN RUNS ONCE, DEFERRED TO THE RENDER THREAD WHEN THERE IS ONE
-    @Override
-    void destroy() {
-        // DROP OUR HUB REFERENCE; THE LAST ENGINE LEAVING EVICTS THE HUB, SO A DEAD THREAD LEAKS NOTHING
-        if (this.hub != null) {
-            synchronized (HUBS) {
-                if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
-            }
-        }
-        if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(this::destroyGL);
-            return;
-        }
-        this.destroyGL();
-    }
-
     private void destroyGL() {
         final Env env = Env.save(false);
         try {
@@ -724,19 +718,19 @@ public final class GLEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // FBO CONVERSION — RENDERS PLANE TEXTURES THROUGH SHADER INTO managedTexture
+    // FBO CONVERSION: RENDERS PLANE TEXTURES THROUGH SHADER INTO managedTexture
     // ==========================================================================
     // THE HUB/SUBMIT ENVELOPE ALREADY SAVED THE HOST'S PROGRAM/VIEWPORT/FBO/VAO/DRAW TOGGLES
     // AND FORCED A CLEAN DRAW STATE, SO THIS PASS ONLY SETS WHAT IT USES.
     private void convertToRGBA() {
-        // SHADER COMPILE FAILED — SKIP RATHER THAN BIND PROGRAM 0 (BLACK OUTPUT); supports() NOW DECLINES IT
+        // SHADER COMPILE FAILED: SKIP RATHER THAN BIND PROGRAM 0 (BLACK OUTPUT); supports() NOW DECLINES IT
         final Kit kit = this.kit;
         final int program = kit.programs[this.conv];
         if (program == 0) return;
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
         if (this.fbo == 0) this.fbo = GL30.glGenFramebuffers();
 
-        // LAZY FULLSCREEN QUAD (CORE PROFILE — NO IMMEDIATE MODE); A VAO NEVER CROSSES CONTEXTS, SO IT STAYS PER ENGINE
+        // LAZY FULLSCREEN QUAD (CORE PROFILE, NO IMMEDIATE MODE); A VAO NEVER CROSSES CONTEXTS, SO IT STAYS PER ENGINE
         if (this.quadVAO == 0) {
             final float[] verts = {
                     -1, -1,   0, 0,
@@ -760,7 +754,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         if (this.managedTextureW != this.width || this.managedTextureH != this.height) {
-            // A BOUND UNPACK PBO WOULD TURN THE NULL POINTER INTO OFFSET 0 — UNBIND EXPLICITLY
+            // A BOUND UNPACK PBO WOULD TURN THE NULL POINTER INTO OFFSET 0: UNBIND EXPLICITLY
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.managedTexture);
             GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
@@ -774,7 +768,7 @@ public final class GLEngine extends GFXEngine {
         GL11.glViewport(0, 0, this.width, this.height);
 
         // ONE BIND PATH FOR EVERY CONVERSION KIND: BIND EACH PLANE TO ITS UNIT AND SET THE SHARED
-        // UNIFORMS — LOCATIONS A PROGRAM DIDN'T DECLARE ARE -1, WHICH glUniform* SILENTLY IGNORES.
+        // UNIFORMS; LOCATIONS A PROGRAM DIDN'T DECLARE ARE -1, WHICH glUniform* SILENTLY IGNORES.
         GL20.glUseProgram(program);
         final int[] locs = kit.uniforms[this.conv];
         for (int i = 0; i < this.planes.length; i++) {
@@ -824,18 +818,6 @@ public final class GLEngine extends GFXEngine {
         this.planes = planes;
     }
 
-    // CONVERSION KIND OF A LAYOUT: DIRECT FORMATS (BGRA, RGBA, RGB) NEED NO SHADER PASS
-    private static int kindOf(final PixelFormat format) {
-        return switch (format) {
-            case GRAY -> CONV_GRAY;
-            case NV12, NV21 -> CONV_NV;
-            case YUV420P, YUV422P, YUV444P -> CONV_YUV3;
-            case YUVA420P, YUVA422P, YUVA444P -> CONV_YUVA;
-            case YUYV, UYVY -> CONV_YUYV;
-            default -> CONV_NONE;
-        };
-    }
-
     // CREATES TARGET TEXTURES LAZILY. DIRECT FORMATS ALIAS PLANE 0 TO managedTexture; PACKED
     // YUYV NEEDS NEAREST FILTERING SO PIXEL PAIRS ARE NOT INTERPOLATED.
     private void ensureTargets() {
@@ -857,14 +839,10 @@ public final class GLEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // INTERNAL HELPERS
+    // UPLOAD HELPERS
     // ==========================================================================
-    private static boolean directUpload(final PixelFormat format) {
-        return format == PixelFormat.BGRA || format == PixelFormat.RGBA || format == PixelFormat.RGB;
-    }
-
-    // A DIRECT FORMAT HAS ONE PLANE, ALREADY LAID OUT BY buildPlanes(), SO A PRELOADED FRAME UPLOADS THROUGH IT
-    // PRELOADED FRAMES ARE TIGHTLY PACKED, SO THE PLANE DESCRIBES THEM WITH STRIDE 0
+    // A DIRECT FORMAT HAS ONE PLANE, ALREADY LAID OUT BY buildPlanes(), SO A PRELOADED FRAME UPLOADS THROUGH IT; PRELOADED
+    // FRAMES ARE TIGHTLY PACKED, SO THE PLANE DESCRIBES THEM WITH STRIDE 0
     private boolean uploadDirectTexture(final int texture, final ByteBuffer buffer) {
         final Plane p = this.planes[0];
         if (this.required(p, 0, 0, buffer.remaining()) < 0L) return false;
@@ -900,11 +878,28 @@ public final class GLEngine extends GFXEngine {
         return needed;
     }
 
+    private int newTexture() {
+        final int tex = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
+        return tex;
+    }
+
+    private void checkGLError(final String op) {
+        final int err = GL11.glGetError();
+        if (err == GL11.GL_NO_ERROR || this.glErrorWarned) return;
+        this.glErrorWarned = true;
+        LOGGER.warn(IT, "GL error after '{}': {}", op, glErrorName(err));
+    }
+
     // ==========================================================================
-    // EXPOSED TEXTURE DELETION — DEFERRED UNTIL PROVABLY UNREFERENCED
+    // TEXTURE AND BUFFER DELETION
     // ==========================================================================
-    // FREE STORAGE NOW (ZERO-SIZE RESPEC), DEFER THE NAME: A HOST CACHE MAY STILL POINT AT IT AND A
-    // REUSED NAME SKIPS A FUTURE REBIND — "UNBOUND ON EVERY UNIT" (sweepOrphans) PROVES IT DELETABLE.
+    // FREE STORAGE NOW (ZERO-SIZE RESPEC), DEFER THE NAME: A HOST CACHE MAY STILL POINT AT IT AND A REUSED NAME SKIPS A
+    // FUTURE REBIND; "UNBOUND ON EVERY UNIT" (sweepOrphans) PROVES IT DELETABLE.
     private void orphanTexture(final int texture) {
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
         GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, 0, 0, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
@@ -912,10 +907,74 @@ public final class GLEngine extends GFXEngine {
     }
 
     private void orphanTextures(final int[] textures) {
-        if (textures == null) return;
         for (final int texture: textures) {
             if (texture != 0) this.orphanTexture(texture);
         }
+    }
+
+    private void releaseFrameTextures() {
+        final int[] textures = this.frameTextures;
+        this.frameTexGen++;
+        if (textures.length == 0) return;
+        this.orphanTextures(textures);
+        this.frameTextures = EMPTY_TEXTURES;
+        this.frameTexReady = 0;
+        this.activeFrameTexture = -1;
+    }
+
+    private void releasePlaneTextures() {
+        for (final Plane p: this.planes) {
+            // PLANE 0 ALIASES managedTexture FOR DIRECT FORMATS, RELEASED SEPARATELY.
+            // PLANE TEXTURES ARE NEVER EXPOSED TO THE HOST, SO IMMEDIATE DELETION IS SAFE.
+            if (p.tex != 0 && p.tex != this.managedTexture) GL11.glDeleteTextures(p.tex);
+            p.tex = 0;
+        }
+    }
+
+    private void releasePBOs() {
+        if (!this.pboInitialized) return;
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        final int count = this.activePlanes * NUM_PBOS;
+        if (count > 0) {
+            final int[] toDelete = new int[count];
+            System.arraycopy(this.pbos, 0, toDelete, 0, count);
+            GL15.glDeleteBuffers(toDelete);
+        }
+        Arrays.fill(this.pbos, 0);
+        Arrays.fill(this.planeBytes, 0);
+        this.pboInitialized = false;
+        this.pboReady = false;
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // SNAPSHOTS SIZES AND BASE ADDRESSES NOW: THE DRAIN RUNS LATER ON THE RENDER THREAD AND MUST NOT
+    // DEPEND ON WHERE position SITS BY THEN (THE CONTRACT ONLY PROMISES THE BYTES STAY VALID)
+    private static Submission client(final ByteBuffer[] bufs, final int[] strides) {
+        final int[] sizes = new int[bufs.length];
+        final long[] addrs = new long[bufs.length];
+        for (int i = 0; i < bufs.length; i++) {
+            sizes[i] = bufs[i].remaining();
+            addrs[i] = MemoryUtil.memAddress(bufs[i]);
+        }
+        return new Submission(bufs, addrs, strides, sizes, -1L, 0);
+    }
+
+    // CONVERSION KIND OF A LAYOUT: DIRECT FORMATS (BGRA, RGBA, RGB) NEED NO SHADER PASS
+    private static int kindOf(final PixelFormat format) {
+        return switch (format) {
+            case GRAY -> CONV_GRAY;
+            case NV12, NV21 -> CONV_NV;
+            case YUV420P, YUV422P, YUV444P -> CONV_YUV3;
+            case YUVA420P, YUVA422P, YUVA444P -> CONV_YUVA;
+            case YUYV, UYVY -> CONV_YUYV;
+            default -> CONV_NONE;
+        };
+    }
+
+    private static boolean directUpload(final PixelFormat format) {
+        return format == PixelFormat.BGRA || format == PixelFormat.RGBA || format == PixelFormat.RGB;
     }
 
     // RUNS RIGHT AFTER AN ENVELOPE RESTORE (ACTUAL STATE == HOST STATE): SCANS THE TEXTURE
@@ -937,26 +996,6 @@ public final class GLEngine extends GFXEngine {
             GL11.glDeleteTextures(id);
             return true;
         });
-    }
-
-    private void releaseFrameTextures() {
-        final int[] textures = this.frameTextures;
-        this.frameTexGen++;
-        if (textures.length == 0) return;
-        this.orphanTextures(textures);
-        this.frameTextures = EMPTY_TEXTURES;
-        this.frameTexReady = 0;
-        this.activeFrameTexture = -1;
-    }
-
-    private int newTexture() {
-        final int tex = GL11.glGenTextures();
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        return tex;
     }
 
     // LINKS THE CONVERSION PROGRAM OF ONE FRAGMENT; 0 WHEN A FILE OR A STAGE FAILS, SO THE KIT DECLINES THAT KIND
@@ -1009,37 +1048,6 @@ public final class GLEngine extends GFXEngine {
         return prog;
     }
 
-    private void releasePlaneTextures() {
-        for (final Plane p: this.planes) {
-            // PLANE 0 ALIASES managedTexture FOR DIRECT FORMATS — RELEASED SEPARATELY.
-            // PLANE TEXTURES ARE NEVER EXPOSED TO THE HOST, SO IMMEDIATE DELETION IS SAFE.
-            if (p.tex != 0 && p.tex != this.managedTexture) GL11.glDeleteTextures(p.tex);
-            p.tex = 0;
-        }
-    }
-
-    private void releasePBOs() {
-        if (!this.pboInitialized) return;
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-        final int count = this.activePlanes * NUM_PBOS;
-        if (count > 0) {
-            final int[] toDelete = new int[count];
-            System.arraycopy(this.pbos, 0, toDelete, 0, count);
-            GL15.glDeleteBuffers(toDelete);
-        }
-        Arrays.fill(this.pbos, 0);
-        Arrays.fill(this.planeBytes, 0);
-        this.pboInitialized = false;
-        this.pboReady = false;
-    }
-
-    private void checkGLError(final String op) {
-        final int err = GL11.glGetError();
-        if (err == GL11.GL_NO_ERROR || this.glErrorWarned) return;
-        this.glErrorWarned = true;
-        LOGGER.warn(IT, "GL error after '{}': {}", op, glErrorName(err));
-    }
-
     private static String glErrorName(final int err) {
         return switch (err) {
             case GL11.GL_INVALID_ENUM -> "INVALID_ENUM";
@@ -1053,7 +1061,7 @@ public final class GLEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // RECORDS + PLANE DESCRIPTOR
+    // NESTED TYPES
     // ==========================================================================
     // ONE SUBMITTED FRAME. slot >= 0 MEANS PIXELS LIVE IN THE PERSISTENT RING (bufs IS NULL); OTHERWISE bufs KEEPS THE
     // CALLER'S DIRECT BUFFERS REACHABLE AND addrs THEIR BASE ADDRESSES UNTIL THE DRAIN CONSUMES OR REPLACES IT.
@@ -1098,11 +1106,8 @@ public final class GLEngine extends GFXEngine {
         }
     }
 
-    // ==========================================================================
-    // DRAIN HUB, CONVERSION KIT + STATE ENVELOPE
-    // ==========================================================================
     // BATCHES EVERY ENGINE'S PENDING DRAIN ON ONE RENDER THREAD INTO A SINGLE TASK PER FRAME,
-    // WRAPPED IN ONE STATE ENVELOPE — THE glGet CAPTURE COST IS PER FRAME, NOT PER PLAYER.
+    // WRAPPED IN ONE STATE ENVELOPE: THE glGet CAPTURE COST IS PER FRAME, NOT PER PLAYER.
     private static final class Hub {
         private final Executor ex;
         private final ArrayList<GLEngine> waiting = new ArrayList<>(); // GUARDED BY this
@@ -1150,7 +1155,7 @@ public final class GLEngine extends GFXEngine {
                     try {
                         e.drainOne();
                     } catch (final RuntimeException ex) {
-                        // ISOLATE FAILURES — ONE BROKEN ENGINE MUST NOT STARVE THE REST OF THE WAVE
+                        // ISOLATE FAILURES: ONE BROKEN ENGINE MUST NOT STARVE THE REST OF THE WAVE
                         if (!e.failWarned) LOGGER.error(IT, "Engine drain failed", ex);
                         e.failWarned = true;
                     }
@@ -1214,7 +1219,7 @@ public final class GLEngine extends GFXEngine {
     // EXACT CAPTURE/RESTORE OF ALL GL STATE THE ENGINE TOUCHES, KEEPING ANY HOST SKIP-IF-EQUAL
     // CACHE (GlStateManager, SODIUM) TRUTHFUL; THE CONVERT VARIANT ALSO FORCES A CLEAN DRAW STATE.
     private static final class Env {
-        private static final int UNITS = 4; // TEXTURE0..3 — THE UNITS THE CONVERT PASS BINDS
+        private static final int UNITS = 4; // TEXTURE0..3, THE UNITS THE CONVERT PASS BINDS
 
         private final boolean convert;
         private final boolean samplers;
@@ -1241,10 +1246,6 @@ public final class GLEngine extends GFXEngine {
         private boolean cull;
         private boolean rasterDiscard;
 
-        static Env save(final boolean convert) {
-            return new Env(convert);
-        }
-
         private Env(final boolean convert) {
             final GLCapabilities caps = convert ? GL.getCapabilities() : null;
             this.convert = convert;
@@ -1262,7 +1263,7 @@ public final class GLEngine extends GFXEngine {
                 GL13.glActiveTexture(GL13.GL_TEXTURE0 + i);
                 this.unitTex[i] = GL13.GL_TEXTURE0 + i == this.active ? this.activeTex : GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
                 if (this.samplers) {
-                    // SAMPLER OBJECTS OVERRIDE TEXTURE PARAMETERS — NEUTRALIZE THEM FOR THE PASS
+                    // SAMPLER OBJECTS OVERRIDE TEXTURE PARAMETERS: NEUTRALIZE THEM FOR THE PASS
                     this.unitSampler[i] = GL11.glGetInteger(GL33.GL_SAMPLER_BINDING);
                     if (this.unitSampler[i] != 0) GL33.glBindSampler(i, 0);
                 }
@@ -1290,6 +1291,10 @@ public final class GLEngine extends GFXEngine {
             if (this.rasterDiscard) GL11.glDisable(GL30.GL_RASTERIZER_DISCARD);
             GL11.glColorMask(true, true, true, true);
             GL11.glPolygonMode(GL11.GL_FRONT_AND_BACK, GL11.GL_FILL);
+        }
+
+        static Env save(final boolean convert) {
+            return new Env(convert);
         }
 
         void restore() {
@@ -1321,7 +1326,7 @@ public final class GLEngine extends GFXEngine {
             GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, this.unpackSkipPx);
             GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, this.unpackSkipRows);
 
-            // HOST STATE IS EXACT AGAIN — DELETE ANY ORPHANED NAME NO UNIT STILL BINDS
+            // HOST STATE IS EXACT AGAIN: DELETE ANY ORPHANED NAME NO UNIT STILL BINDS
             sweepOrphans(this.active);
         }
     }

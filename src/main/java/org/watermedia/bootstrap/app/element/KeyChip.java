@@ -27,6 +27,10 @@ public final class KeyChip extends Element<KeyChip> {
         this.key(key);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public KeyChip key(final String value) {
         this.key = value == null ? "" : value;
         this.upper = this.key.toUpperCase(Locale.ROOT);
@@ -49,6 +53,10 @@ public final class KeyChip extends Element<KeyChip> {
         if (k.contains("SPACE")) return "pause";
         return "info";
     }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {

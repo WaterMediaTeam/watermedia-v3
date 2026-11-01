@@ -25,6 +25,10 @@ public final class Switch extends Element<Switch> {
     private float animFrom;
     private boolean drawn;
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
+
     public Switch on(final boolean value) {
         // ONLY A REAL TRANSITION ANIMATES; A PER-FRAME REBIND TO THE SAME VALUE (SETTINGS SYNC) NEVER DOES
         if (value != this.on) {
@@ -45,6 +49,21 @@ public final class Switch extends Element<Switch> {
     }
 
     public boolean on() { return this.on; }
+
+    @Override
+    public boolean dispatchClick(final double mx, final double my) {
+        if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
+        // THE LOGICAL STATE FLIPS IMMEDIATELY; ONLY THE KNOB DRAW TRAILS BEHIND WITH THE EASE
+        this.slide();
+        this.on = !this.on;
+        this.invalidate();
+        if (this.onChange != null) this.onChange.accept(this.on);
+        return true;
+    }
+
+    // ==========================================================================
+    // INTERNAL API
+    // ==========================================================================
 
     @Override
     protected void onUpdate() {
@@ -73,16 +92,9 @@ public final class Switch extends Element<Switch> {
         canvas.fill(knobX, trackY + INSET, KNOB, KNOB, AppTheme.TEXT);
     }
 
-    @Override
-    public boolean dispatchClick(final double mx, final double my) {
-        if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
-        // THE LOGICAL STATE FLIPS IMMEDIATELY; ONLY THE KNOB DRAW TRAILS BEHIND WITH THE EASE
-        this.slide();
-        this.on = !this.on;
-        this.invalidate();
-        if (this.onChange != null) this.onChange.accept(this.on);
-        return true;
-    }
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
 
     private void slide() {
         // RESTARTS THE EASE FROM THE CURRENT KNOB POSITION; BEFORE THE FIRST DRAW IT SNAPS, SO A FRESHLY BUILT ROW

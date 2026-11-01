@@ -17,10 +17,8 @@ import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.player.GFXEngine;
 import org.watermedia.api.player.PlayerAPI;
-import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.app.render.TextureHandle;
 import org.watermedia.tools.IOTool;
 
 import java.io.IOException;
@@ -84,7 +82,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     }
 
     // ==========================================================================
-    // CONTEXT / CAPABILITIES
+    // PUBLIC API: CONTEXT / CAPABILITIES
     // ==========================================================================
     @Override
     public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
@@ -101,60 +99,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         return this.deviceVersion;
     }
 
-    private void attachContext() {
-        // THE REAL CONTEXT IS PINNED TO 3.2 CORE, WHICH SOME DRIVERS (NVIDIA) REPORT VERBATIM RATHER THAN THE GPU MAX,
-        // SO A THROWAWAY DEFAULT-HINTS CONTEXT PROBES THE DRIVER'S HIGHEST VERSION FIRST
-        long probe = 0L;
-        try {
-            glfwDefaultWindowHints();
-            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-            probe = glfwCreateWindow(1, 1, "wm-gl-probe", 0L, 0L);
-            if (probe != 0L) {
-                glfwMakeContextCurrent(probe);
-                GL.createCapabilities();
-                this.captureInfo();
-            }
-        } catch (final Throwable ignored) {
-            // A FAILED PROBE ONLY LEAVES THE VERSION OF THE REAL CONTEXT
-        } finally {
-            // DEFAULT HINTS AGAIN SO LATER WINDOWS RE-HINT CLEANLY
-            glfwMakeContextCurrent(0L);
-            if (probe != 0L) glfwDestroyWindow(probe);
-            glfwDefaultWindowHints();
-        }
-
-        glfwMakeContextCurrent(this.window);
-        glfwSwapInterval(1);
-        GL.createCapabilities();
-        // GPU NAME AND FALLBACK VERSION FROM THE REAL CONTEXT (captureInfo ONLY RAISES THE VERSION, NEVER LOWERS IT)
-        this.captureInfo();
-        // A REQUESTED DEBUG CONTEXT IS SILENCED WITH A RETAINED EMPTY CALLBACK; WITHOUT ONE THERE IS NOTHING TO
-        // SILENCE AND ARB_debug_output MAY BE ABSENT
-        if (RenderSystem.GL_DEBUG) {
-            this.debugCallback = GLDebugMessageARBCallback.create((source, type, id, severity, length, message, userParam) -> {});
-            ARBDebugOutput.glDebugMessageCallbackARB(this.debugCallback, 0);
-        }
-    }
-
-    private void captureInfo() {
-        // KEEPS THE HIGHEST CONTEXT VERSION SEEN ACROSS THE PROBE AND THE REAL CONTEXT
-        try {
-            final String renderer = GL11.glGetString(GL11.GL_RENDERER);
-            if (renderer != null && !renderer.isBlank()) this.deviceName = renderer;
-        } catch (final Throwable ignored) {}
-        try {
-            final int major = GL11.glGetInteger(GL30.GL_MAJOR_VERSION);
-            final int minor = GL11.glGetInteger(GL30.GL_MINOR_VERSION);
-            if (major > 0 && (major > this.glVerMajor || (major == this.glVerMajor && minor > this.glVerMinor))) {
-                this.glVerMajor = major;
-                this.glVerMinor = minor;
-                this.deviceVersion = major + "." + minor;
-            }
-        } catch (final Throwable ignored) {}
-    }
-
     // ==========================================================================
-    // PER-FRAME FLOW
+    // PUBLIC API: PER-FRAME FLOW
     // ==========================================================================
     @Override
     public void beginFrame() {
@@ -181,7 +127,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     }
 
     // ==========================================================================
-    // LIFECYCLE (SHADERS / BUFFERS)
+    // PUBLIC API: LIFECYCLE (SHADERS / BUFFERS)
     // ==========================================================================
     @Override
     public void init() {
@@ -305,7 +251,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     }
 
     // ==========================================================================
-    // TREE CACHE LAYERS
+    // PUBLIC API: TREE CACHE LAYERS
     // ==========================================================================
     @Override
     public boolean beginLayer(final int index, final float r, final float g, final float b, final float a) {
@@ -352,46 +298,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.layerEpoch++;
     }
 
-    private boolean createLayer(final int index) {
-        final int texture = GL11.glGenTextures();
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, this.viewW, this.viewH, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
-        final int fbo = GL30.glGenFramebuffers();
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo);
-        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, texture, 0);
-        final int status = GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER);
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
-        this.layerBound = false;
-        if (status != GL30.GL_FRAMEBUFFER_COMPLETE) {
-            GL30.glDeleteFramebuffers(fbo);
-            GL11.glDeleteTextures(texture);
-            this.layerFailed = true;
-            WaterMedia.LOGGER.warn(IT, "The tree cache framebuffer is incomplete (0x{}); the UI repaints whole while the CRT bands move",
-                    Integer.toHexString(status));
-            return false;
-        }
-        this.layerFbo[index] = fbo;
-        this.layerTex[index] = texture;
-        this.layerW = this.viewW;
-        this.layerH = this.viewH;
-        return true;
-    }
-
-    private void deleteLayers() {
-        for (int i = 0; i < 2; i++) {
-            if (this.layerFbo[i] != 0) GL30.glDeleteFramebuffers(this.layerFbo[i]);
-            if (this.layerTex[i] != 0) GL11.glDeleteTextures(this.layerTex[i]);
-            this.layerFbo[i] = 0;
-            this.layerTex[i] = 0;
-        }
-    }
-
     // ==========================================================================
-    // TEXTURES
+    // PUBLIC API: TEXTURES
     // ==========================================================================
     @Override
     public TextureHandle createTexture(final int width, final int height, final ByteBuffer rgba) {
@@ -433,7 +341,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     }
 
     // ==========================================================================
-    // DRAWING
+    // PUBLIC API: DRAWING
     // ==========================================================================
     @Override
     public void draw(final DrawMode mode, final float[] vertices, final int vertexCount, final boolean textured) {
@@ -472,7 +380,13 @@ public final class OpenGLRenderBackend implements RenderBackend {
         // ON THE PRIOR DRAW STILL READING THE SAME REGION
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, this.uploadBuffer, GL15.GL_STREAM_DRAW);
 
-        GL11.glDrawArrays(toGLMode(mode), 0, vertexCount);
+        final int glMode = switch (mode) {
+            case TRIANGLES -> GL11.GL_TRIANGLES;
+            case TRIANGLE_FAN -> GL11.GL_TRIANGLE_FAN;
+            case LINES -> GL11.GL_LINES;
+            case LINE_LOOP -> GL11.GL_LINE_LOOP;
+        };
+        GL11.glDrawArrays(glMode, 0, vertexCount);
 
         if (standalone) {
             GL30.glBindVertexArray(0);
@@ -550,6 +464,105 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.scissorOn = false;
     }
 
+    // ==========================================================================
+    // CONTEXT / CAPABILITIES
+    // ==========================================================================
+    private void attachContext() {
+        // THE REAL CONTEXT IS PINNED TO 3.2 CORE, WHICH SOME DRIVERS (NVIDIA) REPORT VERBATIM RATHER THAN THE GPU MAX,
+        // SO A THROWAWAY DEFAULT-HINTS CONTEXT PROBES THE DRIVER'S HIGHEST VERSION FIRST
+        long probe = 0L;
+        try {
+            glfwDefaultWindowHints();
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            probe = glfwCreateWindow(1, 1, "wm-gl-probe", 0L, 0L);
+            if (probe != 0L) {
+                glfwMakeContextCurrent(probe);
+                GL.createCapabilities();
+                this.captureInfo();
+            }
+        } catch (final Throwable ignored) {
+            // A FAILED PROBE ONLY LEAVES THE VERSION OF THE REAL CONTEXT
+        } finally {
+            // DEFAULT HINTS AGAIN SO LATER WINDOWS RE-HINT CLEANLY
+            glfwMakeContextCurrent(0L);
+            if (probe != 0L) glfwDestroyWindow(probe);
+            glfwDefaultWindowHints();
+        }
+
+        glfwMakeContextCurrent(this.window);
+        glfwSwapInterval(1);
+        GL.createCapabilities();
+        // GPU NAME AND FALLBACK VERSION FROM THE REAL CONTEXT (captureInfo ONLY RAISES THE VERSION, NEVER LOWERS IT)
+        this.captureInfo();
+        // A REQUESTED DEBUG CONTEXT IS SILENCED WITH A RETAINED EMPTY CALLBACK; WITHOUT ONE THERE IS NOTHING TO
+        // SILENCE AND ARB_debug_output MAY BE ABSENT
+        if (RenderSystem.GL_DEBUG) {
+            this.debugCallback = GLDebugMessageARBCallback.create((source, type, id, severity, length, message, userParam) -> {});
+            ARBDebugOutput.glDebugMessageCallbackARB(this.debugCallback, 0);
+        }
+    }
+
+    private void captureInfo() {
+        // KEEPS THE HIGHEST CONTEXT VERSION SEEN ACROSS THE PROBE AND THE REAL CONTEXT
+        try {
+            final String renderer = GL11.glGetString(GL11.GL_RENDERER);
+            if (renderer != null && !renderer.isBlank()) this.deviceName = renderer;
+        } catch (final Throwable ignored) {}
+        try {
+            final int major = GL11.glGetInteger(GL30.GL_MAJOR_VERSION);
+            final int minor = GL11.glGetInteger(GL30.GL_MINOR_VERSION);
+            if (major > 0 && (major > this.glVerMajor || (major == this.glVerMajor && minor > this.glVerMinor))) {
+                this.glVerMajor = major;
+                this.glVerMinor = minor;
+                this.deviceVersion = major + "." + minor;
+            }
+        } catch (final Throwable ignored) {}
+    }
+
+    // ==========================================================================
+    // TREE CACHE LAYERS
+    // ==========================================================================
+    private boolean createLayer(final int index) {
+        final int texture = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, this.viewW, this.viewH, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        final int fbo = GL30.glGenFramebuffers();
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo);
+        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, texture, 0);
+        final int status = GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER);
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+        this.layerBound = false;
+        if (status != GL30.GL_FRAMEBUFFER_COMPLETE) {
+            GL30.glDeleteFramebuffers(fbo);
+            GL11.glDeleteTextures(texture);
+            this.layerFailed = true;
+            WaterMedia.LOGGER.warn(IT, "The tree cache framebuffer is incomplete (0x{}); the UI repaints whole while the CRT bands move",
+                    Integer.toHexString(status));
+            return false;
+        }
+        this.layerFbo[index] = fbo;
+        this.layerTex[index] = texture;
+        this.layerW = this.viewW;
+        this.layerH = this.viewH;
+        return true;
+    }
+
+    private void deleteLayers() {
+        for (int i = 0; i < 2; i++) {
+            if (this.layerFbo[i] != 0) GL30.glDeleteFramebuffers(this.layerFbo[i]);
+            if (this.layerTex[i] != 0) GL11.glDeleteTextures(this.layerTex[i]);
+            this.layerFbo[i] = 0;
+            this.layerTex[i] = 0;
+        }
+    }
+
+    // ==========================================================================
+    // DRAWING
+    // ==========================================================================
     private void softVertex(final int index, final float x, final float y) {
         final int off = index * FLOATS_PER_VERTEX;
         this.softQuad[off] = x;
@@ -562,8 +575,9 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.softQuad[off + 7] = 0f;
     }
 
+    // ==========================================================================
     // UTILITY
-
+    // ==========================================================================
     private static int compileShader(final int type, final String name) {
         // THE UI CANNOT DRAW WITHOUT ITS BUNDLED SHADERS, SO ANY FAILURE ABORTS THE BACKEND
         final String source;
@@ -578,14 +592,5 @@ public final class OpenGLRenderBackend implements RenderBackend {
             throw new IllegalStateException("OpenGL renderer shader " + name + " failed: " + log);
         }
         return shader;
-    }
-
-    private static int toGLMode(final DrawMode mode) {
-        return switch (mode) {
-            case TRIANGLES -> GL11.GL_TRIANGLES;
-            case TRIANGLE_FAN -> GL11.GL_TRIANGLE_FAN;
-            case LINES -> GL11.GL_LINES;
-            case LINE_LOOP -> GL11.GL_LINE_LOOP;
-        };
     }
 }

@@ -24,6 +24,9 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) imp
         this(-1, red, green, blue, -1);
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     /** Creates bKGD for an indexed-color image (color type 3). */
     public static BKGD forPalette(final int paletteIndex) {
         return new BKGD(-1, -1, -1, -1, paletteIndex);
@@ -95,14 +98,6 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) imp
         return 0;
     }
 
-    /** Scales a 1, 2, 4, 8 or 16-bit PNG sample to eight bits; 16-bit samples keep their high byte. */
-    public static int scaleTo8Bit(final int value, final int depth) {
-        if (depth == 8) return value;
-        if (depth == 16) return value >> 8;
-        if (depth <= 8) return (value * 255) / ((1 << depth) - 1);
-        return value;
-    }
-
     @Override
     public byte[] toBytes() {
         if (this.isGreyscale()) {
@@ -123,5 +118,13 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) imp
     @Override
     public PngChunk toChunk() {
         return PngChunk.create(SIGNATURE, this.toBytes());
+    }
+
+    /** Scales a 1, 2, 4, 8 or 16-bit PNG sample to eight bits; 16-bit samples keep their high byte. */
+    public static int scaleTo8Bit(final int value, final int depth) {
+        if (depth == 8) return value;
+        if (depth == 16) return value >> 8;
+        if (depth <= 8) return (value * 255) / ((1 << depth) - 1);
+        return value;
     }
 }

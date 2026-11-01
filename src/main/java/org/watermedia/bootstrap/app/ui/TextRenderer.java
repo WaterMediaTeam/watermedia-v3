@@ -43,6 +43,9 @@ public final class TextRenderer {
         this.baseSize = DEFAULT_FONT_SIZE;
     }
 
+    // ==========================================================================
+    // PUBLIC API
+    // ==========================================================================
     public void margin(final int margin) {
         this.margin = Math.max(0, margin);
     }
@@ -214,6 +217,9 @@ public final class TextRenderer {
         return sb + ellipsis;
     }
 
+    // ==========================================================================
+    // HELPERS
+    // ==========================================================================
     private FontRun fontRun(final float scale, final int style) {
         final int weight = style == Font.BOLD ? Font.BOLD : Font.PLAIN;
         final float ui = this.uiScale;
@@ -236,6 +242,33 @@ public final class TextRenderer {
         return run;
     }
 
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    private static Font loadBundledFont(final int style) {
+        final String resource = style == Font.BOLD ? "assets/watermedia/font/jetbrainsmono-bld.ttf" : "assets/watermedia/font/jetbrainsmono-reg.ttf";
+        try (final InputStream in = IOTool.jarOpenFile(resource)) {
+            if (in != null) return Font.createFont(Font.TRUETYPE_FONT, in).deriveFont(Font.PLAIN, 1f);
+        } catch (final Exception ignored) {}
+        return new Font("Consolas", style, 1);
+    }
+
+    private static Graphics2D textGraphics(final BufferedImage img, final Font font) {
+        final Graphics2D g2d = img.createGraphics();
+        g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_OFF);
+        g2d.setFont(font);
+        g2d.setColor(Color.WHITE);
+        return g2d;
+    }
+
+    private static int alpha(final BufferedImage image, final int x, final int y) {
+        return (image.getRGB(x, y) >>> 24) & 0xFF;
+    }
+
+    // ==========================================================================
+    // NESTED TYPES
+    // ==========================================================================
     private record AtlasKey(int style, int size) {}
     private record FontRun(FontAtlas atlas, float drawScale) {}
     private record LastRun(float scale, int style, float ui, FontRun run) {}
@@ -296,6 +329,9 @@ public final class TextRenderer {
             this.buildAtlas();
         }
 
+        // ======================================================================
+        // HELPERS
+        // ======================================================================
         private void buildAtlas() {
             // RASTERIZES PRINTABLE ASCII AND SHELF-PACKS IT INTO ONE TEXTURE, RECORDING EACH GLYPH'S UV RECT
             final List<PackedGlyph> packed = new ArrayList<>();
@@ -399,6 +435,9 @@ public final class TextRenderer {
             return new GlyphBitmap(pixels, w, h, left - GLYPH_PAD, top - this.fontTop, advance);
         }
 
+        // ======================================================================
+        // UTILITY
+        // ======================================================================
         private static void blitGlyph(final ByteBuffer atlas, final int atlasWidth, final PackedGlyph pg) {
             // THE CROPPED GLYPH'S RGBA GOES INTO THE ATLAS BUFFER AT ITS PACKED POSITION THROUGH ABSOLUTE PUTS
             final int[] pixels = pg.bmp().pixels();
@@ -415,28 +454,5 @@ public final class TextRenderer {
                 }
             }
         }
-    }
-
-    // UTILITY
-
-    private static Font loadBundledFont(final int style) {
-        final String resource = style == Font.BOLD ? "assets/watermedia/font/jetbrainsmono-bld.ttf" : "assets/watermedia/font/jetbrainsmono-reg.ttf";
-        try (final InputStream in = IOTool.jarOpenFile(resource)) {
-            if (in != null) return Font.createFont(Font.TRUETYPE_FONT, in).deriveFont(Font.PLAIN, 1f);
-        } catch (final Exception ignored) {}
-        return new Font("Consolas", style, 1);
-    }
-
-    private static Graphics2D textGraphics(final BufferedImage img, final Font font) {
-        final Graphics2D g2d = img.createGraphics();
-        g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-        g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_OFF);
-        g2d.setFont(font);
-        g2d.setColor(Color.WHITE);
-        return g2d;
-    }
-
-    private static int alpha(final BufferedImage image, final int x, final int y) {
-        return (image.getRGB(x, y) >>> 24) & 0xFF;
     }
 }
