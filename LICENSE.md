@@ -1,3 +1,47 @@
+# ⚖️ Defensive Public Source (Non-Commercial) License v1.0.1
+This is a quick guide to understand the permits and forbids of the license.
+> [!WARNING]
+> This section is merely informative and doesn't guarantee any interpretation to any clause, 
+full clauses are below this section
+
+| ✅ You can                             | ❌ You can't                                     | ℹ️ You must                                         |
+|----------------------------------------|--------------------------------------------------|----------------------------------------------------|
+| Use it in free projects                | Sell anything that uses it                       | Include the license and credit J-RAP (SrRapero720) |
+| Make mods and apps with it             | Put it inside your mod's jar                     | Keep forks free and open source on GitHub          |
+| Fork and modify it                     | Upload it outside CurseForge, Modrinth or GitHub | Give J-RAP 50% of your fork's rewards              |
+| Port it to versions it doesn't support | Port it to versions it already supports          | Let WATERMeDIA use what you publish in your fork   |
+| Keep donations and your mod's rewards  | Make it run where it blocks itself on purpose    | Fix any problem within 32 days of being warned     |
+
+## 💰 Money
+- **Donations**: All yours, as long as they don't unlock anything.
+- **Rewards and Revenue**: 50% goes to J-RAP when they come from WATERMeDIA or your fork [they come from WATERMeDIA or your fork (§3.3)](LICENSE.md#33-reward-programs). When it comes from another mod that uses WATERMeDIA, they're all yours.
+- **Sales**: You can't sell anything that uses watermedia, [no exception (§2)](LICENSE.md#2-copyright-license). Unless I (J-RAP) grant you a [commercial license (§2.2)](LICENSE.md#22-commercial-licensing).
+
+## 🎮 Frequent concerns
+- **Port WATERMeDIA to 1.12.2**: ✅ you can. WATERMeDIA doesn't run there, so your port doesn't compete with it
+  ([§4.4](LICENSE.md#44-unsupported-environments)).
+- **Port WATERMeDIA to 1.21.11**: ❌ you can't. [§4.3](LICENSE.md#43-non-competition) stops you because WATERMeDIA
+  already runs there and your port would compete with it. Send a pull request instead.
+- **Stop WATERMeDIA from using something it copied from my fork**: ❌ you can't.
+  [§4.2](LICENSE.md#42-license-back) lets WATERMeDIA use anything you publish in your fork, for free. Your code is
+  still yours.
+- **Put WATERMeDIA inside my mod's jar**: ❌ you can't. [§2.1](LICENSE.md#21-dependant-use) requires players to
+  download it separately. Standalone apps can include it.
+- **Upload WATERMeDIA or my fork to another site or launcher**: ❌ you can't.
+  [§3](LICENSE.md#3-distribution-license) only allows CurseForge, Modrinth and GitHub.
+- **Make a free modpack with WATERMeDIA**: ✅ you can, as long as it downloads WATERMeDIA from CurseForge or Modrinth.
+- **Keep my mod closed source**: ✅ you can, if it only uses WATERMeDIA. Forks must be open source on GitHub
+  ([§4.1](LICENSE.md#41-source-availability)).
+- **Publish a fork**: ✅ you can, if it doesn't compete with WATERMeDIA (see the ports above). Say it's based on
+  WATERMeDIA and include the license and the line
+  `Copyright SrRapero720 (https://github.com/SrRapero720)` ([§3.4](LICENSE.md#34-notices)).
+- **Fork someone else's fork**: ✅ you can, with the same rules as any fork. [§4.5](LICENSE.md#45-same-terms) keeps
+  every fork under this license, so its author can't block you or add rules, and neither can you. Keep their credit;
+  the 50% of rewards still goes only to J-RAP.
+
+_end of informative section_
+
+---
 # Defensive Public Source (Non-Commercial) License v1.0.1
 DPS (NC) License - https://github.com/SrRapero720/licenses/blob/main/DPS-(NC)-License.md
 
