@@ -324,6 +324,10 @@ Package map (`src/main/java/org/watermedia`):
 
 ## 6. Codecs API (`api/codecs`)
 
+⚠ Experimental (owner, 2026-11-01): `CodecsAPI.decode`, `reader`, `sniff`, `encoder` and the readers, encoders and
+filters they hand out are documented as "don't use in mods yet" (class Javadoc, README, both docs, changelog); the
+status queries `ffmpegLoaded`, `ffmpegError` and `vulkanDecode` stay supported. Players use the codecs internally.
+
 ### 6.1 Surface
 - `CodecsAPI` (final utility): metadata key constants (`METAKEY_ICC_PROFILE/EXIF/XMP/ORIENTATION/LOOP_COUNT`,
   `PNG_METAKEY_*` 15 keys, `GIF_METAKEY_APPLICATION_EXTENSION`; values are JDK types only).
