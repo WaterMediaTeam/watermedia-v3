@@ -1090,6 +1090,10 @@ System properties: `watermedia.engine`, `watermedia.app` (child JVM flag), `wate
   `test_lwjgl_stack`); `VKEngineTest.Decoded.playerDecodesOnTheDevice` is skipped with the Khronos validation layer
   installed (run with `VK_LOADER_LAYERS_DISABLE=~all~`); symlink tests skip without the Windows privilege;
   `FFmpegLogRoutingTest` is `@Disabled`. CI native matrix filters are listed in §4.
+- Clock-dependent cases that a slow host can stall retry up to 3 times with 5 s pauses and rethrow the last failure
+  (owner rule): `PlatformSearchTest.testTypingDelay`, `FFControlContractTest.Loading.speedBeforeStart` (2x rate window,
+  which failed once on the macOS Intel runner). Bracketed system-clock checks (`ServerMediaPlayerTest`,
+  `FollowerClockTest`) need none.
 - Binaries tests (`binaries/src/test/java`): `NativeProvisionTest` (checksums, generations, interrupted installs,
   overrides, BotGuard archives), `RepackToolTest` (runs `RepackFFmpeg.java` in a child JVM).
 

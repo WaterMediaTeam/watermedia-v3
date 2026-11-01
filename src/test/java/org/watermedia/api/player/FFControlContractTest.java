@@ -54,6 +54,8 @@ public class FFControlContractTest {
     private static final float SPEED = 2.0f;
     private static final double RATE_FLOOR = 1.25;       // A 2x CLOCK MAY STALL A QUARTER OF THE WINDOW ON A SLOW HOST; A RESET TO 1x NEVER CLEARS THIS
     private static final long RATE_WINDOW_MS = 1_000L;
+    private static final int RATE_ATTEMPTS = 3;          // A CLOCK-DEPENDENT CASE GETS TWO MORE TRIES ON A STALLED HOST
+    private static final long RATE_RETRY_MS = 5_000L;
     private static final long DISPLAY_MS = 400L;
     private static final int WEBM_FRAMES = 90;
 
@@ -143,31 +145,41 @@ public class FFControlContractTest {
         @Test
         @DisplayName("A speed chosen before start() survives into playback")
         void speedBeforeStart() throws Exception {
-            final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
-            final FFMediaPlayer player = new FFMediaPlayer(resolve(Fixtures.fileUri(Fixtures.MP4_H264)), 0, gfx, null);
-            try {
-                assertTrue(player.speed(SPEED), "a player that never ran takes a new speed");
-                assertTrue(player.start());
-                assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.PLAYING));
-                assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, PLAY_OBSERVE_MS));
-                assertEquals(SPEED, player.speed());
+            // THE RATE IS MEASURED AGAINST THE WALL CLOCK WHILE THE PIPELINE DECODES AT 2x, SO A SLOW CI RUNNER THAT STALLS IT
+            // GETS A FRESH PLAYER AND TWO MORE TRIES BEFORE THE CASE FAILS
+            AssertionError failure = null;
+            for (int attempt = 1; attempt <= RATE_ATTEMPTS; attempt++) {
+                if (attempt > 1) Thread.sleep(RATE_RETRY_MS);
+                final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
+                final FFMediaPlayer player = new FFMediaPlayer(resolve(Fixtures.fileUri(Fixtures.MP4_H264)), 0, gfx, null);
+                try {
+                    assertTrue(player.speed(SPEED), "a player that never ran takes a new speed");
+                    assertTrue(player.start());
+                    assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.PLAYING));
+                    assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, PLAY_OBSERVE_MS));
+                    assertEquals(SPEED, player.speed());
 
-                // BRACKET BOTH READINGS: THE CLOCK MUST RUN AT THE CHOSEN RATE, NOT AT THE 1x A FRESH RUN COULD RESET IT TO
-                final long before = System.nanoTime();
-                final long from = player.time();
-                final long started = System.nanoTime();
-                Thread.sleep(RATE_WINDOW_MS);
-                final long reading = System.nanoTime();
-                final long to = player.time();
-                final long after = System.nanoTime();
-                final long minimum = (long) (TimeUnit.NANOSECONDS.toMillis(reading - started) * RATE_FLOOR);
-                // EACH READING TRUNCATES THE CLOCK TO WHOLE MILLISECONDS
-                final long maximum = (long) (TimeUnit.NANOSECONDS.toMillis(after - before) * SPEED) + 2L;
-                assertTrue(to - from >= minimum && to - from <= maximum,
-                        "the clock must advance within [" + minimum + ", " + maximum + "] ms, advanced " + (to - from));
-            } finally {
-                player.release();
+                    // BRACKET BOTH READINGS: THE CLOCK MUST RUN AT THE CHOSEN RATE, NOT AT THE 1x A FRESH RUN COULD RESET IT TO
+                    final long before = System.nanoTime();
+                    final long from = player.time();
+                    final long started = System.nanoTime();
+                    Thread.sleep(RATE_WINDOW_MS);
+                    final long reading = System.nanoTime();
+                    final long to = player.time();
+                    final long after = System.nanoTime();
+                    final long minimum = (long) (TimeUnit.NANOSECONDS.toMillis(reading - started) * RATE_FLOOR);
+                    // EACH READING TRUNCATES THE CLOCK TO WHOLE MILLISECONDS
+                    final long maximum = (long) (TimeUnit.NANOSECONDS.toMillis(after - before) * SPEED) + 2L;
+                    assertTrue(to - from >= minimum && to - from <= maximum,
+                            "the clock must advance within [" + minimum + ", " + maximum + "] ms, advanced " + (to - from));
+                    return;
+                } catch (final AssertionError e) {
+                    failure = e;
+                } finally {
+                    player.release();
+                }
             }
+            throw failure;
         }
     }
 
