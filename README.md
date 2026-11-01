@@ -6,30 +6,36 @@
 
 ![Discord](https://img.shields.io/discord/486853064284831744?style=for-the-badge&logo=discord&logoColor=white&label=DISCORD&color=7289DA)
 
-## 🦆 WATERMeDIA: Multimedia API 
-WATERMeDIA is a multimedia engine, provides a richful API to store, load, decode and renderice multimedia 
-in 3D environments like VULKAN and OPENGL. Compatible and focused mainly to support Minecraft version that 
-uses Java 17 and upper. Superseding the old rusty FancyVideo-API mod, using FFMPEG and house-made decoders.
+![Banner](src/main/resources/assets/watermedia/textures/banner.png)
 
-FFMPEG binaries comes in a companion library jar called **WATERMeDIA: Binaries**, with that JAR you won't need
-to compile or install FFMPEG or any other native application, plug and play as you deserve. Its sources now live
-in this repository under [`binaries/`](https://github.com/SrRapero720/watermedia/tree/main/binaries) — see [📦 Binaries](#-binaries).
+## 🦆 WATERMeDIA: Multimedia API 
+A library to play media and to decode and encode videos and pictures, working with Vulkan, OpenGL, JavaFX,
+Java AWT and more coming soon.
+
+Built mainly for Minecraft modding on Forge, NeoForge and Fabric, covering almost every version that runs on
+Java 17 or newer.
+
+_FFmpeg_ comes ready to use in the companion mod _WATERMeDIA: Binaries_: nothing to compile or install, just
+plug and play.
 
 # 🧩 Projects using WATERMeDIA
-- 🖼️ [WATERFrAMES](https://www.curseforge.com/minecraft/mc-mods/waterframes) - By SrRapero720
-- 📺 [WATERViSION](https://www.curseforge.com/minecraft/mc-mods/watervision) - By SrRapero720
-- 🧱 [FancyMenu](https://www.curseforge.com/minecraft/mc-mods/fancymenu) - By Keksuccino
-- 📽️ [Holographic Renderers](https://www.curseforge.com/minecraft/mc-mods/holographic-renderers) - By Mysticpasta1
-- 🤵 [BBS CML EDITION](https://www.curseforge.com/minecraft/mc-mods/bbs-cml-edition) - By ElGatoPro300
-- 🖼️ [LittlePictureFrames](https://www.curseforge.com/minecraft/mc-mods/littleframes) - By CreativeMD
-- ⏪ [WaterFramesBackported](https://github.com/Toshayo/WaterFrames) - By Toshayo
-- 💻 [Conditional Videos](https://www.curseforge.com/minecraft/mc-mods/conditionalvideos) - By MateoF024
-- ⏯️ [SVVideo](https://www.curseforge.com/minecraft/mc-mods/svvideo) - By Santiivlog
+|           Name           |                 link                  |
+|:------------------------:|:-------------------------------------:|
+|      🖼️ Waterframes      | [CurseForge](https://mods.cf/834607)  |
+|      📺 Watervision      | [CurseForge](https://mods.cf/1167473) |
+|       🧱 Fancymenu       | [CurseForge](https://mods.cf/367706)  |
+| 📽️ Holographic Renderers | [CurseForge](https://mods.cf/532110)  |
+|    📽️ BBS CML Edition    | [CurseForge](https://mods.cf/1392794) |
+|  🖼️ LittlePictureFrames  | [CurseForge](https://mods.cf/435557)  |
+| ⏪ WaterFramesBackported | [CurseForge](https://mods.cf/1178892) |
+|  💻 Conditional Videos   | [CurseForge](https://mods.cf/1521845) |
+|   ⏯️  OwlLeaf playback    | [CurseForge](https://mods.cf/1224054) |
+
 
 # 💰 Donations
 > [!NOTE]
-> The amount you want to donate to us, donate half to FFMPEG developers, 
-> without them this project wouldn't be possible. 🫶<br>
+> Whatever you'd donate to us, consider giving half to the _FFmpeg_ developers: without them this project
+> wouldn't exist. 🫶<br>
 > https://www.ffmpeg.org/donations.html
 > 
 [![Support me on Patreon](https://img.shields.io/badge/Patreon-F96854?style=for-the-badge&logo=patreon&logoColor=white)](https://patreon.com/SrRapero720)
@@ -50,29 +56,31 @@ if (mrl.status() == MRL.Status.LOADED) {
 }
 ```
 
-Explanation of these 2 classes is simple
-``MRL`` (Multimedia Resource Location): it connects to the URL, finds any multimedia source and quality variations and stores it with metadata
-``MediaPlayer``: Opens an MRL source, lets you control the playback, uploads the texture and the sound to your engines.
+Two classes do the work:
+- `MRL` (Multimedia Resource Location) connects to the link, finds its media sources and quality variants and
+  keeps them with their metadata.
+- `MediaPlayer` opens an MRL source, gives you the playback controls and uploads the picture and sound to your
+  engines.
 
-Failing MRLs means there's no multimedia that watermedia can open (broken links or you're trying to open a docx)
+A failed MRL means there's nothing WATERMeDIA can play there (a broken link, or you're trying to open a `.docx`).
 
 ## 🚙 ENGINES
-``GLEngine``: OpenGL video connector. Self-contained — it captures and restores the host's GL
-state around every upload, so state managers with sensitive caches (like Minecraft's
-GlStateManager or Sodium) are never desynced. No GL wiring is required.
+`GLEngine`: OpenGL video output. It's self-contained: it saves and restores the host's GL state around every
+upload, so state managers with sensitive caches (like Minecraft's `GlStateManager` or _Sodium_) never desync.
+No GL wiring needed.
 
-``VKEngine``: Vulkan video connector. It never creates or owns a Vulkan device — your app lends
-it one through a ``VKContext`` implementation, and every frame comes back as a ready-to-sample
-``VkImageView``. See the Vulkan section below.
+`VKEngine`: Vulkan video output. It never creates or owns a Vulkan device: your app lends it one through a
+`VKContext`, and every frame comes back as a ready-to-sample `VkImageView`. See the Vulkan section below.
 
-``ALEngine``: OpenAL sound connector.
+`ALEngine`: OpenAL sound output.
 
-**NOTE:** sending null gfx and sfx engine suppliers disables video and audio output
+> [!NOTE]
+> Suppliers that return null (`() -> null`) turn video or audio output off.
 
 ## 🌋 VULKAN (VKEngine)
-Unlike OpenGL there is no global context to detect, so you lend the engine the device you render
-with by implementing ``VKContext``. The engine only creates its own resources over it and never
-destroys anything you returned:
+Unlike OpenGL there's no global context to detect, so you lend the engine the device you render with by
+implementing `VKContext`. The engine only creates its own resources on top of it and never destroys anything
+you returned:
 
 ```java
 public final class MyVKContext implements VKContext {
@@ -95,51 +103,49 @@ MediaPlayer player = PlayerAPI.player(mrl,
         () -> PlayerAPI.vkEngine(myContext),
         () -> null);
 
-// EACH FRAME: texture() IS A VkImageView HANDLE (RGBA, SHADER_READ_ONLY) — 0 MEANS NO FRAME YET
+// EACH FRAME: texture() IS A VkImageView HANDLE (RGBA, SHADER_READ_ONLY); 0 MEANS NO FRAME YET
 long imageView = player.texture();
 ```
 
 The contract in short:
-- **``queueLock()``** — Vulkan requires queue submission to be externally synchronized. The engine
-  holds this monitor around every ``vkQueueSubmit``; if you share the queue, hold the same lock
-  around your own submits and presents.
-- **``retire(Runnable)``** — the engine never destroys an image view your in-flight frames might
-  still sample. Run the callback once those frames completed (end-of-frame destruction queue),
-  and flush any pending callbacks before tearing down the device.
-- **Everything you return must outlive every engine built over the context.**
+- **`queueLock()`**: Vulkan needs queue submission to be externally synchronized. The engine holds this monitor
+  around every `vkQueueSubmit`; if you share the queue, hold the same lock around your own submits and presents.
+- **`retire(Runnable)`**: the engine never destroys an image view your in-flight frames might still sample. Run
+  the callback once those frames complete (end-of-frame destruction queue), and flush any pending callbacks
+  before tearing down the device.
+- **Everything you return must outlive every engine built on the context.**
 
 Optional device features the engine uses when you enable them at device creation:
-- ``VK_EXT_external_memory_host`` — zero-copy uploads: decoder buffers are imported straight into
-  a ``VkBuffer`` (no CPU copy). Report it via ``hostImportSupported()`` + the physical device's
-  ``minImportedHostPointerAlignment``. Without it the engine falls back to staging buffers.
-- ``samplerYcbcrConversion`` (Vulkan 1.1) — YUV→RGB conversion in sampler hardware for NV12 and
-  planar YUV; otherwise a compute pass does the exact same BT.709 math.
-- **Vulkan Video decoding** — override ``deviceInfo()`` with the feature chain, extension lists and
-  queue counts you created the device with, and the player decodes H.264, H.265 and AV1 on the GPU
-  with nothing passing through RAM. It needs a 1.3 instance and device with ``timelineSemaphore`` and
-  ``synchronization2``, ``VK_KHR_video_queue``, ``VK_KHR_video_decode_queue`` and the
-  ``VK_KHR_video_decode_*`` codec extensions. Where FFmpeg decodes it also runs libplacebo, which turns
-  every decoded layout into SDR RGBA (tone-mapping HDR) before the engine draws it; that takes
-  ``hostQueryReset``, ``runtimeDescriptorArray``, ``shaderStorageImageArrayNonUniformIndexing`` and
-  ``maintenance4``. Without libplacebo only 4:2:0 streams decode this way (their NV12 and P010 pools are
-  what the engine samples itself), and without ``deviceInfo()`` the engine keeps the host-import path
-  above. FFmpeg decodes in one of two places:
-  - **Your device**, when you also create queues FFmpeg can own: a compute-capable and a
-    transfer-capable queue other than ``queue()`` and a video decode queue, with ``queue()`` the last
-    queue created in its family. The engine samples the decoded images in place. FFmpeg submits to
-    those queues from its own threads, so never call ``vkDeviceWaitIdle`` while players exist: wait on
-    your own queue. libplacebo runs here only with the features above and a second queue in the family
-    of ``queue()``, as it needs a graphics queue that is not yours.
-  - **A twin**, when you create no extra queues but enable ``VK_KHR_external_memory_win32`` and
-    ``VK_KHR_external_semaphore_win32`` on Windows, or ``VK_KHR_external_memory_fd`` and
-    ``VK_KHR_external_semaphore_fd`` elsewhere. The engine creates a second device on the same GPU with
-    your feature chain and extensions, plus libplacebo's features when your chain lacks them and the GPU
-    has them; FFmpeg decodes there and the engine imports every decoded image into your device; your
-    queues stay yours. If an image cannot be imported (natives built without
-    FFmpeg's export fix, for instance), its frames come down to RAM instead and playback goes on.
+- `VK_EXT_external_memory_host`: zero-copy uploads, importing decoder buffers straight into a `VkBuffer` (no CPU
+  copy). Report it through `hostImportSupported()` and the physical device's `minImportedHostPointerAlignment`.
+  Without it the engine falls back to staging buffers.
+- `samplerYcbcrConversion` (Vulkan 1.1): YUV to RGB conversion in sampler hardware for NV12 and planar YUV;
+  otherwise a compute pass does the exact same BT.709 math.
+- **Vulkan Video decoding**: override `deviceInfo()` with the feature chain, extension lists and queue counts you
+  created the device with, and the player decodes H.264, H.265 and AV1 on the GPU with nothing passing through
+  RAM. It needs a 1.3 instance and device with `timelineSemaphore` and `synchronization2`, `VK_KHR_video_queue`,
+  `VK_KHR_video_decode_queue` and the `VK_KHR_video_decode_*` codec extensions. Where _FFmpeg_ decodes it also
+  runs _libplacebo_, which turns every decoded layout into SDR RGBA (tone-mapping HDR) before the engine draws
+  it; that takes `hostQueryReset`, `runtimeDescriptorArray`, `shaderStorageImageArrayNonUniformIndexing` and
+  `maintenance4`. Without _libplacebo_ only 4:2:0 streams decode this way (the engine samples their NV12 and
+  P010 pools itself), and without `deviceInfo()` the engine keeps the host-import path above. _FFmpeg_ decodes
+  in one of two places:
+  - **Your device**, when you also create queues _FFmpeg_ can own: a compute-capable and a transfer-capable
+    queue other than `queue()`, plus a video decode queue, with `queue()` being the last queue created in its
+    family. The engine samples the decoded images in place. _FFmpeg_ submits to those queues from its own
+    threads, so never call `vkDeviceWaitIdle` while players exist: wait on your own queue. _libplacebo_ runs
+    here only with the features above and a second queue in the family of `queue()`, since it needs a graphics
+    queue that isn't yours.
+  - **A twin**, when you create no extra queues but enable `VK_KHR_external_memory_win32` and
+    `VK_KHR_external_semaphore_win32` on Windows, or `VK_KHR_external_memory_fd` and
+    `VK_KHR_external_semaphore_fd` elsewhere. The engine creates a second device on the same GPU with your
+    feature chain and extensions, plus _libplacebo_'s features when your chain lacks them and the GPU has them.
+    _FFmpeg_ decodes there and the engine imports every decoded image into your device, so your queues stay
+    yours. If an image can't be imported (natives built without _FFmpeg_'s export fix, for instance), its
+    frames come down to RAM instead and playback goes on.
 
-  Either way, release every player before you destroy the device or its instance: FFmpeg keeps using
-  them (and the twin lives on your instance) until its last decoder is gone.
+  Either way, release every player before destroying the device or its instance: _FFmpeg_ keeps using them (and
+  the twin lives on your instance) until its last decoder is gone.
 
 ```java
 public VKContext.DeviceInfo deviceInfo() {
@@ -148,13 +154,12 @@ public VKContext.DeviceInfo deviceInfo() {
 ```
 
 ### Minecraft 26.x (Vulkan backend)
-WaterMedia stays engine-agnostic and never touches Mojang's Blaze3D internals — bridging is the
-mod's job. The recommended pattern is a **mixin that implements ``VKContext`` directly on Mojang's
-``VulkanDevice``**, so the device itself IS the context and ``PlayerAPI.vkEngine`` only needs a cast.
-``VKContext``'s method names avoid overloading that class's members by return type alone (the
-merged bytecode would be legal — the JVM resolves by full descriptor — but duplicate names muddy
-stack traces and crash reports), and MC's own ``vkDevice()`` accessor already satisfies the
-interface verbatim:
+WATERMeDIA stays engine-agnostic and never touches Mojang's Blaze3D internals: bridging is the mod's job. The
+recommended pattern is a **mixin that implements `VKContext` directly on Mojang's `VulkanDevice`**, so the device
+itself IS the context and `PlayerAPI.vkEngine` only needs a cast. `VKContext` method names avoid overloading that
+class's members by return type alone (the merged bytecode would be legal, since the JVM resolves by full
+descriptor, but duplicate names muddy stack traces and crash reports), and MC's own `vkDevice()` accessor already
+satisfies the interface as is:
 
 ```java
 @Mixin(VulkanDevice.class)
@@ -172,7 +177,7 @@ public abstract class VulkanDeviceMixin implements VKContext {
     @Override public Object queueLock() { return this; } // THE DEVICE ITSELF SERVES AS THE MONITOR
 
     @Override public VkPhysicalDeviceMemoryProperties memoryProperties() {
-        if (this.wm$memProps == null) { // MC DOES NOT EXPOSE THEM — QUERY ONCE
+        if (this.wm$memProps == null) { // MC DOES NOT EXPOSE THEM, QUERY ONCE
             this.wm$memProps = VkPhysicalDeviceMemoryProperties.calloc();
             VK10.vkGetPhysicalDeviceMemoryProperties(this.physicalDevice(), this.wm$memProps);
         }
@@ -186,8 +191,8 @@ public abstract class VulkanDeviceMixin implements VKContext {
 }
 ```
 
-Unwrap the backend once (``GpuDevice#backend`` is private — one accessor mixin or AT/AW line) and
-cast it in the factory call:
+Unwrap the backend once (`GpuDevice#backend` is private: one accessor mixin or AT/AW line) and cast it in the
+factory call:
 
 ```java
 GpuDeviceBackend backend = ((GpuDeviceAccessor) RenderSystem.getDevice()).wm$backend();
@@ -196,31 +201,33 @@ MediaPlayer player = PlayerAPI.player(mrl,
         () -> null);
 ```
 
-Two caveats verified against the 26.2 sources:
+Two caveats checked against the 26.2 sources:
 - MC submits to the graphics queue **without holding any lock** (the single submit site is
-  ``VulkanQueue.Submission#close``). Since the engine submits from its producer thread, add one
-  more tiny mixin wrapping that method in ``synchronized (device)`` — the same monitor
-  ``queueLock()`` returns above — or the two submit paths can race.
-- MC's device is created without ``VK_EXT_external_memory_host`` and without
-  ``samplerYcbcrConversion``, hence the hardcoded ``false`` above: the engine transparently uses
-  its staging-buffer path and compute-shader YUV conversion.
+  `VulkanQueue.Submission#close`). Since the engine submits from its producer thread, add one more tiny mixin
+  wrapping that method in `synchronized (device)` (the same monitor `queueLock()` returns above), or the two
+  submit paths can race.
+- MC creates its device without `VK_EXT_external_memory_host` and without `samplerYcbcrConversion`, hence the
+  hardcoded `false` above: the engine transparently uses its staging-buffer path and compute-shader YUV
+  conversion.
 
 # 🔌 AVAILABLE APIs
-- CodecsAPI: House-made picture and animation codecs plus FFmpeg-backed audio and video
-- PlayerAPI: Multimedia management and display
-- NetworkAPI: Host and Remote storage access for private media
-- PlatformAPI: Web platform support for media loading ~~and media searching~~
+- `CodecsAPI`: our own picture and animation codecs, plus _FFmpeg_-backed audio and video
+- `PlayerAPI`: media playback and display
+- `NetworkAPI`: host and remote storage for private media
+- `PlatformAPI`: web platform support for loading and searching media
+
+The full API guide is in [English](docs/en-us.md) and [Español (México)](docs/es-mx.md).
 
 # 📦 Binaries
-FFmpeg natives and a few extra shared libraries ship in a companion jar, **WATERMeDIA: Binaries**.
-With that jar you won't need to compile or install FFMPEG or any other native application.
-Its sources live in this repository under [`binaries/`](https://github.com/SrRapero720/watermedia/tree/main/binaries).
-Minecraft clients require Binaries; dedicated servers can omit it. Applications embedding the Java API
-can run without it, keeping image support but skipping video decoding and executable-backed platform
-resolvers. When installed, binaries load before the other modules; a failed binaries load ends the
-startup.
-CurseForge and Modrinth list Binaries as required because their dependency relationships do not support
-client/server conditions, so installers may also include it in server installations.
+_FFmpeg_ natives and a few extra shared libraries ship in the companion jar _WATERMeDIA: Binaries_. Its sources
+live in this repo under [`binaries/`](https://github.com/SrRapero720/watermedia/tree/main/binaries).
+
+Minecraft clients require Binaries; dedicated servers can skip it. Apps embedding the Java API can run without
+it, keeping picture support but losing video decoding and the executable-backed platform resolvers. When
+installed, Binaries loads right after the configuration, and a failed Binaries load ends the startup.
+
+CurseForge and Modrinth list Binaries as required because their dependencies can't express client/server
+conditions, so installers may add it to servers too.
 
 ## Supported platforms
 | Platform | Architecture | Status |
@@ -235,36 +242,36 @@ client/server conditions, so installers may also include it in server installati
 | Android  | x86_64       |   ⛔    |
 
 ## Binaries build
-FFmpeg binaries are rebuilt from the pinned JavaCPP preset on five native GitHub runners. The complete
-pipeline compiles the static dependencies, parses the FFmpeg headers, regenerates JNI and verifies each
-classifier before the five archives are repacked together.
+_FFmpeg_ is rebuilt from the pinned _JavaCPP_ preset on five native GitHub runners. The pipeline compiles the
+static dependencies, parses the _FFmpeg_ headers, regenerates JNI and checks each classifier before repacking the
+five archives together.
 
 # ⚖️ License
-WATERMeDIA is under the [Defensive Public Source (Non-Commercial) License v1.0.1](LICENSE.md)<br>
+WATERMeDIA is under the [_Defensive Public Source (Non-Commercial) License v1.0.1_](LICENSE.md)<br>
 Copyright SrRapero720 (https://github.com/SrRapero720)<br>
-Commercial usage is forbidden, you need to contact us in order to use WATERMeDIA for commercial purposes
+Commercial use is forbidden; contact us to use WATERMeDIA for commercial purposes.
 
-WATERCoNFIG is required at runtime and is licensed All-Rights-Reserved.
+_WATERCoNFIG_ is required at runtime and is licensed All-Rights-Reserved.
 
-JavaCPP bindings for FFMPEG are shaded under Apache 2.0
+_JavaCPP_ bindings for _FFmpeg_ are shaded under _Apache 2.0_.
 
-Full, verbatim license texts for shaded third-party dependencies are bundled under
+Full verbatim license texts for shaded third-party dependencies are bundled under
 `src/main/resources/META-INF/licenses/` (shipped in the jar as `META-INF/licenses/`).
 
-The **binaries** module's own code is under the same DPS (NC) License v1.0.1. Its jar also ships
-third-party native binaries and libraries, whose license texts and notices are bundled under
+_WATERMeDIA: Binaries_ uses the same _DPS (NC) License v1.0.1_ for its own code. Its jar also ships third-party
+native binaries and libraries, whose license texts and notices are bundled under
 `binaries/src/main/resources/META-INF/licenses/` and shipped as `META-INF/licenses/`:
 
-- **LGPL-3.0-or-later** — FFmpeg 9.0.2, built without `--enable-gpl`, x264 or x265
-- **LGPL-2.1-or-later** — ALSA (Linux ARM64 native)
-- **GPL-3.0-or-later WITH GCC-exception-3.1** — libatomic on macOS and eligible GCC runtime portions
-- **Apache-2.0** — JavaCPP JNI glue (native)
-- **MIT / X11** — libva, libva-drm and libdrm (Linux x64 native); rustypipe-botguard (downloaded binary)
-- **BSD-3-Clause** — Raspberry Pi userland (Linux ARM64 native)
-- **MIT / BSD-3-Clause** — winpthreads (Windows native)
-- **0BSD** — XZ for Java (shaded)
-- **Unlicense** — yt-dlp (downloaded binary)
+- **LGPL-3.0-or-later**: _FFmpeg_ 9.0.2, built without `--enable-gpl`, _x264_ or _x265_
+- **LGPL-2.1-or-later**: _ALSA_ (Linux ARM64 native)
+- **GPL-3.0-or-later WITH GCC-exception-3.1**: _libatomic_ on macOS and eligible GCC runtime portions
+- **Apache-2.0**: _JavaCPP_ JNI glue (native)
+- **MIT / X11**: _libva_, _libva-drm_ and _libdrm_ (Linux x64 native); _rustypipe-botguard_ (downloaded binary)
+- **BSD-3-Clause**: _Raspberry Pi userland_ (Linux ARM64 native)
+- **MIT / BSD-3-Clause**: _winpthreads_ (Windows native)
+- **0BSD**: _XZ for Java_ (shaded)
+- **Unlicense**: _yt-dlp_ (downloaded binary)
 
-Other statically linked codecs retain their permissive, LGPL, MPL or Apache licenses. Each component's
-terms apply independently; review the shipped notices and corresponding-source requirements before
-redistributing a modified native set. The native package remains replaceable at runtime.
+Other statically linked codecs keep their permissive, LGPL, MPL or Apache licenses. Each component's terms apply
+on their own; review the shipped notices and corresponding-source requirements before redistributing a modified
+native set. The native package stays replaceable at runtime.
