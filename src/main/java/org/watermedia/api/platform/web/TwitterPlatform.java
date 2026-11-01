@@ -61,8 +61,9 @@ public final class TwitterPlatform implements Platform {
         if (tweet.mediaDetails == null || tweet.mediaDetails.length == 0)
             throw new PlatformException(NAME, "Tweet '" + tweetId + "' carries no media (text-only or protected)");
 
-        // THE TWEET TEXT, CUT TO ONE LINE, IS THE TITLE; THE ACCOUNT THAT POSTED IT IS THE AUTHOR
-        final String text = tweet.text == null ? "" : tweet.text.replace('\n', ' ');
+        // THE VISIBLE TWEET TEXT IS THE DESCRIPTION AND, CUT TO ONE LINE, THE TITLE; THE ACCOUNT THAT POSTED IT IS THE AUTHOR
+        final String description = text(tweet.text, tweet.displayTextRange);
+        final String text = description.replace('\n', ' ');
         final String title = text.isBlank() ? "Tweet #" + tweetId : text.length() > TITLE_LENGTH ? text.substring(0, TITLE_LENGTH) + "..." : text;
         final String author = tweet.user == null ? null : tweet.user.name != null ? tweet.user.name : tweet.user.screenName;
 
@@ -77,7 +78,7 @@ public final class TwitterPlatform implements Platform {
         final List<Source> entries = new ArrayList<>(tweet.mediaDetails.length);
         for (int i = 0; i < tweet.mediaDetails.length; i++) {
             try {
-                final Source entry = this.entry(tweet, tweet.mediaDetails[i], title, author, postedAt, headers);
+                final Source entry = this.entry(tweet.mediaDetails[i], title, description, author, postedAt, headers);
                 if (entry != null) entries.add(entry);
             } catch (final RuntimeException e) {
                 LOGGER.warn(IT, "Twitter failed to build entry for media {} of tweet '{}'", i, tweetId, e);
@@ -92,7 +93,7 @@ public final class TwitterPlatform implements Platform {
     }
 
     // ONE MEDIA ITEM OF THE TWEET AS A SOURCE, OR NULL WHEN IT HAS NOTHING PLAYABLE
-    private Source entry(final Tweet tweet, final MediaDetail media, final String title, final String author, final Instant postedAt, final HttpHeaders headers) {
+    private Source entry(final MediaDetail media, final String title, final String description, final String author, final Instant postedAt, final HttpHeaders headers) {
         if ("photo".equals(media.type)) {
             final URI photo = DataTool.uri(media.mediaUrlHttps);
             if (photo == null) {
@@ -101,7 +102,7 @@ public final class TwitterPlatform implements Platform {
             }
             final int w = media.originalInfo != null ? Math.max(0, media.originalInfo.width) : 0;
             final int h = media.originalInfo != null ? Math.max(0, media.originalInfo.height) : 0;
-            final Metadata metadata = new Metadata(title, tweet.text, postedAt, 0, author);
+            final Metadata metadata = new Metadata(title, description, postedAt, 0, author);
             return new Source(MediaType.IMAGE, null, metadata, headers,
                     List.of(new Quality(photo, w, h)),
                     null, null);
@@ -113,7 +114,7 @@ public final class TwitterPlatform implements Platform {
                 return null;
             }
             final URI thumbnail = DataTool.uri(media.mediaUrlHttps);
-            final Metadata metadata = new Metadata(title, tweet.text, postedAt, Math.max(0, media.videoInfo.durationMillis), author);
+            final Metadata metadata = new Metadata(title, description, postedAt, Math.max(0, media.videoInfo.durationMillis), author);
 
             final List<Quality> variants = new ArrayList<>(media.videoInfo.variants.length);
             for (final var variant: media.videoInfo.variants) {
@@ -138,9 +139,19 @@ public final class TwitterPlatform implements Platform {
         return null;
     }
 
+    // UTILITY
+    // THE TEXT X SHOWS: display_text_range (UTF-16 OFFSETS INTO THE ESCAPED TEXT) DROPS REPLY MENTIONS AND THE MEDIA'S OWN
+    // t.co LINK, AND THE SYNDICATION ESCAPES ONLY &, < AND > (&amp; LAST, SO AN ESCAPED ENTITY STAYS LITERAL)
+    static String text(final String text, final int[] range) {
+        if (text == null) return "";
+        final boolean visible = range != null && range.length == 2 && range[0] >= 0 && range[0] <= range[1] && range[1] <= text.length();
+        return (visible ? text.substring(range[0], range[1]) : text).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").strip();
+    }
+
     private record Tweet(
             @SerializedName("__typename") String typename,
             String text,
+            @SerializedName("display_text_range") int[] displayTextRange,
             User user,
             @SerializedName("created_at") String createdAt,
             @SerializedName("possibly_sensitive") boolean possiblySensitive,

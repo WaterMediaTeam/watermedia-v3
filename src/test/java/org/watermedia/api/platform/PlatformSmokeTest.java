@@ -24,7 +24,6 @@ public final class PlatformSmokeTest {
     private static final String[] DEFAULTS = {
             "https://www.youtube.com/watch?v=GjEKrr5EjzA",
             "https://soundcloud.com/imaginedragons/believer",
-            "https://www.newgrounds.com/portal/view/582151",
     };
 
     public static void main(final String[] args) throws Exception {

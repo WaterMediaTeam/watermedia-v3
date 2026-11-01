@@ -80,7 +80,7 @@ public final class PlatformAPI {
                 WaterPlatform::new, ImgurPlatform::new, KickPlatform::new, StreamablePlatform::new, MedalPlatform::new,
                 PornHubPlatform::new, LightshotPlatform::new, TwitchPlatform::new, TwitterPlatform::new, BlueskyPlatform::new,
                 BiliBiliPlatform::new, DrivePlatform::new, DropboxPlatform::new, MediaFirePlatform::new, SendvidPlatform::new,
-                OdyseePlatform::new, VidLiiPlatform::new, TikTokPlatform::new, DTubePlatform::new));
+                OdyseePlatform::new, VidLiiPlatform::new, TikTokPlatform::new, DTubePlatform::new, NewgroundsPlatform::new));
         // THE yt-dlp HANDLERS LINK THE BINARIES MODULE, SO THEY EXIST ONLY WHEN ITS JAR IS ON THE CLASS PATH
         if (PlatformAPI.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") != null) {
             try {

@@ -50,7 +50,7 @@ import static org.watermedia.tools.JSONTool.str;
 
 /**
  * Generic yt-dlp platform for every site whose extraction needs nothing beyond yt-dlp's defaults (SoundCloud,
- * Facebook, Instagram, Newgrounds); a new site only needs its host in {@link #HOSTS}.
+ * Facebook, Instagram); a new site only needs its host in {@link #HOSTS}.
  * <p>
  * It is also the yt-dlp engine {@link YouTubePlatform} extends: it runs the binary the Binaries module provisions
  * ({@link YtDlpBinary}) out of process, so no yt-dlp failure touches the JVM, and maps its JSON into sources
@@ -65,7 +65,6 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
             "soundcloud.com", "snd.sc",     // SOUNDCLOUD
             "facebook.com", "fb.watch",     // FACEBOOK
             "instagram.com", "instagr.am",  // INSTAGRAM
-            "newgrounds.com",               // NEWGROUNDS
     };
 
     private static final long PROCESS_TIMEOUT_SECONDS = 120; // SINGLE VIDEO ~SECONDS; PLAYLISTS CAN BE SLOWER

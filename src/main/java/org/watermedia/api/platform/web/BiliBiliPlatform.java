@@ -30,6 +30,7 @@ public final class BiliBiliPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(BiliBiliPlatform.class.getSimpleName());
     public static final String NAME = "BiliBili";
     private static final String REFERER = "https://www.bilibili.com/";
+    private static final String FINGERPRINT_API = "https://api.bilibili.com/x/frontend/finger/spi";
     private static final String VIDEO_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid=%s";
     private static final String VIDEO_PLAYURL_API = "https://api.bilibili.com/x/player/playurl?bvid=%s&cid=%d&fnval=4048";
 
@@ -39,20 +40,26 @@ public final class BiliBiliPlatform implements Platform {
 
     private static final String LIVE_PLAY_INFO_API = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=%s&no_playurl=0&mask=1&qn=0&platform=web&protocol=0,1&format=0,1,2&codec=0,1,2";
     private static final String LIVE_ROOM_INFO_API = "https://api.live.bilibili.com/room/v1/Room/get_info?room_id=%s";
-    private static final String LIVE_USER_INFO_API = "https://api.bilibili.com/x/space/acc/info?mid=%d";
-    private static final String LIVE_PLAYURL_API = "https://api.live.bilibili.com/xlive/web-room/v1/playUrl/playUrl?cid=%s&platform=h5&qn=%d";
+    private static final String LIVE_USER_INFO_API = "https://api.live.bilibili.com/live_user/v1/Master/info?uid=%d";
+    // platform=web ANSWERS FLV STREAMS; THE HLS EDGE BEHIND platform=h5 HANGS FOR MANY ROOMS
+    private static final String LIVE_PLAYURL_API = "https://api.live.bilibili.com/xlive/web-room/v1/playUrl/playUrl?cid=%s&platform=web&qn=%d";
 
     private static final Pattern BVID_PATTERN = Pattern.compile("(BV[a-zA-Z0-9]+)");
     private static final Pattern PAGE_PATTERN = Pattern.compile("[?&]p=(\\d+)");
     private static final Pattern EP_PATTERN = Pattern.compile("/ep(\\d+)");
     private static final Pattern SS_PATTERN = Pattern.compile("/ss(\\d+)");
     private static final Pattern LIVE_ROOM_PATTERN = Pattern.compile("live\\.bilibili\\.com/(\\d+)", Pattern.CASE_INSENSITIVE);
-    private static final String[] HOSTS = { "www.bilibili.com", "bilibili.com", "live.bilibili.com", "b23.tv" };
+    private static final String[] HOSTS = { "www.bilibili.com", "bilibili.com", "m.bilibili.com", "live.bilibili.com", "b23.tv" };
     private static final String LIVE_HOST = "live.bilibili.com";
     private static final String SHORT_HOST = "b23.tv";
     // LIVE STREAM URLS ROTATE QUICKLY; CDN LINKS OF A VIDEO LAST ROUGHLY TWO HOURS
     private static final Duration LIVE_TTL = Duration.ofMinutes(10);
     private static final Duration VIDEO_TTL = Duration.ofMinutes(90);
+
+    // THE RISK CONTROL ANSWERS HTTP 412 TO WEB API CALLS WITHOUT A buvid3 DEVICE FINGERPRINT COOKIE; ONE IS FETCHED
+    // PER PROCESS AND SHARED BY EVERY HANDLER THREAD
+    private static final Object FINGERPRINT_LOCK = new Object();
+    private static volatile String fingerprint;
 
     @Override
     public String name() { return NAME; }
@@ -206,7 +213,7 @@ public final class BiliBiliPlatform implements Platform {
         String author = null;
         if (uid > 0) {
             try {
-                author = str(fetchJson(String.format(LIVE_USER_INFO_API, uid), "data"), "name");
+                author = str(obj(fetchJson(String.format(LIVE_USER_INFO_API, uid), "data"), "info"), "uname");
             } catch (final PlatformException e) {
                 LOGGER.warn(IT, "BiliBili failed to fetch author name for uid {}", uid, e);
             }
@@ -342,17 +349,22 @@ public final class BiliBiliPlatform implements Platform {
         return headers;
     }
 
-    // FETCH: THE BROWSER UA, REFERER AND SESSION COOKIE THE API DEMANDS; A NON-ZERO code IS AN API ERROR
+    // FETCH: THE BROWSER UA, REFERER, FINGERPRINT AND SESSION COOKIE THE API DEMANDS; A NON-ZERO code IS AN API ERROR
     private static JsonObject fetchJson(final String api, final String dataKey) throws PlatformException {
         final NetRequest request = new NetRequest(api).accept(NetRequest.ACCEPT_JSON)
                 .userAgent(NetRequest.UserAgent.GENERIC)
-                .referer(REFERER);
-        final String cookie = WaterMediaConfig.platforms.biliBiliCookie;
-        if (cookie != null && !cookie.isEmpty()) request.header("Cookie", cookie);
+                .referer(REFERER)
+                .header("Cookie", cookie(WaterMediaConfig.platforms.biliBiliCookie, fingerprint()));
 
-        final JsonObject json = WebRequests.fetchJson(NAME, request, JsonObject.class);
+        final JsonObject json;
+        try { json = WebRequests.fetchJson(NAME, request, JsonObject.class); }
+        catch (final PlatformException e) {
+            fingerprint = null; // A BANNED FINGERPRINT KEEPS ANSWERING HTTP 412; THE NEXT CALL FETCHES A FRESH ONE
+            throw e;
+        }
         final int code = intOr(json, "code", 0);
         if (code != 0) {
+            if (code == -412) fingerprint = null;
             final String message = str(json, "message");
             throw new PlatformException(NAME, "API error: " + (message != null ? message : "code " + code));
         }
@@ -360,5 +372,33 @@ public final class BiliBiliPlatform implements Platform {
         final JsonObject data = obj(json, dataKey);
         if (data == null) throw new PlatformException(NAME, "API returned no '" + dataKey + "' field");
         return data;
+    }
+
+    // THE Cookie OF AN API CALL: THE USER COOKIE ALONE WHEN IT CARRIES ITS OWN buvid3, ELSE THE FETCHED FINGERPRINT
+    // FOLLOWED BY THE USER COOKIE (PACKAGE-PRIVATE FOR THE TESTS)
+    static String cookie(final String user, final String fingerprint) {
+        if (user == null || user.isEmpty()) return fingerprint;
+        return user.contains("buvid3=") ? user : fingerprint + "; " + user;
+    }
+
+    // buvid3 AND buvid4 FROM THE FINGERPRINT API, FETCHED ONCE; A FAILURE FAILS THE CALL THAT NEEDED THEM
+    private static String fingerprint() throws PlatformException {
+        String cookie = fingerprint;
+        if (cookie != null) return cookie;
+        synchronized (FINGERPRINT_LOCK) {
+            cookie = fingerprint;
+            if (cookie != null) return cookie;
+            final NetRequest request = new NetRequest(FINGERPRINT_API).accept(NetRequest.ACCEPT_JSON)
+                    .userAgent(NetRequest.UserAgent.GENERIC)
+                    .referer(REFERER);
+            final JsonObject data = obj(WebRequests.fetchJson(NAME, request, JsonObject.class), "data");
+            final String buvid3 = str(data, "b_3");
+            final String buvid4 = str(data, "b_4");
+            if (buvid3 == null) throw new PlatformException(NAME, "Fingerprint API returned no buvid3");
+            cookie = buvid4 == null ? "buvid3=" + buvid3 : "buvid3=" + buvid3 + "; buvid4=" + buvid4;
+            fingerprint = cookie;
+            LOGGER.debug(IT, "BiliBili fetched the device fingerprint cookie");
+            return cookie;
+        }
     }
 }

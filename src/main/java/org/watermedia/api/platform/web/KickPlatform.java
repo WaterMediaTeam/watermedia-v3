@@ -27,11 +27,12 @@ import java.util.Locale;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-/** Resolves Kick live channels, VODs and clips through the v2 API, and searches its channels. */
+/** Resolves Kick live channels, VODs and clips through its web API, and searches its channels. */
 public final class KickPlatform implements Platform {
     private static final Marker IT = MarkerManager.getMarker(KickPlatform.class.getSimpleName());
     public static final String NAME = "Kick";
-    private static final String VIDEO_API = "https://kick.com/api/v2/video/%s";
+    // VODS ARE ONLY SERVED BY v1; CHANNELS AND CLIPS STAY ON v2
+    private static final String VIDEO_API = "https://kick.com/api/v1/video/%s";
     private static final String CHANNELS_API = "https://kick.com/api/v2/channels/%s";
     private static final String CLIPS_API = "https://kick.com/api/v2/clips/%s/play";
     private static final String SEARCH_API = "https://kick.com/api/search?searched_word=";
@@ -99,13 +100,13 @@ public final class KickPlatform implements Platform {
             return new Resolution(Instant.now().plus(PLAYLIST_TTL), entry);
         }
 
-        if (!path[0].equalsIgnoreCase("video")) throw PlatformException.unsupported(NAME, uri);
+        final String id = vodId(uri);
+        if (id == null) throw PlatformException.unsupported(NAME, uri);
 
-        final String id = path[path.length - 1];
         LOGGER.debug(IT, "Kick resolving VOD '{}' from {}", id, uri);
         final Video video = WebRequests.fetchJson(NAME, String.format(VIDEO_API, id), Video.class);
 
-        final URI playback = DataTool.uri(video.url);
+        final URI playback = DataTool.uri(video.source);
         if (video.livestream == null || playback == null)
             throw new PlatformException(NAME, "VOD '" + id + "' is unavailable (no usable playback URL)");
 
@@ -117,6 +118,9 @@ public final class KickPlatform implements Platform {
 
         if (video.livestream.mature && !WaterMediaConfig.platforms.allowMatureContent)
             throw new MatureContentException(NAME, "VOD '" + id + "' is marked as mature content");
+
+        if (video.livestream.sessionTitle == null)
+            LOGGER.warn(IT, "Kick VOD '{}' reports no session_title", id);
 
         // THE LADDER COMES FROM THE VOD'S PLAYBACK URL, NOT THE PAGE URI
         final HttpHeaders headers = HttpHeaders.defaults(uri);
@@ -213,7 +217,7 @@ public final class KickPlatform implements Platform {
 
     // RESOLVES THE clip_... ID FROM BOTH URL SHAPES: /<channel>/clips/clip_... AND /<channel>?clip=clip_...
     // RETURNS NULL WHEN THE URI IS NOT A CLIP (LIVE/VOD)
-    private static String clipId(final URI uri) {
+    static String clipId(final URI uri) {
         final String clip = NetRequest.query(uri).get("clip");
         if (clip != null && clip.regionMatches(true, 0, CLIP_PREFIX, 0, CLIP_PREFIX.length())) return clip;
 
@@ -221,6 +225,15 @@ public final class KickPlatform implements Platform {
         for (int i = 0; i < path.length - 1; i++) {
             if (path[i].equalsIgnoreCase("clips") && path[i + 1].regionMatches(true, 0, CLIP_PREFIX, 0, CLIP_PREFIX.length())) return path[i + 1];
         }
+        return null;
+    }
+
+    // RESOLVES THE VOD UUID FROM BOTH PAGE SHAPES: THE LEGACY /video/<uuid> AND THE CURRENT /<channel>/videos/<uuid>
+    // RETURNS NULL FOR ANY OTHER SHAPE, INCLUDING THE /<channel>/videos LISTING
+    static String vodId(final URI uri) {
+        final String[] path = segments(uri);
+        if (path.length == 2 && path[0].equalsIgnoreCase("video")) return path[1];
+        if (path.length == 3 && path[1].equalsIgnoreCase("videos")) return path[2];
         return null;
     }
 
@@ -232,7 +245,7 @@ public final class KickPlatform implements Platform {
         return parsed;
     }
 
-    // CLIP TIMESTAMPS (created_at) ARE ISO-8601, LIVE AND VOD ONES "yyyy-MM-dd HH:mm:ss"; NULL WHEN NEITHER PARSES
+    // CLIP AND VOD TIMESTAMPS ARE ISO-8601, LIVE ONES "yyyy-MM-dd HH:mm:ss"; NULL WHEN NEITHER PARSES
     private static Instant instant(final String value) {
         if (value == null) return null;
         try {
@@ -251,8 +264,9 @@ public final class KickPlatform implements Platform {
     private record Livestream(int id, @SerializedName("is_live") boolean live, @SerializedName("is_mature") boolean mature,
                               long duration, @SerializedName("session_title") String sessionTitle,
                               @SerializedName("start_time") String startTime, Channel channel) {}
-    private record User(int id, String username, @SerializedName("profile_pic") String profilePic) {}
-    private record Video(int id, Livestream livestream, @SerializedName("uri") String url) {}
+    // THE CHANNEL PAYLOAD SPELLS THE AVATAR profile_pic, THE VOD ONE profilepic
+    private record User(int id, String username, @SerializedName(value = "profile_pic", alternate = "profilepic") String profilePic) {}
+    private record Video(int id, String source, Livestream livestream) {}
 
     private record ClipResponse(Clip clip) {}
     private record Clip(@SerializedName("clip_url") String clipUrl, String title, Creator creator,
