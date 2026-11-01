@@ -787,14 +787,17 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   live 30 min) → `YouTubePlatform` (youtube.com/youtu.be, `--no-playlist` for video ids, bot-check retry with a
   BotGuard `po_token` from `rustypipe-botguard` under `botGuardLock`, search `ytsearchN:`); `TwitchPlatform` (GQL with
   the public web client id, Usher HLS, clips, VOD, live; mature classification first and fail-closed; TTL 30 min;
-  search channels); `BiliBiliPlatform` (www/m./live./b23.tv: video BV/parts, bangumi ep/ss, live rooms; every API call
+  search keeps live channels only, those with a `stream`, through package-private `hits(data, limit)`);
+  `BiliBiliPlatform` (www/m./live./b23.tv: video BV/parts, bangumi ep/ss, live rooms; every API call
   carries a `buvid3`/`buvid4` device cookie from `x/frontend/finger/spi`, fetched once per process and dropped on a
   failed call (⚠ without it the risk control answers HTTP 412), plus `platforms.biliBiliCookie`; DASH video + first DASH
   audio as `audioTracks`; live FLV through `platform=web` (the h5 HLS edge hangs); no mature gate; live 10 min / video
   90 min); `TikTokPlatform` (page JSON, WAF proof-of-work solver, cookies per call); `BlueskyPlatform` (public XRPC,
   HLS video, images as album, labels gate, 30 min); `ImgurPlatform` (API v3 client id, albums/galleries, `nsfw` gate,
   search); `KickPlatform` (live/clips/search on `api/v2`, VODs only on `api/v1/video/<uuid>` from `/video/<uuid>` or
-  `/<channel>/videos/<uuid>`; mature gates; search hits include offline channels although the payload has `isLive`);
+  `/<channel>/videos/<uuid>`; mature gates; search keeps live, unbanned channels only (`isLive`, `is_banned`)
+  through package-private `hits(res, limit)`, so mature live channels still show up and block on resolve: the payload
+  has no mature flag);
   `TwitterPlatform` (syndication endpoint, photos + progressive MP4s, age gate; title/description = the
   `display_text_range` slice with `&amp;`/`&lt;`/`&gt;` decoded); `DrivePlatform` (API key fallback to usercontent
   download + virus-scan form); `MedalPlatform`; `PornHubPlatform` (blocks entirely when mature content is off);
@@ -1061,7 +1064,7 @@ System properties: `watermedia.engine`, `watermedia.app` (child JVM flag), `wate
   `HuffmanTableTest`, `VP8LosslessDecoderTest`, `FFmpegLogRoutingTest` (disabled); network `NetworkServerTest`,
   `NetworkServerGateTest`, `UploadStatusTest`; platform `PlatformApiTest`, `PlatformSearchTest`, `PlatformClaimTest`,
   `WaterPlatformTest`, offline handler tests `BiliBiliPlatformTest`, `KickPlatformTest`, `NewgroundsPlatformTest`,
-  `OdyseePlatformTest` (loopback proxy through `LocalHttp`), `TwitterPlatformTest`; player `MediaPlayerBaseTest`, `MasterClockTest`, `MrlTest`, `NetworkCacheTest`, `PlayerStateTest`,
+  `OdyseePlatformTest` (loopback proxy through `LocalHttp`), `TwitchPlatformTest` (search hits), `TwitterPlatformTest`; player `MediaPlayerBaseTest`, `MasterClockTest`, `MrlTest`, `NetworkCacheTest`, `PlayerStateTest`,
   `ServerMediaPlayerTest`, `FollowerClockTest`, `FollowerPlayerStateTest`, `StatusDeliveryTest`, `FFMediaPlayerTest`,
   `FFControlContractTest`, `ColorimetryTest`, `Tx*Test` (animated, control contract, display time, frame step, frame
   textures, release, scaling, static image), engines `GFXEngineTest`, `GLEngineTest`, `VKEngineTest`,

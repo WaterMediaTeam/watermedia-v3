@@ -126,6 +126,7 @@ Buscar funciona así:
 
 - `PlatformAPI.search(query)` devuelve de inmediato la lista de sólo lectura donde van cayendo sus resultados, hasta `platforms.searchLimit` por plataforma en orden de respuesta (menos con `search(query, limit, reSearch)`). `PlatformAPI.searching(query)` pasa a falso cuando todas las plataformas respondieron; consulta ambos desde el hilo de la interfaz.
 - Corre una búsqueda a la vez sobre cuatro hilos de trabajo, y cada petición de búsqueda integrada se rinde a los 5 segundos.
+- Twitch y Kick sólo listan canales que están en vivo en ese momento, porque un canal desconectado no tiene nada que reproducir.
 - Un query nuevo descarta el que está en curso. Un query a una tecla del anterior (una letra más, menos o corregida mientras el usuario escribe) espera 300 ms a la siguiente tecla antes de tocar la red; cualquier otro query sale de inmediato.
 - Un query ya buscado con el mismo límite recibe la misma instancia de lista desde la caché, terminada o aún llenándose, salvo que `search(query, true)` vuelva a preguntar a las plataformas.
 - Registrar un handler descarta las búsquedas en caché, y una búsqueda en blanco devuelve una lista vacía y deja en paz la que esté en curso.

@@ -150,13 +150,17 @@ public final class KickPlatform implements Platform {
         // NESTED user OBJECT IS camelCase (profilePic/username), UNLIKE THE snake_case /api/v2/channels PAYLOAD.
         final NetRequest request = new NetRequest(SEARCH_API + URLEncoder.encode(query, StandardCharsets.UTF_8))
                 .accept(NetRequest.ACCEPT_JSON).connectTimeout(PlatformAPI.SEARCH_TIMEOUT_MS).readTimeout(PlatformAPI.SEARCH_TIMEOUT_MS);
-        final SearchResponse res = WebRequests.fetchJson(NAME, request, SearchResponse.class);
+        return this.hits(WebRequests.fetchJson(NAME, request, SearchResponse.class), limit);
+    }
+
+    // THE PLAYABLE CHANNELS OF A SEARCH: AN OFFLINE OR BANNED ONE FAILS THE MOMENT IT IS OPENED, SO ONLY LIVE ONES ARE HITS
+    List<PlatformResult> hits(final SearchResponse res, final int limit) {
         if (res.channels == null) return List.of();
 
         final List<PlatformResult> out = new ArrayList<>(Math.min(res.channels.length, limit));
         for (final SearchChannel channel: res.channels) {
             if (out.size() >= limit) break;
-            if (channel.slug == null) continue;
+            if (channel.slug == null || !channel.live || channel.banned) continue;
             final String username = channel.user != null ? channel.user.username : null;
             final String pic = channel.user != null ? channel.user.profilePic : null;
             // SAFE-PARSE THE NETWORK AVATAR URL: A MALFORMED ONE MUST NOT ABORT THE WHOLE RESULT SET
@@ -275,8 +279,9 @@ public final class KickPlatform implements Platform {
     private record Creator(int id, String username) {}
     private record Category(int id, String name) {}
 
-    // SEARCH PAYLOAD: A SEPARATE SHAPE FROM Channel/User — channels[].slug + camelCase user{username, profilePic}
-    private record SearchResponse(SearchChannel[] channels) {}
-    private record SearchChannel(String slug, SearchUser user) {}
-    private record SearchUser(String username, String profilePic) {}
+    // SEARCH PAYLOAD: A SEPARATE SHAPE FROM Channel/User — channels[] MIXES camelCase isLive AND user{username, profilePic}
+    // WITH snake_case is_banned (PACKAGE-PRIVATE FOR THE TESTS)
+    record SearchResponse(SearchChannel[] channels) {}
+    record SearchChannel(String slug, @SerializedName("isLive") boolean live, @SerializedName("is_banned") boolean banned, SearchUser user) {}
+    record SearchUser(String username, String profilePic) {}
 }

@@ -157,6 +157,11 @@ public final class TwitchPlatform implements Platform {
         } catch (final IOException | RuntimeException e) {
             throw new PlatformException(NAME, "Search for '" + query + "' failed", e);
         }
+        return this.hits(data, limit);
+    }
+
+    // THE PLAYABLE CHANNELS OF A SEARCH: AN OFFLINE ONE (NO stream) FAILS THE MOMENT IT IS OPENED, SO ONLY LIVE ONES ARE HITS
+    List<PlatformResult> hits(final JsonObject data, final int limit) {
         final JsonArray edges = arr(obj(data, "searchFor", "channels"), "edges");
         if (edges == null) return List.of();
 
@@ -164,7 +169,8 @@ public final class TwitchPlatform implements Platform {
         for (final JsonElement edge: edges) {
             if (out.size() >= limit) break;
             final JsonObject item = obj(edge, "item");
-            if (item == null) continue;
+            final JsonObject stream = obj(item, "stream");
+            if (stream == null) continue;
 
             // THE PAGE URL NEEDS THE CHANNEL LOGIN
             final String login = str(item, "login");
@@ -175,8 +181,8 @@ public final class TwitchPlatform implements Platform {
             String title = str(obj(item, "broadcastSettings"), "title");
             if (title == null) title = str(item, "displayName");
 
-            // LIVE CHANNELS EXPOSE A STREAM PREVIEW (TEMPLATED); OFFLINE ONES FALL BACK TO THE PROFILE PICTURE
-            final String preview = str(obj(item, "stream"), "previewImageURL");
+            // THE STREAM PREVIEW (TEMPLATED), OR THE PROFILE PICTURE WHILE A FRESH STREAM HAS NONE YET
+            final String preview = str(stream, "previewImageURL");
             URI thumbnail = preview == null ? null : DataTool.uri(preview.replace("{width}", PREVIEW_WIDTH).replace("{height}", PREVIEW_HEIGHT));
             if (thumbnail == null) thumbnail = DataTool.uri(str(item, "profileImageURL"));
 

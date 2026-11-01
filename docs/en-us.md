@@ -126,6 +126,7 @@ Searching works like this:
 
 - `PlatformAPI.search(query)` returns right away the read-only list its results land in, up to `platforms.searchLimit` per platform in answer order (fewer with `search(query, limit, reSearch)`). `PlatformAPI.searching(query)` turns false once every platform answered; poll both from the UI thread.
 - One search runs at a time on four worker threads, and every built-in search request gives up after 5 seconds.
+- Twitch and Kick list only channels that are live right now, since an offline channel has nothing to play.
 - A new query discards the one in flight. A query one keystroke away from the previous one (a letter more, less or fixed while the user types) waits 300 ms for the next keystroke before touching the network; any other query goes out at once.
 - A query already searched with the same limit gets the same list instance from the cache, finished or still filling, unless `search(query, true)` asks the platforms again.
 - Registering a handler drops cached searches, and a blank search returns an empty list and leaves a running search alone.
