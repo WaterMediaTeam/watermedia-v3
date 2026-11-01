@@ -47,6 +47,10 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>{@link #reader(ByteBuffer)} scans the buffer's leading bytes against the supported
  * format headers, identifies the format, advances the buffer position past the matched header,
  * and returns the matching {@link ImageReader}. Readers parse only the format body.
+ *
+ * <p><b>Experimental:</b> {@link #decode}, {@link #reader}, {@link #sniff} and {@link #encoder}, plus the readers,
+ * encoders and filters they hand out, may change or break in any update, so mods should not use them yet. The status
+ * queries {@link #ffmpegLoaded()}, {@link #ffmpegError()} and {@link #vulkanDecode()} are safe to call.
  */
 public final class CodecsAPI {
     private static final Marker IT = MarkerManager.getMarker(CodecsAPI.class.getSimpleName());

@@ -80,7 +80,10 @@ Las solicitudes de red Java, las descargas de listas de reproducción y el plazo
 
 La API pública son los paquetes `org.watermedia`, `api.codecs`, `api.network`, `api.platform`, `api.player` y `api.util`, sin sus subpaquetes. Todo lo demás es interno: lectores, codificadores y estructuras de chunks de los códecs, colas y cachés de los reproductores, las plataformas integradas, el arranque y los bindings de _FFmpeg_ incluidos. Binaries también usa dos paquetes internos: `org.watermedia.tools` para sus utilerías de descarga, digestos y JSON, y `org.watermedia.bootstrap` para el ciclo de vida de módulos que implementa.
 
-El JAR no declara un módulo de Java, así que ningún loader bloquea los paquetes internos; aun así, trata esa frontera como el contrato y llega a las funciones internas por sus puntos de entrada, como `CodecsAPI.reader`, `CodecsAPI.encoder` y `PlatformAPI.fetch`. Ejecuta `gradle javadocInventory` desde la raíz del proyecto para listar la documentación faltante de métodos públicos con nombre de archivo y número de línea; sólo reporta, y sólo revisa los paquetes públicos listados en `public_packages` de `gradle.properties`.
+El JAR no declara un módulo de Java, así que ningún loader bloquea los paquetes internos; aun así, trata esa frontera como el contrato y llega a las funciones internas por sus puntos de entrada, como `PlayerAPI.player` y `PlatformAPI.fetch`. Ejecuta `gradle javadocInventory` desde la raíz del proyecto para listar la documentación faltante de métodos públicos con nombre de archivo y número de línea; sólo reporta, y sólo revisa los paquetes públicos listados en `public_packages` de `gradle.properties`.
+
+> [!WARNING]
+> `CodecsAPI` es experimental: `decode`, `reader`, `sniff` y `encoder`, junto con los lectores, codificadores y filtros que entregan, pueden cambiar o romperse en cualquier actualización, así que no los uses en tus mods todavía. Los reproductores ya usan los códecs por ti, y las consultas de estado (`ffmpegLoaded()`, `ffmpegError()`, `vulkanDecode()`) son seguras.
 
 ## MRL y resolución de direcciones
 
@@ -373,6 +376,9 @@ Todavía falta una prueba dentro del juego para cómo suenan la oclusión y las 
 
 ## Imágenes y contenedores DDS
 
+> [!WARNING]
+> Experimental: no lo uses en tus mods todavía (mira [paquetes públicos e internos](#paquetes-públicos-e-internos)).
+
 `CodecsAPI.reader` elige un lector interno según los primeros bytes y lo devuelve como `ImageReader`. Las estructuras de chunks PNG y GIF de `api.codecs.common` son internas, y los codificadores PNG y GIF serializan a través de ellas.
 
 ```java
@@ -406,6 +412,9 @@ Todos los decodificadores entregan un búfer BGRA compacto por cuadro, salvo los
 - Se rechazan las cadenas de mipmaps, los volúmenes y los mapas de cubo, y no hay codificador BC ni opción de caché de códecs.
 
 ## Codificación
+
+> [!WARNING]
+> Experimental: no lo uses en tus mods todavía (mira [paquetes públicos e internos](#paquetes-públicos-e-internos)).
 
 `CodecsAPI.encoder(container, target, video, audio)` abre un `Encoder` para un `Container`. `Container.video()` y `Container.audio()` listan los códecs que acepta cada pista; una pista que no encaja, o un contenedor que sólo decodifica (WebP, JPEG, Netpbm, SVG), se rechaza con `IllegalArgumentException` antes de tocar el destino. PNG (APNG cuando llega más de un cuadro) y GIF son Java puro y no necesitan _FFmpeg_; MP4, MOV, MKV, WebM y Ogg pasan por _FFmpeg_ y lanzan `IOException` sin él.
 

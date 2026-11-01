@@ -80,7 +80,10 @@ Java network requests, playlist fetches and the _yt-dlp_ socket timeout share `n
 
 The public API is the packages `org.watermedia`, `api.codecs`, `api.network`, `api.platform`, `api.player` and `api.util`, without their subpackages. Everything else is internal: codec readers, encoders and chunk structures, player queues and caches, the built-in platforms, the bootstrap and the bundled _FFmpeg_ bindings. Binaries also uses two internal packages: `org.watermedia.tools` for its download, digest and JSON utilities, and `org.watermedia.bootstrap` for the module lifecycle it implements.
 
-The JAR declares no Java module, so no loader blocks internal packages; treat the boundary as the contract anyway and reach internal features through their entry points, such as `CodecsAPI.reader`, `CodecsAPI.encoder` and `PlatformAPI.fetch`. Run `gradle javadocInventory` from the project root to list missing public-method docs with file names and line numbers; it only reports, and only checks the public packages listed in `public_packages` of `gradle.properties`.
+The JAR declares no Java module, so no loader blocks internal packages; treat the boundary as the contract anyway and reach internal features through their entry points, such as `PlayerAPI.player` and `PlatformAPI.fetch`. Run `gradle javadocInventory` from the project root to list missing public-method docs with file names and line numbers; it only reports, and only checks the public packages listed in `public_packages` of `gradle.properties`.
+
+> [!WARNING]
+> `CodecsAPI` is experimental: `decode`, `reader`, `sniff` and `encoder`, plus the readers, encoders and filters they hand out, can change or break in any update, so don't use them in your mods yet. The media players already use the codecs for you, and the status checks (`ffmpegLoaded()`, `ffmpegError()`, `vulkanDecode()`) are safe to call.
 
 ## Resolving addresses
 
@@ -373,6 +376,9 @@ An in-game check is still pending for how occlusion and reflections sound, host 
 
 ## Image and DDS access
 
+> [!WARNING]
+> Experimental: don't use it in your mods yet (see [public and internal packages](#public-and-internal-packages)).
+
 `CodecsAPI.reader` picks an internal reader from the leading bytes and returns it as an `ImageReader`. The PNG and GIF chunk structures in `api.codecs.common` are internal, and the PNG and GIF encoders serialize through them.
 
 ```java
@@ -406,6 +412,9 @@ Every decoder delivers one tightly packed BGRA buffer per frame, except grayscal
 - Mip chains, volumes and cube maps are rejected, and there's no BC encoder or codec-cache option.
 
 ## Encoding
+
+> [!WARNING]
+> Experimental: don't use it in your mods yet (see [public and internal packages](#public-and-internal-packages)).
 
 `CodecsAPI.encoder(container, target, video, audio)` opens an `Encoder` for one `Container`. `Container.video()` and `Container.audio()` list the codecs each track accepts; a track that doesn't fit, or a decode-only container (WebP, JPEG, Netpbm, SVG), is refused with `IllegalArgumentException` before the target is touched. PNG (APNG when more than one frame arrives) and GIF are pure Java and need no _FFmpeg_; MP4, MOV, MKV, WebM and Ogg go through _FFmpeg_ and throw `IOException` without it.
 

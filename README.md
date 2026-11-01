@@ -211,7 +211,8 @@ Two caveats checked against the 26.2 sources:
   conversion.
 
 # 🔌 AVAILABLE APIs
-- `CodecsAPI`: our own picture and animation codecs, plus _FFmpeg_-backed audio and video
+- `CodecsAPI` (**experimental**, don't use it in your mods yet): our own picture and animation codecs, plus
+  _FFmpeg_-backed audio and video
 - `PlayerAPI`: media playback and display
 - `NetworkAPI`: host and remote storage for private media
 - `PlatformAPI`: web platform support for loading and searching media
