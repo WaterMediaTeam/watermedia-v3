@@ -4,10 +4,6 @@ import org.watermedia.api.codecs.decoders.FFDecoder;
 import org.watermedia.api.player.MediaPlayer.Status;
 
 import java.util.ArrayDeque;
-import java.util.EnumMap;
-import java.util.EnumSet;
-import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -28,23 +24,6 @@ import java.util.function.BiConsumer;
 final class MasterClock implements FFDecoder.Timeline {
     // AUDIO PTS DRIFT FROM THE CLOCK, IN SECONDS, PAST WHICH update() RECALIBRATES ptsDrift
     private static final double DRIFT_RECALIBRATION_SEC = 0.050;
-
-    // STATE MACHINE — VALID TRANSITIONS
-    private static final Map<Status, Set<Status>> TRANSITIONS = new EnumMap<>(Status.class);
-    static {
-        // WAITING/LOADING ALLOW STOPPED (A stop() OR ABORTED RESTART CAN LAND BEFORE PLAYBACK BEGINS); LOADING
-        // LEAVES ONLY THROUGH start() OR A TERMINAL STATE, SO awaitNotStatus(LOADING) MEANS "PIPELINE OPENED"
-        TRANSITIONS.put(Status.WAITING,   EnumSet.of(Status.LOADING, Status.STOPPED));
-        TRANSITIONS.put(Status.LOADING,   EnumSet.of(Status.STOPPED, Status.ERROR));
-        TRANSITIONS.put(Status.PLAYING,   EnumSet.of(Status.PAUSED, Status.BUFFERING, Status.ENDED, Status.STOPPED, Status.ERROR));
-        // PAUSED ALLOWS ENDED: A PIPELINE FULLY DRAINED WHILE PAUSED STILL REACHES ITS END
-        TRANSITIONS.put(Status.PAUSED,    EnumSet.of(Status.PLAYING, Status.BUFFERING, Status.ENDED, Status.STOPPED, Status.ERROR));
-        TRANSITIONS.put(Status.BUFFERING, EnumSet.of(Status.PLAYING, Status.PAUSED, Status.ENDED, Status.STOPPED, Status.ERROR));
-        // ENDED HAS NO PIPELINE LEFT: A SEEK THERE IS A PAUSED RESTART OWNED BY THE PLAYER, NOT A CLOCK TRANSITION
-        TRANSITIONS.put(Status.ENDED,     EnumSet.of(Status.STOPPED));
-        TRANSITIONS.put(Status.STOPPED,   EnumSet.noneOf(Status.class)); // TERMINAL
-        TRANSITIONS.put(Status.ERROR,     EnumSet.of(Status.STOPPED)); // ONLY stop()/release() LEAVE A FAILURE
-    }
 
     // LOCK + CONDITION
     private final ReentrantLock lock = new ReentrantLock();
@@ -188,23 +167,21 @@ final class MasterClock implements FFDecoder.Timeline {
     /** Returns the current status, lock-free. */
     public Status status() { return this.status; }
 
-    /** Applies a transition the state machine allows; true when it applied (see {@link #exchange(Status)}). */
+    /** Applies a transition {@link Status#allows(Status)} permits; true when it applied (see {@link #exchange(Status)}). */
     public boolean transition(final Status newStatus) {
         return this.exchange(newStatus) != null;
     }
 
-    /** Applies a transition the state machine allows and returns the status it left, or null when rejected. */
+    /** Applies a transition {@link Status#allows(Status)} permits and returns the status it left, or null when rejected. */
     public Status exchange(final Status newStatus) {
         // THE CLOCK FREEZES OR RECALIBRATES AROUND PLAYING AND EVERY WAITER WAKES; THE RETURNED STATUS LETS THE CALLER PUBLISH
-        // THE EXACT PAIR INSTEAD OF A STATUS READ BEFORE OR AFTER THE SWAP
+        // THE EXACT PAIR INSTEAD OF A STATUS READ BEFORE OR AFTER THE SWAP. start(), reload(), requestSeek(), update(),
+        // halt() AND reset() OWN THE MOVES THE ENUM LEAVES OUT
         final Status current;
         this.lock.lock();
         try {
             current = this.status;
-            if (current == newStatus) return null; // NO-OP — ALREADY IN THAT STATE
-
-            final Set<Status> allowed = TRANSITIONS.get(current);
-            if (allowed == null || !allowed.contains(newStatus)) return null;
+            if (!current.allows(newStatus)) return null; // ALSO THE NO-OP: NO STATUS ALLOWS ITSELF
 
             // ADJUST CLOCK WHEN LEAVING PLAYING — FREEZE PTS
             if (current == Status.PLAYING) this.pts = this.time();

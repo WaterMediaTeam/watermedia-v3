@@ -337,9 +337,9 @@ public class ServerMediaPlayerTest {
             assertTrue(PlayerWait.awaitCondition(() -> player.time() == Long.MAX_VALUE, ENDED_TIMEOUT_MS),
                     "the live segment outgrows the 10ms left and saturates");
             assertEquals(Status.PLAYING, player.status(), "a live clock never ends");
-            final Sync snapshot = player.snapshot();
+            final MediaPlayer.PlayerState snapshot = player.snapshot();
             assertEquals(Long.MAX_VALUE, snapshot.time());
-            assertEquals(snapshot, Sync.read(snapshot.toBytes()), "the saturated snapshot still crosses the wire");
+            assertEquals(snapshot, MediaPlayer.PlayerState.read(snapshot.toBytes()), "the saturated snapshot still crosses the wire");
         }
     }
 
@@ -401,7 +401,7 @@ public class ServerMediaPlayerTest {
             assertTrue(source.speed(2.0f));
             assertTrue(source.seek(30_000L));
 
-            final Sync snapshot = source.snapshot();
+            final MediaPlayer.PlayerState snapshot = source.snapshot();
             assertEquals(source.revision(), snapshot.revision());
             assertEquals(Status.PAUSED, snapshot.status());
             assertEquals(30_000L, snapshot.time());
@@ -420,7 +420,7 @@ public class ServerMediaPlayerTest {
             assertTrue(source.resume());
             assertTrue(PlayerWait.awaitCondition(() -> source.time() > snapshot.time(), ENDED_TIMEOUT_MS));
             final long before = source.time();
-            final Sync playing = source.snapshot();
+            final MediaPlayer.PlayerState playing = source.snapshot();
             final long after = source.time();
             assertEquals(Status.PLAYING, playing.status());
             assertFalse(playing.repeat());
@@ -460,7 +460,7 @@ public class ServerMediaPlayerTest {
             assertEquals(revision + 1, player.revision(), "the release is one more mutation to send");
             assertEquals(Status.PLAYING, cap.from);
             assertEquals(Status.STOPPED, cap.to, "the listener hears the release");
-            final Sync last = player.snapshot();
+            final MediaPlayer.PlayerState last = player.snapshot();
             assertEquals(Status.STOPPED, last.status());
             assertEquals(player.revision(), last.revision());
             assertTrue(last.time() > 0L && last.time() == player.time(), "the position freezes where the release caught it");
@@ -478,7 +478,7 @@ public class ServerMediaPlayerTest {
             assertTrue(player.startPaused());
             assertTrue(player.seek(10_000L));
             player.release();
-            final Sync last = player.snapshot();
+            final MediaPlayer.PlayerState last = player.snapshot();
             assertFalse(player.seek(20_000L), "a released clock cannot be scrubbed");
             assertFalse(player.pause(false), "a released clock cannot resume");
             assertFalse(player.togglePlay());

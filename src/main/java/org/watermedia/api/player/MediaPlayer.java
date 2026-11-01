@@ -10,6 +10,7 @@ import org.watermedia.tools.ThreadTool;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,7 +26,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Base of every playback unit, carrying the shared control surface (volume, mute, speed,
  * repeat, LOD/scaling) and the session follower.
  * <p>
- * A player fed the {@link ServerMediaPlayer#snapshot() snapshots} of a clock through {@link #sync(Sync)}
+ * A player fed the {@link ServerMediaPlayer#snapshot() snapshots} of a clock through {@link #sync(PlayerState)}
  * follows that clock: it mirrors its status, repeat and speed and keeps its own position within
  * {@link #tolerance()} of {@link #authorityTime()}. How the snapshots travel from the clock to the
  * player is the host's business; the library owns the time math and the correction.
@@ -198,7 +199,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param snapshot a {@link ServerMediaPlayer#snapshot()}, received through the host's own transport
      * @throws IllegalArgumentException when {@code snapshot} is null
      */
-    public final void sync(final Sync snapshot) {
+    public final void sync(final PlayerState snapshot) {
         if (snapshot == null) throw new IllegalArgumentException("Snapshot cannot be null");
         synchronized (this.tickLock) {
             if (!this.armed) return;
@@ -208,16 +209,16 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     /**
-     * Feeds an encoded clock snapshot, decoded with {@link Sync#read(ByteBuffer)} on the calling thread;
-     * see {@link #sync(Sync)}.
+     * Feeds an encoded clock snapshot, decoded with {@link PlayerState#read(ByteBuffer)} on the calling thread;
+     * see {@link #sync(PlayerState)}.
      * @param payload the snapshot bytes, consumed
      * @throws IllegalArgumentException if the payload is malformed
      */
     public final void sync(final ByteBuffer payload) {
-        this.sync(Sync.read(payload));
+        this.sync(PlayerState.read(payload));
     }
 
-    /** Whether this player follows a clock, which it does from the first {@link #sync(Sync)} until {@link #release()}. */
+    /** Whether this player follows a clock, which it does from the first {@link #sync(PlayerState)} until {@link #release()}. */
     public final boolean following() { return this.heard != null; }
 
     /**
@@ -225,7 +226,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * {@link #authorityTime()} for where playback should be right now.
      * @return the latest snapshot, or {@code null} before the first one or after {@link #release()}
      */
-    public final Sync authority() {
+    public final PlayerState authority() {
         final Heard heard = this.heard;
         return heard == null ? null : heard.snapshot();
     }
@@ -244,7 +245,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // THE SNAPSHOT KEPT AGEING SINCE IT LANDED; A LIVE OR UNKNOWN TIMELINE RUNS FREE, A FINITE ONE WRAPS OR CLAMPS
     private static long authorityTime(final Heard heard) {
-        final Sync target = heard.snapshot();
+        final PlayerState target = heard.snapshot();
         if (target.status() != Status.PLAYING) return target.time();
         final long elapsed = (System.nanoTime() - heard.nanos()) / 1_000_000L;
         final long run = (long) (elapsed * target.speed());
@@ -267,7 +268,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     private long drift(final Heard heard) {
-        final Sync target = heard.snapshot();
+        final PlayerState target = heard.snapshot();
         long drift = authorityTime(heard) - this.time();
         final long d = target.duration();
         // LOOPING TIMELINES ARE CIRCULAR — MAP INTO [-d/2, d/2) SO THE WRAP NEVER FAKES A HUGE DRIFT
@@ -294,7 +295,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // FOLLOWER ENGINE, RUNS ON THE SHARED TICKER: MIRRORS THE SESSION ONTO THIS PLAYER AND PULLS PLAYBACK BACK WHEN IT
     // DRIFTS PAST THE TOLERANCE
     private void follow(final Heard heard) {
-        final Sync authority = heard.snapshot();
+        final PlayerState authority = heard.snapshot();
         final Status target = authority.status();
         Status current = this.status();
         final long now = System.nanoTime();
@@ -787,7 +788,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     // THE LAST SNAPSHOT FED AND WHEN IT ARRIVED, PUBLISHED TOGETHER SO A READER NEVER AGES ONE WITH THE OTHER'S STAMP
-    private record Heard(Sync snapshot, long nanos) {}
+    private record Heard(PlayerState snapshot, long nanos) {}
 
     // A STATUS TRANSITION WAITING FOR DELIVERY; THE TERMINAL ONES CONSUME THE LISTENERS
     private record Transition(Status previous, Status current) {
@@ -934,6 +935,23 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             if (value < 0 || value >= VALUES.length) throw new IllegalArgumentException("Invalid status ordinal: " + value);
             return VALUES[value];
         }
+
+        /** Whether a pause, resume, buffering, end, stop or failure can move this status straight to {@code next}; starting, seeking and restarting take their own paths. */
+        public boolean allows(final Status next) {
+            return switch (this) {
+                // A stop() OR AN ABORTED RESTART CAN LAND BEFORE PLAYBACK BEGINS; LOADING LEAVES ONLY THROUGH A START OR A
+                // TERMINAL STATE, SO LEAVING IT MEANS THE PIPELINE OPENED
+                case WAITING -> next == LOADING || next == STOPPED;
+                case LOADING -> next == STOPPED || next == ERROR;
+                case BUFFERING -> next == PLAYING || next == PAUSED || next == ENDED || next == STOPPED || next == ERROR;
+                case PLAYING -> next == PAUSED || next == BUFFERING || next == ENDED || next == STOPPED || next == ERROR;
+                // A PIPELINE FULLY DRAINED WHILE PAUSED STILL REACHES ITS END
+                case PAUSED -> next == PLAYING || next == BUFFERING || next == ENDED || next == STOPPED || next == ERROR;
+                // ENDED HAS NO PIPELINE LEFT (A SEEK THERE IS A RESTART) AND ONLY stop()/release() LEAVE A FAILURE
+                case ENDED, ERROR -> next == STOPPED;
+                case STOPPED -> false; // TERMINAL UNTIL A RESTART
+            };
+        }
     }
 
     /**
@@ -959,5 +977,75 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
         /** Returns the percentage (1-100) of the maximum video dimensions this level keeps. */
         public int percent() { return this.percent; }
+    }
+
+    /**
+     * Snapshot of a {@link ServerMediaPlayer}: everything a following player needs, taken with
+     * {@link ServerMediaPlayer#snapshot()} on one side and fed to {@link MediaPlayer#sync(PlayerState)} on the other.
+     * {@link #toBytes()} and {@link #read(ByteBuffer)} give it a fixed {@value #BYTES}-byte big-endian form for
+     * hosts whose transport carries raw bytes.
+     *
+     * @param revision clock mutation counter at capture time, for the host to tell snapshots apart
+     * @param status   playback status at capture time
+     * @param time     playback position in milliseconds at capture time
+     * @param duration total media duration in milliseconds, or 0 when unknown
+     * @param speed    playback speed factor, in (0, 4]
+     * @param repeat   whether playback loops at the end of the media
+     * @param live     whether the media source is a live stream
+     */
+    public record PlayerState(int revision, Status status, long time, long duration, float speed, boolean repeat, boolean live) {
+
+        /** Exact size in bytes of the binary form produced by {@link #toBytes()}. */
+        public static final int BYTES = 27;
+
+        private static final byte VERSION = 3; // BUMP ON ANY LAYOUT CHANGE, A Status REORDER INCLUDED (THE STATUS BYTE IS ITS ORDINAL)
+        private static final int REPEAT_BIT = 0b01;
+        private static final int LIVE_BIT = 0b10;
+
+        public PlayerState {
+            if (status == null) throw new IllegalArgumentException("Status cannot be null");
+            if (time < 0 || duration < 0) throw new IllegalArgumentException("Time and duration cannot be negative");
+            // NaN FAILS BOTH COMPARISONS — THIS ALSO SHIELDS AGAINST CORRUPTED FLOAT PAYLOADS
+            if (!(speed > 0f && speed <= 4f)) throw new IllegalArgumentException("Speed must be in (0, 4], got " + speed);
+        }
+
+        /** Encodes this snapshot into its fixed binary form, a new heap buffer positioned at zero and ready to transmit. */
+        public ByteBuffer toBytes() {
+            final ByteBuffer buf = ByteBuffer.allocate(BYTES); // BIG-ENDIAN BY DEFAULT
+            buf.put(VERSION);
+            buf.putInt(this.revision);
+            buf.put((byte) this.status.ordinal());
+            buf.putLong(this.time);
+            buf.putLong(this.duration);
+            buf.putFloat(this.speed);
+            buf.put((byte) ((this.repeat ? REPEAT_BIT : 0) | (this.live ? LIVE_BIT : 0)));
+            return buf.flip();
+        }
+
+        /**
+         * Decodes a snapshot produced by {@link #toBytes()}. Exactly {@value #BYTES} bytes are consumed and anything after
+         * them is left in the buffer, so a snapshot may travel inside a larger frame carrying the host's own routing fields;
+         * the buffer's byte order is irrelevant (the wire is big-endian) and a rejected payload leaves the position untouched.
+         * @param buf a payload produced by {@link #toBytes()}
+         * @return the decoded snapshot
+         * @throws IllegalArgumentException if the payload is null, truncated, of another version or holds out-of-range values
+         */
+        public static PlayerState read(final ByteBuffer buf) {
+            if (buf == null || buf.remaining() < BYTES) throw new IllegalArgumentException("Snapshot payload is null or truncated, needs " + BYTES + " bytes");
+            // DECODE FROM A BIG-ENDIAN VIEW SO THE CALLER'S BYTE ORDER NEVER MATTERS, AND ADVANCE THE CALLER'S POSITION ONLY
+            // ONCE THE WHOLE SNAPSHOT PARSED
+            final ByteBuffer view = buf.duplicate().order(ByteOrder.BIG_ENDIAN);
+            final byte version = view.get();
+            if (version != VERSION) throw new IllegalArgumentException("Unsupported snapshot version: " + version);
+            final int revision = view.getInt();
+            final Status status = Status.of(view.get() & 0xFF);
+            final long time = view.getLong();
+            final long duration = view.getLong();
+            final float speed = view.getFloat();
+            final byte flags = view.get();
+            final PlayerState playerState = new PlayerState(revision, status, time, duration, speed, (flags & REPEAT_BIT) != 0, (flags & LIVE_BIT) != 0);
+            buf.position(view.position());
+            return playerState;
+        }
     }
 }

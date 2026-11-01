@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies that headless mirrors follow a {@link ServerMediaPlayer} clock end to end over an in-test byte transport. */
 @DisplayName("Follower sync")
-public class FollowerSyncTest {
+public class FollowerPlayerStateTest {
 
     // NETWORK
     private static final long PERIOD_MS = 50L;          // POLLS THE CLOCK AS OFTEN AS THE SHARED TICKER RUNS
@@ -56,9 +56,9 @@ public class FollowerSyncTest {
         @Test
         @DisplayName("Mirrors follow the clock's start, pause and stop")
         void mirrorsFollowStartPauseStop() {
-            final ServerMediaPlayer clock = FollowerSyncTest.this.clock(60_000L);
-            final ServerMediaPlayer a = FollowerSyncTest.this.mirror();
-            final ServerMediaPlayer b = FollowerSyncTest.this.mirror();
+            final ServerMediaPlayer clock = FollowerPlayerStateTest.this.clock(60_000L);
+            final ServerMediaPlayer a = FollowerPlayerStateTest.this.mirror();
+            final ServerMediaPlayer b = FollowerPlayerStateTest.this.mirror();
             await("both mirrors to adopt the session", () -> a.duration() == 60_000L && b.duration() == 60_000L);
             assertEquals(Status.WAITING, a.status(), "an idle clock starts nobody");
             assertEquals(Status.WAITING, b.status());
@@ -85,15 +85,15 @@ public class FollowerSyncTest {
         @Test
         @DisplayName("A mirror joining mid-playback is reached by the resend and catches up with a seek")
         void lateMirrorCatchesUp() {
-            final ServerMediaPlayer clock = FollowerSyncTest.this.clock(300_000L);
-            final ServerMediaPlayer early = FollowerSyncTest.this.mirror();
+            final ServerMediaPlayer clock = FollowerPlayerStateTest.this.clock(300_000L);
+            final ServerMediaPlayer early = FollowerPlayerStateTest.this.mirror();
             assertTrue(clock.start());
             assertTrue(clock.seek(120_000L));
             await("the early mirror to catch up", () -> early.playing() && aligned(clock, early, ALIGN_MS));
 
             // THE SESSION IS QUIET NOW: ONLY THE PERIODIC RESEND CAN REACH THE LATE MIRROR
             final int revision = clock.revision();
-            final ServerMediaPlayer late = FollowerSyncTest.this.mirror();
+            final ServerMediaPlayer late = FollowerPlayerStateTest.this.mirror();
             await("the late mirror to play", late::playing);
             await("it to catch up with a seek", () -> aligned(clock, late, ALIGN_MS));
             assertEquals(revision, clock.revision(), "no clock mutation served the late mirror");
@@ -102,9 +102,9 @@ public class FollowerSyncTest {
         @Test
         @DisplayName("Mirrors adopt the clock's speed and repeat and keep pace at that rate")
         void mirrorsAdoptSpeedAndRepeat() {
-            final ServerMediaPlayer clock = FollowerSyncTest.this.clock(60_000L);
-            final ServerMediaPlayer a = FollowerSyncTest.this.mirror();
-            final ServerMediaPlayer b = FollowerSyncTest.this.mirror();
+            final ServerMediaPlayer clock = FollowerPlayerStateTest.this.clock(60_000L);
+            final ServerMediaPlayer a = FollowerPlayerStateTest.this.mirror();
+            final ServerMediaPlayer b = FollowerPlayerStateTest.this.mirror();
             assertTrue(clock.start());
             await("both to play", () -> a.playing() && b.playing());
 
@@ -122,8 +122,8 @@ public class FollowerSyncTest {
         @Test
         @DisplayName("A local pause applies at once and the next tick resumes the mirror")
         void localPauseIsUndone() {
-            final ServerMediaPlayer clock = FollowerSyncTest.this.clock(60_000L);
-            final ServerMediaPlayer mirror = FollowerSyncTest.this.mirror();
+            final ServerMediaPlayer clock = FollowerPlayerStateTest.this.clock(60_000L);
+            final ServerMediaPlayer mirror = FollowerPlayerStateTest.this.mirror();
             assertTrue(clock.start());
             await("the mirror to play", mirror::playing);
 
@@ -135,8 +135,8 @@ public class FollowerSyncTest {
         @Test
         @DisplayName("A local stop is undone: the mirror starts again and catches up")
         void localStopIsUndone() {
-            final ServerMediaPlayer clock = FollowerSyncTest.this.clock(60_000L);
-            final ServerMediaPlayer mirror = FollowerSyncTest.this.mirror();
+            final ServerMediaPlayer clock = FollowerPlayerStateTest.this.clock(60_000L);
+            final ServerMediaPlayer mirror = FollowerPlayerStateTest.this.mirror();
             assertTrue(clock.start());
             assertTrue(clock.seek(30_000L));
             await("the mirror to catch up", () -> mirror.playing() && aligned(clock, mirror, ALIGN_MS));
@@ -149,8 +149,8 @@ public class FollowerSyncTest {
         @Test
         @DisplayName("A local seek, speed and repeat are overridden by the clock's")
         void localSeekSpeedRepeatAreUndone() {
-            final ServerMediaPlayer clock = FollowerSyncTest.this.clock(60_000L);
-            final ServerMediaPlayer mirror = FollowerSyncTest.this.mirror();
+            final ServerMediaPlayer clock = FollowerPlayerStateTest.this.clock(60_000L);
+            final ServerMediaPlayer mirror = FollowerPlayerStateTest.this.mirror();
             assertTrue(clock.start());
             await("the mirror to play", mirror::playing);
 
@@ -169,14 +169,14 @@ public class FollowerSyncTest {
         @Test
         @DisplayName("A mirror follows from the first snapshot until it is released")
         void followingSpansFirstSnapshotToRelease() {
-            final ServerMediaPlayer clock = FollowerSyncTest.this.clock(60_000L);
-            final ServerMediaPlayer mirror = FollowerSyncTest.this.player();
+            final ServerMediaPlayer clock = FollowerPlayerStateTest.this.clock(60_000L);
+            final ServerMediaPlayer mirror = FollowerPlayerStateTest.this.player();
             assertFalse(mirror.following(), "nothing heard from the clock yet");
             assertNull(mirror.authority());
             assertEquals(0L, mirror.authorityTime());
             assertEquals(0L, mirror.drift());
 
-            FollowerSyncTest.this.network.join(mirror);
+            FollowerPlayerStateTest.this.network.join(mirror);
             await("the first snapshot", mirror::following);
             assertEquals(clock.revision(), mirror.authority().revision());
             assertEquals(60_000L, mirror.authority().duration());
@@ -194,16 +194,16 @@ public class FollowerSyncTest {
         @Test
         @DisplayName("Releasing the clock bumps its revision to a STOPPED snapshot that stops every mirror")
         void releasedClockStopsMirrors() {
-            final ServerMediaPlayer clock = FollowerSyncTest.this.clock(60_000L);
-            final ServerMediaPlayer a = FollowerSyncTest.this.mirror();
-            final ServerMediaPlayer b = FollowerSyncTest.this.mirror();
+            final ServerMediaPlayer clock = FollowerPlayerStateTest.this.clock(60_000L);
+            final ServerMediaPlayer a = FollowerPlayerStateTest.this.mirror();
+            final ServerMediaPlayer b = FollowerPlayerStateTest.this.mirror();
             assertTrue(clock.start());
             await("both to play", () -> a.playing() && b.playing());
 
             final int revision = clock.revision();
             clock.release();
             assertNotEquals(revision, clock.revision(), "the release is a mutation the host must send");
-            final Sync last = clock.snapshot();
+            final MediaPlayer.PlayerState last = clock.snapshot();
             assertEquals(Status.STOPPED, last.status());
             assertEquals(clock.revision(), last.revision());
             await("both to stop", () -> a.stopped() && b.stopped());
@@ -251,7 +251,7 @@ public class FollowerSyncTest {
     // MOVED OR THE RESEND IS DUE, SO NOTHING IS EVER APPLIED ON THE TEST'S STACK
     private static final class Network {
         private final ScheduledExecutorService net = Executors.newSingleThreadScheduledExecutor(
-                ThreadTool.factory("FollowerSyncTest-net", Thread.NORM_PRIORITY));
+                ThreadTool.factory("FollowerPlayerStateTest-net", Thread.NORM_PRIORITY));
         private final List<ServerMediaPlayer> mirrors = new CopyOnWriteArrayList<>();
         private final ServerMediaPlayer clock;
         private volatile Throwable failure;
@@ -278,8 +278,8 @@ public class FollowerSyncTest {
             try {
                 final long now = System.nanoTime();
                 if (this.clock.revision() == this.sent && now - this.sentNanos < RESEND_NS) return;
-                final Sync snapshot = this.clock.snapshot();
-                final byte[] wire = new byte[Sync.BYTES];
+                final MediaPlayer.PlayerState snapshot = this.clock.snapshot();
+                final byte[] wire = new byte[MediaPlayer.PlayerState.BYTES];
                 snapshot.toBytes().get(wire);
                 // EVERY MIRROR DECODES ITS OWN PACKET, AS EACH CLIENT WOULD
                 for (final ServerMediaPlayer mirror: this.mirrors) mirror.sync(ByteBuffer.wrap(wire.clone()));

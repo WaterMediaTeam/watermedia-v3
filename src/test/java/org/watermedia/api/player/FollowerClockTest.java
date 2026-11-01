@@ -118,7 +118,7 @@ public class FollowerClockTest {
             // A LIVE SESSION HAS NO DURATION: THE MIRROR MUST ADOPT THE LIVE FLAG OR THE TIMELINE-HELD GUARD FREEZES ITS
             // OWN CLOCK AT ZERO FOREVER
             final long before = System.nanoTime();
-            follower.sync(new Sync(1, Status.PLAYING, 0L, 0L, 1f, false, true));
+            follower.sync(new MediaPlayer.PlayerState(1, Status.PLAYING, 0L, 0L, 1f, false, true));
             assertTrue(PlayerWait.awaitCondition(follower::playing, 2_000L), "the mirror must start with the session");
             final long started = System.nanoTime();
             assertTrue(follower.live(), "the mirror must know the session is live");
@@ -135,7 +135,7 @@ public class FollowerClockTest {
         @DisplayName("a live session's position is never folded into a latched duration")
         void testLiveSessionAgesUnfolded() throws InterruptedException {
             final ServerMediaPlayer follower = FollowerClockTest.this.follower();
-            follower.sync(new Sync(1, Status.PLAYING, 100L, 150L, 1f, false, true));
+            follower.sync(new MediaPlayer.PlayerState(1, Status.PLAYING, 100L, 150L, 1f, false, true));
             Thread.sleep(300L);
             final long t = follower.authorityTime();
             assertTrue(t > 150L, "a live session must age past the phantom duration, was " + t);
@@ -146,7 +146,7 @@ public class FollowerClockTest {
         void testLiveSessionSaturates() throws InterruptedException {
             final ServerMediaPlayer follower = FollowerClockTest.this.follower();
             // A LIVE AUTHORITY SEEKED NEAR Long.MAX_VALUE SATURATES ITS CLOCK AND SNAPSHOTS IT; AGEING THAT SNAPSHOT MUST SATURATE TOO
-            follower.sync(new Sync(1, Status.PLAYING, Long.MAX_VALUE - 10L, 0L, 1f, false, true));
+            follower.sync(new MediaPlayer.PlayerState(1, Status.PLAYING, Long.MAX_VALUE - 10L, 0L, 1f, false, true));
             Thread.sleep(50L);
             assertEquals(Long.MAX_VALUE, follower.authorityTime(), "the aged position must saturate");
             assertTrue(follower.drift() >= 0L, "the session is never behind a follower that has not started");
@@ -156,10 +156,10 @@ public class FollowerClockTest {
         @DisplayName("a mirror follows the session's live flag both ways and adopts its duration once known")
         void testLiveFlagMirroredBothWays() {
             final ServerMediaPlayer follower = FollowerClockTest.this.follower();
-            follower.sync(new Sync(1, Status.PLAYING, 0L, 0L, 1f, false, true));
+            follower.sync(new MediaPlayer.PlayerState(1, Status.PLAYING, 0L, 0L, 1f, false, true));
             assertTrue(PlayerWait.awaitCondition(follower::live, 2_000L), "the mirror must turn live with the session");
             // THE SESSION LEARNS IT WAS A FINITE FILE AFTER ALL: THE MIRROR DROPS THE LIVE FLAG AND TAKES THE DURATION
-            follower.sync(new Sync(2, Status.PLAYING, 0L, 60_000L, 1f, false, false));
+            follower.sync(new MediaPlayer.PlayerState(2, Status.PLAYING, 0L, 60_000L, 1f, false, false));
             assertTrue(PlayerWait.awaitCondition(() -> !follower.live() && follower.duration() == 60_000L, 2_000L),
                     "the mirror must follow the session back to a finite timeline");
         }
@@ -227,8 +227,8 @@ public class FollowerClockTest {
         return this.follower;
     }
 
-    private static Sync sync(final int revision, final Status status, final long time, final long duration,
-                             final boolean repeat, final float speed) {
-        return new Sync(revision, status, time, duration, speed, repeat, false);
+    private static MediaPlayer.PlayerState sync(final int revision, final Status status, final long time, final long duration,
+                                                final boolean repeat, final float speed) {
+        return new MediaPlayer.PlayerState(revision, status, time, duration, speed, repeat, false);
     }
 }

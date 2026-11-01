@@ -73,7 +73,7 @@ public final class PlayerAPI {
         return MRL.preload(uri);
     }
 
-    /** Creates a {@link ServerMediaPlayer}, a clock without media or engines for either side; send its snapshots with your own transport and feed them to {@link MediaPlayer#sync(Sync)}. */
+    /** Creates a {@link ServerMediaPlayer}, a clock without media or engines for either side; send its snapshots with your own transport and feed them to {@link MediaPlayer#sync(MediaPlayer.PlayerState)}. */
     public static ServerMediaPlayer serverPlayer() {
         return new ServerMediaPlayer();
     }

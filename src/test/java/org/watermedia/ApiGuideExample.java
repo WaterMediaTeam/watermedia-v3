@@ -14,7 +14,6 @@ import org.watermedia.api.player.PlayerAPI;
 import org.watermedia.api.player.SFXEngine;
 import org.watermedia.api.player.SFXEngine.SpatialAudio;
 import org.watermedia.api.player.ServerMediaPlayer;
-import org.watermedia.api.player.Sync;
 import org.watermedia.api.player.VKContext;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.api.util.SampleType;
@@ -88,7 +87,7 @@ public final class ApiGuideExample {
         player.scale(1_280, 720);
     }
 
-    public static ServerMediaPlayer clock(final long durationMs, final Consumer<Sync> transport) {
+    public static ServerMediaPlayer clock(final long durationMs, final Consumer<MediaPlayer.PlayerState> transport) {
         final ServerMediaPlayer clock = PlayerAPI.serverPlayer();
         clock.syncDuration(durationMs);
         clock.start();
@@ -97,7 +96,7 @@ public final class ApiGuideExample {
         return clock;
     }
 
-    public static void follow(final MediaPlayer player, final Sync snapshot) {
+    public static void follow(final MediaPlayer player, final MediaPlayer.PlayerState snapshot) {
         player.tolerance(500L);
         player.sync(snapshot);
     }

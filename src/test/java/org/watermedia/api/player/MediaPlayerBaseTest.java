@@ -164,7 +164,7 @@ public class MediaPlayerBaseTest {
     }
 
     @Nested
-    @DisplayName("Status.of")
+    @DisplayName("Status")
     class StatusTests {
 
         @Test
@@ -173,10 +173,26 @@ public class MediaPlayerBaseTest {
             for (final Status s: Status.values()) {
                 assertEquals(s, Status.of(s.ordinal()));
             }
-            assertEquals(Status.WAITING, Status.of(0));
-            assertEquals(Status.ERROR, Status.of(7));
             assertThrows(IllegalArgumentException.class, () -> Status.of(-1));
             assertThrows(IllegalArgumentException.class, () -> Status.of(Status.values().length));
+        }
+
+        @Test
+        @DisplayName("allows only direct moves, never the status itself, null or anything out of STOPPED")
+        void allowsDirectMovesOnly() {
+            for (final Status s: Status.values()) {
+                assertFalse(s.allows(s), s + " allows itself");
+                assertFalse(s.allows(null), s + " allows null");
+                assertFalse(Status.STOPPED.allows(s), "STOPPED allows " + s);
+            }
+            assertTrue(Status.WAITING.allows(Status.LOADING));
+            assertTrue(Status.PAUSED.allows(Status.ENDED), "a pipeline drained while paused still ends");
+            assertTrue(Status.BUFFERING.allows(Status.PAUSED));
+            assertTrue(Status.ERROR.allows(Status.STOPPED));
+            assertFalse(Status.LOADING.allows(Status.PLAYING), "LOADING leaves only through a start");
+            assertFalse(Status.PLAYING.allows(Status.LOADING), "a source switch takes its own path");
+            assertFalse(Status.ENDED.allows(Status.PAUSED), "a seek past the end restarts the player");
+            assertFalse(Status.ERROR.allows(Status.PLAYING), "only a stop leaves a failure");
         }
     }
 

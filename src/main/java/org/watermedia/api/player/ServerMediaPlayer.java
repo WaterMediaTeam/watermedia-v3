@@ -15,7 +15,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * This player produces no audio or video: it computes playback time from the system clock, so a server
  * can hold one authoritative position per media session and its clients align to it. Every successful
  * mutation bumps {@link #revision()}; a host polls it, sends {@link #snapshot()} through its own transport
- * whenever it moved, and each receiving player feeds the snapshot to {@link MediaPlayer#sync(Sync)}. The
+ * whenever it moved, and each receiving player feeds the snapshot to {@link MediaPlayer#sync(PlayerState)}. The
  * clock knows nothing about transports, followers or permissions: who may drive it, how its snapshots
  * travel and where its position is persisted are the host's business.
  * <p>
@@ -47,8 +47,6 @@ public final class ServerMediaPlayer extends MediaPlayer {
         super();
         this.arm();
     }
-
-    // ==== SESSION FACTS ====
 
     /**
      * Synchronizes the total media duration a client reported.
@@ -93,22 +91,20 @@ public final class ServerMediaPlayer extends MediaPlayer {
         this.revision.incrementAndGet();
     }
 
-    // ==== SNAPSHOTS ====
-
     /** Returns the mutation counter, seeded from the clock and bumped by every state change, the loop wrap and {@link #release()}, so a host sends {@link #snapshot()} only when it moved. */
     public int revision() {
         return this.revision.get();
     }
 
     /** Captures the current state as an immutable snapshot, consistent under concurrent mutations. */
-    public synchronized Sync snapshot() {
-        return new Sync(this.revision.get(), this.status, this.time(), this.duration, this.speed(), this.repeat(), this.live);
+    public synchronized PlayerState snapshot() {
+        return new PlayerState(this.revision.get(), this.status, this.time(), this.duration, this.speed(), this.repeat(), this.live);
     }
 
     @Override
     void tick() {
         // A CLOCK FED SNAPSHOTS MIRRORS THAT SESSION AND HAS NO MEDIA TO LEARN THE TIMELINE FROM, SO IT ADOPTS THE SESSION'S
-        final Sync session = this.authority();
+        final PlayerState session = this.authority();
         if (session != null) {
             if (this.duration <= 0) this.syncDuration(session.duration());
             if (this.live != session.live()) this.live(session.live());
@@ -116,8 +112,6 @@ public final class ServerMediaPlayer extends MediaPlayer {
         super.tick();
         this.update();
     }
-
-    // ==== PLAYBACK CONTROLS ====
 
     // THE MONITOR release() TAKES KEEPS A RELEASED CLOCK STOPPED
     @Override
@@ -299,8 +293,6 @@ public final class ServerMediaPlayer extends MediaPlayer {
         this.deliverStatus();
         super.release();
     }
-
-    // ==== INTERNAL ====
 
     // POSITION OF THE RUNNING SEGMENT AT THE GIVEN RATE. THE RATE IS EXPLICIT BECAUSE A SPEED CHANGE
     // MUST CLOSE THE SEGMENT AT THE OUTGOING VALUE BEFORE THE NEW ONE APPLIES
