@@ -917,8 +917,8 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
 
 ### `tools` (internal, used by Binaries)
 - `DataTool`: byte reads (`startsWith`, `u16/u24/u32`, `megabytes`), lenient parsing (`parseInt/Long/Double`, `uri`,
-  `expiry`, `equalsIgnoreCase`, `equalsAnyIgnoreCase`, `similarity` Jaro-Winkler), `redact(String)` (URIs →
-  `scheme://host/REDACTED`, JWTs, `--accessToken`, `Authorization`, cookies, secret key/values, `token:x:y`),
+  `expiry`, `equalsIgnoreCase`, `equalsAnyIgnoreCase`, `similarity` Jaro-Winkler), `redact(String)` (links stay
+  whole; masks URI passwords, JWTs, `--accessToken`, `Authorization`, cookies, secret key/values, `token:x:y`),
   `sha256(byte[])`, pixels (`yuvToBgra`, `bgraToBuffer`, `blendOver`, `premultiply`, `orient`), scaling (`scalable`,
   `scaleArea`).
 - `FFTool`: `Pixels(format, bits)` record + `BGRA`, `pixels(avPixFmt)`, `avPixelFormat(PixelFormat)`, `sampleType(av)`,
@@ -1098,7 +1098,7 @@ System properties: `watermedia.engine`, `watermedia.app` (child JVM flag), `wate
 
 ## 15. Logging, errors and hardening
 - Redaction is universal (`WaterMedia.logger` → `DataTool.redact` on message, parameters and stack traces); tests
-  `LoggerRedactionTest`. Native FFmpeg logs are not routed (disabled block, PENDING H9).
+  `LoggerRedactionTest`. Links are never censored (owner decision 2026-11-01), only secrets inside them. Native FFmpeg logs are not routed (disabled block, PENDING H9).
 - Error policy by layer: codecs throw `CodecException`/`UnsupportedFormatException` (279 + 16 throw sites), platforms
   `PlatformException` (112), players/engines `IllegalStateException` for lifecycle misuse and `IllegalArgumentException`
   for bad input; engines log and drop bad frames instead of throwing (except `ALEngine` on AL errors); status failures
