@@ -28,29 +28,22 @@ public class DataToolTest {
     class Redaction {
 
         @Test
-        @DisplayName("redact masks URIs, protocol-relative links and malformed URLs down to their origin")
+        @DisplayName("redact keeps links readable and masks only URI passwords and secret query values")
         void redactUris() {
-            final String text = "[https://first.test/secret?key=one] -> //second.test/secret?key=two "
-                    + "ftp://name:password@files.test/private file:/private/file "
-                    + "https://bad.test/%not-hex";
-            final String safe = DataTool.redact(text);
-            assertFalse(safe.contains("secret"), safe);
-            assertFalse(safe.contains("private"), safe);
-            assertFalse(safe.contains("password"), safe);
-            assertFalse(safe.contains("key="), safe);
-            assertFalse(safe.contains("not-hex"), safe);
-            assertTrue(safe.contains("https://first.test/REDACTED]"), safe);
-            assertTrue(safe.contains("//second.test/REDACTED"), safe);
+            final String links = "[https://first.test/watch?v=abc123] -> //second.test/video/42?key=two "
+                    + "rtsp://admin@camera.test/live file:/home/user/clip.mp4 https://bad.test/%not-hex";
+            assertEquals(links, DataTool.redact(links), "links, IDs and user names pass untouched");
+            final String safe = DataTool.redact("Source 'ftp://name:password@files.test/path?id=7' failed");
+            assertEquals("Source 'ftp://name:********@files.test/path?id=7' failed", safe);
             assertEquals(safe, DataTool.redact(safe));
-            assertEquals("Source 'https://host.test/REDACTED' failed",
-                    DataTool.redact("Source 'https://name'part:password@host.test/path?token=first'second' failed"));
+            assertEquals("https://cdn.test/media?access_token=********&id=9", DataTool.redact("https://cdn.test/media?access_token=private-token&id=9"));
         }
 
         @Test
         @DisplayName("redact stays linear on hostile runs and masks cookies and every Authorization scheme")
         void redactBounded() {
             // A BACKTRACKING PATTERN WOULD HANG HERE, SO THE BUDGET IS ENFORCED WHILE THE RUN IS STILL GOING
-            for (final String run: new String[] { "a.".repeat(40_000), "a-".repeat(40_000), "eyJ".repeat(40_000) })
+            for (final String run: new String[] { "a.".repeat(40_000), "a-".repeat(40_000), "eyJ".repeat(40_000), "a://b:".repeat(15_000) })
                 assertTimeoutPreemptively(Duration.ofSeconds(2), () -> DataTool.redact(run), "a 80k run must redact in well under two seconds");
             final String safe = DataTool.redact("Authorization: Basic dXNlcjpwYXNz\nAuthorization: OAuth abc\nCookie: session=private; theme=dark\nSet-Cookie: id=1");
             assertFalse(safe.contains("dXNlcjpwYXNz"), safe);

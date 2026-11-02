@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Verifies that native FFmpeg log lines reach the project logger once complete, with their
- * severity mapped and their URLs redacted like any other project log event.
+ * severity mapped and their secrets redacted like any other project log event.
  */
 @DisplayName("FFmpeg native log routing")
 public class FFmpegLogRoutingTest {
@@ -39,7 +39,7 @@ public class FFmpegLogRoutingTest {
         assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
         try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
             // FORMAT STRINGS WITHOUT CONVERSIONS, SO THE VARIADIC CALL NEEDS NO ARGUMENTS
-            av_log(null, AV_LOG_WARNING, "Opening 'https://user:secret@example.test/private?token=hidden' ");
+            av_log(null, AV_LOG_WARNING, "Opening 'https://user:secret@example.test/video?id=7' ");
             av_log(null, AV_LOG_WARNING, "for reading\n");
             av_log(null, AV_LOG_ERROR, "Native failure\n");
             final List<LogEvent> events = capture.events().stream()
@@ -47,9 +47,9 @@ public class FFmpegLogRoutingTest {
             assertEquals(2, events.size(), () -> "Routed events: " + events);
             final String warning = events.get(0).getMessage().getFormattedMessage();
             assertEquals(Level.WARN, events.get(0).getLevel());
-            assertTrue(warning.contains("Opening 'https://example.test/REDACTED"), warning);
+            assertTrue(warning.contains("Opening 'https://user:********@example.test/video?id=7'"), warning);
             assertTrue(warning.endsWith("for reading"), warning);
-            assertFalse(warning.contains("secret") || warning.contains("hidden") || warning.contains("private"), warning);
+            assertFalse(warning.contains("secret"), warning);
             assertEquals(Level.ERROR, events.get(1).getLevel());
             assertEquals("FFmpeg: Native failure", events.get(1).getMessage().getFormattedMessage());
         }

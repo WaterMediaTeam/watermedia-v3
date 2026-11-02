@@ -1323,7 +1323,7 @@ public final class FFDecoder {
             this.formatContext = avformat.avformat_alloc_context();
             this.formatContext.interrupt_callback().callback(INTERRUPT).opaque(this.abortFlag);
 
-            LOGGER.debug(IT, "Target origin {}://{}", this.uri.getScheme(), this.uri.getHost());
+            LOGGER.debug(IT, "Opening {}", this.uri);
             if (!this.openInput(url)) return false;
 
             if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {

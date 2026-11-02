@@ -12,22 +12,20 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Locale;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Byte reads, lenient parsing, log redaction and pixel helpers shared across WaterMedia. */
 public final class DataTool {
-    // SENSITIVE ELEMENTS: URIS, JWTS (eyJ<header>.<payload>.<signature>), MINECRAFT SESSION ARGUMENTS AND TRIPLES,
-    // Authorization VALUES AND SECRET-LOOKING key=value, key: value OR "key":"value" PAIRS
-    // THE SCHEME AND THE JWT PREFIX ARE BOUNDED SO A LONG RUN OF DOTS OR "eyJ" CANNOT MAKE THE SCAN QUADRATIC
-    private static final Pattern URI_TEXT = Pattern.compile("(?i)(?<![\\w/])(?:[a-z][a-z0-9+.-]{0,31}://|file:|//)[^\\s<>]+");
+    // SECRETS: URI PASSWORDS (scheme://user:password@), JWTS (eyJ<header>.<payload>.<signature>), MINECRAFT SESSION
+    // ARGUMENTS AND TRIPLES, Authorization AND Cookie VALUES AND SECRET-LOOKING key=value, key: value OR "key":"value" PAIRS
+    // LINKS STAY READABLE; THE SCHEME AND THE JWT PREFIX ARE BOUNDED SO A LONG RUN OF DOTS OR "eyJ" STAYS LINEAR
+    private static final Pattern URI_PASSWORD = Pattern.compile("(?i)(?<![\\w+.-])([a-z][a-z0-9+.-]{0,31}://[^\\s/?#@:]+:)[^\\s/?#@]+(?=@)");
     private static final Pattern JWT = Pattern.compile("(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{4,}");
     private static final Pattern LAUNCH_ARG = Pattern.compile("(?i)(--(?:accessToken|session)\\s+)(\\S+)");
     private static final Pattern SESSION_TRIPLE = Pattern.compile("(?i)\\btoken:[^\\s:]+(?::[0-9a-fA-F-]+)?");
     private static final Pattern AUTH_HEADER = Pattern.compile("(?i)(authorization\\s*[:=]\\s*(?:[a-z]+\\s+)?)(\\S+)");
     private static final Pattern COOKIE_HEADER = Pattern.compile("(?i)((?:set-)?cookie\\s*[:=]\\s*)([^\\r\\n]+)");
-    private static final Pattern SECRET_KV = Pattern.compile(
-            "(?i)(\"?\\b(?:access[_-]?token|session[_-]?token|sessionId|auth[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd|api[_-]?key|apikey)\\b\"?\\s*[:=]\\s*\"?)([^\\s\"',&}]+)");
+    private static final Pattern SECRET_KV = Pattern.compile("(?i)(\"?\\b(?:access[_-]?token|session[_-]?token|sessionId|auth[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd|api[_-]?key|apikey)\\b\"?\\s*[:=]\\s*\"?)([^\\s\"',&}]+)");
     private static final String SECRET_MASK = "********";
 
     private DataTool() {}
@@ -173,35 +171,10 @@ public final class DataTool {
         return null;
     }
 
-    /** Masks every sensitive element in a text: URIs down to their network origin, bare JWTs, session arguments, Authorization values and secret-looking pairs. */
+    /** Masks the secrets in a text (URI passwords, bare JWTs, session arguments, Authorization and Cookie values, secret-looking pairs) and keeps links readable. */
     public static String redact(final String text) {
         if (text == null || text.isEmpty()) return text;
-        String out = text;
-        final Matcher uris = URI_TEXT.matcher(out);
-        if (uris.find()) {
-            final StringBuilder result = new StringBuilder();
-            do {
-                String value = uris.group();
-                int end = value.length();
-                while (end > 0 && ").,;]}'\"`".indexOf(value.charAt(end - 1)) >= 0) end--;
-                final String suffix = value.substring(end);
-                value = value.substring(0, end);
-                String replacement = "[redacted-uri]";
-                try {
-                    final boolean relative = value.startsWith("//");
-                    final URI uri = URI.create(relative ? "https:" + value : value);
-                    // PATHS CAN CARRY PRIVATE IDS TOO; ONLY THE ORIGIN IS USEFUL WITHOUT DISCLOSING THE RESOURCE
-                    if (uri.getHost() != null && !"file".equalsIgnoreCase(uri.getScheme())) {
-                        replacement = (relative ? "//" : uri.getScheme() + "://") + uri.getHost()
-                                + (uri.getPort() == -1 ? "" : ":" + uri.getPort()) + "/REDACTED";
-                    }
-                } catch (final IllegalArgumentException ignored) {
-                    // A MALFORMED URL STILL NEEDS REDACTION WHEN A PARSER QUOTES IT IN AN EXCEPTION
-                }
-                uris.appendReplacement(result, Matcher.quoteReplacement(replacement + suffix));
-            } while (uris.find());
-            out = uris.appendTail(result).toString();
-        }
+        String out = URI_PASSWORD.matcher(text).replaceAll("$1" + SECRET_MASK);
         out = JWT.matcher(out).replaceAll(SECRET_MASK);
         out = LAUNCH_ARG.matcher(out).replaceAll("$1" + SECRET_MASK);
         out = AUTH_HEADER.matcher(out).replaceAll("$1" + SECRET_MASK);
