@@ -83,7 +83,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Whether {@link #release()} already ran; a released engine refuses formats and uploads. */
     public final boolean released() { return this.released; }
 
-    /** Whether this engine was created for mono spatial playback. */
+    /** Whether this engine plays through positional mono sinks ({@link ALEngine#sinks()}) that accept host sound-thread updates. */
     public boolean spatial() { return false; }
 
     /** Last applied spatial state, or {@code null} for a dry listener-relative source. */

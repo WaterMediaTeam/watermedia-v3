@@ -101,6 +101,10 @@ public interface Platform {
      * {@link Quality#width()}, {@link Quality#height()} and {@link #metadata()} directly to pick a link.
      * Every source names its {@link MediaType} and lists at least one quality; the thumbnail, the
      * metadata and the track lists are optional.
+     * <p>
+     * Each of the {@code audioTracks} is a separate audio input, one per language, that a player plays instead of the
+     * qualities' own audio. The platform lists them with the original (or default) audio first, which is what a player
+     * without a language preference plays.
      */
     record Source(MediaType type, URI thumbnail, Metadata metadata, HttpHeaders headers, List<Quality> qualities,
                   List<Track> audioTracks, List<Track> subtitleTracks) {

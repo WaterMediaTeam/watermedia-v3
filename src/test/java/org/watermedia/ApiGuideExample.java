@@ -7,6 +7,7 @@ import org.watermedia.api.codecs.DownscaleFilter;
 import org.watermedia.api.codecs.Encoder;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.VideoCodec;
+import org.watermedia.api.player.ALEngine;
 import org.watermedia.api.player.GFXEngine;
 import org.watermedia.api.player.MRL;
 import org.watermedia.api.player.MediaPlayer;
@@ -61,6 +62,24 @@ public final class ApiGuideExample {
 
     public static boolean position(final MediaPlayer player, final double x, final double y, final double z) {
         return player.spatialAudio(new SpatialAudio(x, y, z, 8.0f, 64.0f, 1.0f, false, null));
+    }
+
+    // A STEREO PICTURE: THE PRIMARY SINK PLAYS THE LEFT EDGE AND A NEW ONE THE RIGHT EDGE
+    public static ALEngine.Sink stereo(final MediaPlayer player, final double leftX, final double rightX, final double y, final double z) {
+        final ALEngine.Sink left = player.sinks().get(0);
+        left.mix(ALEngine.Mix.LEFT);
+        left.spatialAudio(new SpatialAudio(leftX, y, z, 8.0f, 64.0f, 1.0f, false, null));
+        final ALEngine.Sink right = player.addSink(ALEngine.Mix.RIGHT);
+        right.spatialAudio(new SpatialAudio(rightX, y, z, 8.0f, 64.0f, 1.0f, false, null));
+        return right;
+    }
+
+    // A DUBBED VIDEO: PREFER THE VIEWER'S LANGUAGE AT THE NEXT START, OR SWITCH TO A LISTED TRACK RIGHT AWAY
+    public static boolean dub(final MediaPlayer player, final String language) {
+        player.audioLanguage(language);
+        for (final MediaPlayer.AudioTrack track: player.audioTracks())
+            if (language.equalsIgnoreCase(track.lang())) return player.audioTrack(track);
+        return false;
     }
 
     public static MediaPlayer play(final MRL mrl, final Supplier<GFXEngine> graphics, final Supplier<SFXEngine> audio) {

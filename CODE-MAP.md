@@ -467,12 +467,24 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   buffer)`, the others `read(ByteBuffer)`) and `gif.IChunk` `toBytes()`. Readers use `read`, encoders use `toBytes`.
 
 ### 6.4 FFmpeg decoding (`api/codecs/decoders`)
-- `FFDecoder(String group, URI uri, Track track, HttpHeaders headers, boolean video, boolean audio, Timeline, Host)`:
-  one run per instance, used only by `FFMediaPlayer`. Nested `Timeline` (implemented by `MasterClock`: `consumeSeek`,
-  `seekPending`, `holding`, `awaitChange`, `serial(int)`, `start`, `signalDemuxResumed/Finished`, `frameDurationSec`)
-  and `Host` (implemented by `FFMediaPlayer.Callbacks`: `cached(URI)`, `vulkan(codecId)` → `Device(AVBufferRef ref,
-  boolean filters)`, `audio(type, channels, rate)` → `Pcm`, `duration(ms)`, `opened(decoder)`, `failed(cause)`);
-  records `Seek(targetMs, precise)`, `Device`, `Pcm`.
+- `FFDecoder(String group, URI uri, HttpHeaders headers, boolean video, AudioChoice audio, Timeline, Host)` (null
+  `audio` = no audio): one run per instance, used only by `FFMediaPlayer`. Nested `Timeline` (implemented by
+  `MasterClock`: `consumeSeek`, `seekPending`, `holding`, `awaitChange`, `serial(int)`, `start`,
+  `signalDemuxResumed/Finished`, `frameDurationSec`) and `Host` (implemented by `FFMediaPlayer.Callbacks`:
+  `cached(URI)`, `vulkan(codecId)` → `Device(AVBufferRef ref, boolean filters)`, `audio(type, channels, rate)` → `Pcm`,
+  `duration(ms)`, `opened(decoder)`, `failed(cause)`); records `Seek(targetMs, precise)`, `Device`, `Pcm`,
+  `AudioChoice(List<Track> tracks, int track, int stream, String language)` (`MAIN=-1`, `AUTO=-2`) and
+  `AudioStream(track, stream, name, lang)`.
+  - Audio pick (at open): origin = the picked one, else (`AUTO`) the separate track whose `lang` best `match`es the
+    language, else track 0 (the platform's original), else the main input; a track that fails to open falls back to the
+    main input. Inside an input, static `audioIndex(ctx, wanted, language, track)`: the wanted stream while it carries
+    the language, else language score ×2 + `AV_DISPOSITION_DEFAULT`, else the first. `match(preference, tag)` (package
+    visible): 2 same tag, 1 same primary language, 0 otherwise, comparing BCP 47 and ISO 639-2 through `Locale` ISO3
+    plus the `BIBLIOGRAPHIC` B→T table (`fre`→`fra`, ...); an HLS `"en,fr"` counts by its first. Names come from
+    `title`, then `comment` (an HLS rendition's `NAME`), then the `Track`; `und` is no language. `audioStreams()` (every
+    audio stream of the opened inputs, main first) and `audioStream()` are valid from `opened`. `reopenFormat()` keeps
+    the stream that played (same index while it keeps its language). ⚠ Every stream nobody decodes gets
+    `AVDISCARD_ALL` (`discard`), so an HLS master stops fetching the other renditions.
   - Threads (`ThreadTool.workerFactory("FFThread")`, named `<group>-demux|video|audio`); `decodeLock` guards decode
     thread creation/teardown. Queues: `PacketQueue` video 16 MiB / audio 8 MiB, `FrameQueue` video 3 / audio 9 slots.
     One static `INTERRUPT` callback (JavaCPP caps live callback instances at 10).
@@ -486,9 +498,10 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   - Video decode: `receive_frame` → GPU→RAM transfer when a non-Vulkan hwaccel (`HW_TRANSFER_FAIL_LIMIT=30`, perf window
     120 frames at 0.75 of the frame budget → software fallback `reinitVideoCodecSoftware()`) → optional `Placebo` →
     `queueVideo` (best-effort pts, 10 s discontinuity offset `PTS_DISCONTINUITY_SEC`). No `sws_scale` here.
-  - Audio decode: `swr` conversion to the engine's `Pcm` (passthrough when interleaved and same type/channels),
-    mid-stream format change rebuilds the resampler, `AUDIO_SAMPLES=2048` output slots, resampler flush when the delay
-    exceeds half a slot.
+  - Audio decode: `swr` conversion to the engine's `Pcm` in `engineLayout(layout, channels)` order (FFmpeg's default,
+    but quad for 4 channels: OpenAL's quad is FL FR BL BR, the default 4.0 is FL FR FC BC); passthrough when interleaved,
+    same type/channels and already in that order (an unspecified order counts as it); a mid-stream format change
+    rebuilds the resampler, `AUDIO_SAMPLES=2048` output slots, resampler flush when the delay exceeds half a slot.
   - Codec selection: fps from `avg_frame_rate` (plausible 1..1000) else `r_frame_rate`; hardware order: Vulkan on the
     engine's device/twin (only when `Device.filters()` or the format is YUV420P/YUVJ420P/YUV420P10LE), then CUDA, QSV,
     AMF, OHCODEC, D3D11VA, D3D12VA, VIDEOTOOLBOX, VAAPI, VDPAU, DRM, MEDIACODEC, VULKAN (own device, downloads), then
@@ -547,6 +560,12 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   CLOSE 75, NEAR 50, FAR 25, FAR_AWAY 10` %), `displayTime(ms)` (timed still), `tolerance(ms)`, `onStatus(listener)`,
   `sync(...)`, `release()` (disarm, release gfx then sfx, idempotent; ⚠ may block, never from a callback or playback
   thread). Sentinels `NO_SIZE=0`, `NO_TEXTURE=0L`, `NO_SOURCE=0`, `NO_DURATION=0L`.
+- Audio: `audioLanguage(String)` / `audioLanguage()` (final, BCP 47, null = no preference and never the system locale;
+  applies at the next open); `audioTracks()` (immutable `AudioTrack(track, stream, name, lang)` list: `track` =
+  `AudioTrack.MAIN` (-1) or the index in `source().audioTracks()`, `stream` = FFmpeg stream index or -1 while
+  `provisional()`), `audioTrack()`, `audioTrack(AudioTrack)` (hot switch; base: empty/null/false, FF overrides). Pick
+  order: explicit pick > language > original/default > first. Sinks: `sinks()` and `addSink(ALEngine.Mix)` delegate to
+  a spatial `ALEngine` (empty/null otherwise, IAE on a null mix).
 - Queries: `status()` + `waiting()/loading()/buffering()/paused()/playing()/stopped()/ended()/error()`, `time()`,
   `duration()`, `fps()`, `live()`, `canSeek()`, `canPlay()`, `canSpeed()`, `buffered()`, `texture()` (⚠ read fresh on
   every draw on the render thread; GL texture name or `VkImageView` handle, 0 = none), `width()/height()`
@@ -614,7 +633,8 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
 
 ### 7.5 `FFMediaPlayer`: audio/video/live through `FFDecoder`
 - `launch` (under `lifecycleLock`) starts one `FFThread-<n>-lifecycle` run: `clock.reset()`, LOADING, `open()` (quality
-  URL, first `audioTracks()` entry when an sfx exists, `new FFDecoder(...)`, `decoder.start()`), then the consumption
+  URL, an `FFDecoder.AudioChoice` when an sfx exists: the host's `audioPick` with its language, else `AUTO` with
+  `audioLanguage()`; `new FFDecoder(...)`, `decoder.start()`), then the consumption
   loop: `drainAudio` (drop stale serials, stop when more than `AUDIO_MAX_LEAD_SEC=0.5` ahead, `sfx.upload`, clock =
   audible position `pts + duration - sfx.pendingMs()`), one video frame per iteration (wait if `diff > 0.040 s`, drop if
   later than `skipThresholdMs`, adaptive render-debt drops, BUFFERING bypasses sync), `drainAudio` again, 1 ms sleep.
@@ -626,7 +646,12 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   fallback. Video drives the clock only without audio.
 - Starvation → BUFFERING after `STARVATION_THRESHOLD_MS=500` (never a seek); rate monitor warns once outside 0.9..1.1;
   EOF: zero frames decoded → ERROR "emitted no frames", stills honour `displayTime`, `repeat()` → `requestSeek(0)`,
-  else ENDED. `quality(q)` on a live run → `switchQuality()` (rebuild decoder, VOD re-seeks, LIVE restarts at the edge).
+  else ENDED. `quality(q)` or `audioTrack(AudioTrack)` on a live run sets `switchRequest` → `switchSource()` (rebuild
+  decoder, VOD re-seeks, LIVE restarts at the edge).
+- Audio tracks: the ctor lists one provisional entry (`stream=-1`) per separate track (none without an sfx); `opened`
+  rebuilds `audioTracks` from `decoder.audioStreams()` (main input's entries replaced on every open, an opened track's
+  streams replace its provisional entry for the player's life) and sets `audioTrack`. `audioPick` (volatile) survives
+  quality switches and restarts; a provisional pick equals the stream its origin resolved to.
 - `Callbacks` (`FFDecoder.Host`): `cached(uri)` → `NetworkCache.readFile` (skips `.m3u8`/`.mpd`, gated by
   `codecs.ffmpeg.cache` and `cacheMaxResponse`), `vulkan(codecId)` → `new FFDecoder.Device(vk.hwDevice(codecId),
   vk.placebo())` when `gfx instanceof VKEngine`, `audio(...)` negotiates channels/type with `SFXEngine`
@@ -765,8 +790,21 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   queue full), `flush()`, `pendingMs()` (audible position = last pts + duration − pending).
 - `ALEngine(buffers=DEFAULT_BUFFER_COUNT=8, spatial)`: needs the host's OpenAL context current on every mutating call
   (`ALC_EXT_thread_local_context` honoured); table mono/stereo U8/S16 (+FLT/DBL when the driver exposes them), 4/6/7/8
-  channels with `AL_EXT_MCFORMATS`, spatial mode = mono only; buffer queue with duration FIFO, `AL_PITCH` speed,
-  `pendingMs` via `AL_SOFT_source_latency`; AL errors throw `IllegalStateException`. No device reload or listener API.
+  channels with `AL_EXT_MCFORMATS` on a plain engine; buffer queue with duration FIFO, `AL_PITCH` speed, `pendingMs`
+  via `AL_SOFT_source_latency` on the primary; AL errors throw `IllegalStateException`. No device reload or listener
+  API. Every source starts dry and listener-relative (`clearSpatial`), plain ones included.
+  - Sinks (spatial only): `ALEngine.Sink` (inner class: `source()`, `mix()`/`mix(Mix)`, `primary()`, `released()`,
+    `spatialAudio([SpatialAudio])`, `release()`) and `ALEngine.Mix { MONO, LEFT, RIGHT }`; `sinks()` (immutable, primary
+    first, empty when plain or released), `addSink(Mix)` (null when plain or released). The spatial table is mono +
+    stereo: FFmpeg folds surround into stereo and `render(chunk, mix)` gives each sink one side or `(L + R) / 2` in the
+    same sample type (mono decodes pass as they are). Each sink owns its source and buffer pool; the FIFO
+    (`queuedDur`, `queuedPcm` copies of the chunks) is shared and popped by the primary's `reclaimProcessed`. `push`
+    queues on every sink or none (a failure after the first flushes); pause/play/stop/rewind are batch `*v` calls.
+    `align()` rebuilds every queue from `queuedPcm` at the primary's `AL_SAMPLE_OFFSET` (pause, drop/trim the played
+    head, `clear()`, requeue; the caller resumes): used by `addSink`, `Sink.mix(Mix)` on a stereo decode, and `play()`
+    when some sinks still play while others stopped. ⚠ `play()` reclaims processed buffers first (a STOPPED source
+    replays its whole queue). The primary cannot be released alone; `destroy` resets every sink's environment, then
+    deletes all sources.
 - `JSEngine(bufferMs=DEFAULT_BUFFER_MS=300)`: Java Sound `SourceDataLine`, mono/stereo U8/S16 only, no speed, no
   native handle, non-blocking writes (`available() < len` → false), `MASTER_GAIN` volume. Kept as core API; the app uses
   OpenAL only.
@@ -778,7 +816,9 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   Records `Resolution(Instant expires (null = never), List<Source> sources)`, `Source(MediaType type, URI thumbnail,
   Metadata metadata, HttpHeaders headers (frozen), List<Quality> qualities, List<Track> audioTracks, List<Track>
   subtitleTracks)`, `Quality(URI uri, int width, int height, float fps)` (0/0 = unknown; ⚠ report raw sizes, `MRL`
-  buckets). `PlatformResult(platform, title, thumbnail, uri)` = one search hit (raw page URL).
+  buckets). ⚠ `audioTracks` are separate audio inputs (one per language) listed with the original (or default) first:
+  a player without a language preference plays index 0. `PlatformResult(platform, title, thumbnail, uri)` = one search
+  hit (raw page URL).
 - `PlatformAPI` (static registry, no bootstrap needed): `fetch(URI)` probes CUSTOM newest first, then BUILTIN newest
   first (so `YouTube` → `YtDlp` → `Newgrounds` → `DTube` → ... → `WaterPlatform`); `register(Platform)`/`unregister(Platform)`
   (permanent for the process, clears the search cache), `platforms()`. Search: `search(query[, limit][, reSearch])`
@@ -798,7 +838,10 @@ requested, and SVG yields RGBA when RGBA is requested (everything else is conver
   durations in seconds converted to ms unless noted):
   `YtDlpPlatform` (sealed base, hosts soundcloud/snd.sc/facebook/fb.watch/instagram; runs `yt-dlp -J` out of
   process, `PROCESS_TIMEOUT_SECONDS=120`, playlists skip bad items, age limit gate, expiry `DataTool.expiry` else 4 h /
-  live 30 min) → `YouTubePlatform` (youtube.com/youtu.be, `--no-playlist` for video ids, bot-check retry with a
+  live 30 min; one audio `Track` per `language`, each its best `abr`/`tbr`, ranked by yt-dlp's `language_preference`
+  (YouTube: 10 original, 5 default, -1 other, -10 descriptive) then bitrate, named from the head of `format_note`
+  without `(default)`/`(original)`; untagged formats drop once any is tagged; audio-only sources take the top one)
+  → `YouTubePlatform` (youtube.com/youtu.be, `--no-playlist` for video ids, bot-check retry with a
   BotGuard `po_token` from `rustypipe-botguard` under `botGuardLock`, search `ytsearchN:`); `TwitchPlatform` (GQL with
   the public web client id, Usher HLS, clips, VOD, live; mature classification first and fail-closed; TTL 30 min;
   search keeps live channels only, those with a `stream`, through package-private `hits(data, limit)`);
@@ -1010,7 +1053,7 @@ Key locks: `MediaPlayer.tickLock` (armed/heard/TICKING) and the `statusEvents` m
 `NetworkCache` store monitor; `GLEngine` `HUBS`, `KITS`, `ringLock`, hub monitor; `VKEngine` engine monitor,
 `ctx.queueLock()` (shared with `VulkanRenderBackend`), `KITS`, `Kit.hwLock`, `VKEngine.class` (SPIR-V);
 `TxMediaPlayer` `clock` → `signals` ordering (`signals` is taken inside `clock`, never the reverse), `releaseLock`,
-`DECODE_PERMITS`; `ALEngine`/`JSEngine` engine monitor;
+`DECODE_PERMITS`; `ALEngine`/`JSEngine` engine monitor (`ALEngine.Sink` calls lock their engine);
 `PlatformAPI.SEARCH_LOCK`; `YouTubePlatform.botGuardLock`; `NetworkServer.Running` monitor + storage `FileLock`;
 `ExecutableBinary.class` + `.install.lock`. Atomics are limited to `AppContext.renderRequested` (CAS) and
 `ServerMediaPlayer.revision` (counter), both allowed exceptions of the AGENTS.md atomics rule; everything else is
@@ -1081,18 +1124,20 @@ System properties: `watermedia.engine`, `watermedia.app` (child JVM flag), `wate
   `HuffmanTableTest`, `VP8LosslessDecoderTest`, `FFmpegLogRoutingTest` (disabled); network `NetworkServerTest`,
   `NetworkServerGateTest`, `UploadStatusTest`; platform `PlatformApiTest`, `PlatformSearchTest`, `PlatformClaimTest`,
   `WaterPlatformTest`, offline handler tests `BiliBiliPlatformTest`, `KickPlatformTest`, `NewgroundsPlatformTest`,
-  `OdyseePlatformTest` (loopback proxy through `LocalHttp`), `TwitchPlatformTest` (search hits), `TwitterPlatformTest`; player `MediaPlayerBaseTest`, `MasterClockTest`, `MrlTest`, `NetworkCacheTest`, `PlayerStateTest`,
+  `OdyseePlatformTest` (loopback proxy through `LocalHttp`), `TwitchPlatformTest` (search hits), `TwitterPlatformTest`,
+  `YtDlpPlatformTest` (dubbed JSON offline); player `MediaPlayerBaseTest`, `MasterClockTest`, `MrlTest`, `NetworkCacheTest`, `PlayerStateTest`,
   `ServerMediaPlayerTest`, `FollowerClockTest`, `FollowerPlayerStateTest`, `StatusDeliveryTest`, `FFMediaPlayerTest`,
-  `FFControlContractTest`, `ColorimetryTest`, `Tx*Test` (animated, control contract, display time, frame step, frame
+  `FFControlContractTest`, `FFAudioTracksTest` (pick, language, hot switch), `ColorimetryTest`, `Tx*Test` (animated, control contract, display time, frame step, frame
   textures, release, scaling, static image), engines `GFXEngineTest`, `GLEngineTest`, `VKEngineTest`,
-  `HeadlessGFXEngineTest`, `AWTEngineTest`, `JFXEngineTest`, `SFXEngineTest`, `ALCapabilitiesTest`, `SpatialAudioTest`;
+  `HeadlessGFXEngineTest`, `AWTEngineTest`, `JFXEngineTest`, `SFXEngineTest`, `ALCapabilitiesTest`, `ALSinkTest`, `SpatialAudioTest`;
   util `HttpHeadersTest`, `NetRequestTest`, `MediaTypeTest`, `MediaQualityTest`, `PixelFormatTest`, `MathUtilTest`,
   `MathEasesTest`; bootstrap `AppBootstrapDependenciesTest`, `DefensiveCheckTest`, app `AppConfigTest`,
   `FramePlanTest`, `CanvasLiveTest`, `ListRowTest`, `ListViewInteractionTest`, `SpinnerTest`, `TextFieldTest`,
   `RenderEngineBatchTest`, `RenderEngineCacheTest`, `VulkanRenderBackendTest`; tools `DataToolTest`, `IOToolTest`,
   `JSONToolTest`, `M3UToolTest`, `ThreadToolTest`.
 - Support helpers (`org.watermedia.test.support`): `Fixtures` (resource paths and constants `MP4_H264`, `PNG_STATIC`,
-  `GIF_ANIMATED`, ...; `readAll`, `fileUri`, `wav`, `webm`), `MediaBootstrap` (`client()`, `ffmpegAvailable()` one shared
+  `GIF_ANIMATED`, ...; `readAll`, `fileUri`, `wav` (plain, or WAVE_FORMAT_EXTENSIBLE with a channel mask), `tone`,
+  `level`, `dubbed` (tagged multi-stream Matroska), `segment` (HLS-ready Matroska), `webm`), `MediaBootstrap` (`client()`, `ffmpegAvailable()` one shared
   bootstrap in a temp dir, `runProbe(type, dir, scenario, omitBindings)`), `PlayerWait` (`awaitStatus`, `awaitLoaded`,
   `awaitCondition`), `LocalHttp` (loopback `HttpServer`, `respond`, `respondRange`, `expiresIn`), `Origin` (range/
   endless/held origins), `LogCapture` (TRACE capture of a named logger), `OpenALContext` (skips without OpenAL),

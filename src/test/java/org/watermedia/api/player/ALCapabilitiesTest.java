@@ -23,7 +23,8 @@ public class ALCapabilitiesTest {
             final boolean multichannel = (mask & 4) != 0;
             for (final boolean spatial: new boolean[] { false, true }) {
                 final var channels = (SFXEngine.ChannelSupport[]) table.invoke(null, floating, doubles, multichannel, spatial);
-                assertEquals(spatial ? 1 : multichannel ? 6 : 2, channels.length);
+                // SPATIAL SINKS SPLIT A MONO OR STEREO DECODE, NEVER A SURROUND ONE
+                assertEquals(multichannel && !spatial ? 6 : 2, channels.length);
                 for (final var entry: channels) {
                     assertTrue(entry.supports(SampleType.U8));
                     assertTrue(entry.supports(SampleType.S16));

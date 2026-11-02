@@ -31,8 +31,12 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -240,8 +244,8 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         final List<Quality> variants = new ArrayList<>();
         final Set<Integer> seenHeights = new HashSet<>();
         JsonObject headerSource = null;
-        JsonObject bestAudio = null;
-        int bestAudioRate = -1;
+        // THE BEST AUDIO-ONLY FORMAT PER language ("" WITHOUT ONE), SO EVERY DUB OF A VIDEO SURVIVES
+        final Map<String, JsonObject> audios = new LinkedHashMap<>();
 
         // VIDEO-ONLY FIRST (BEST QUALITY, AUDIO CARRIED BY A TRACK), THEN MUXED FILLS REMAINING TIERS
         for (int pass = 0; pass < 2; pass++) {
@@ -255,11 +259,7 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
                 if (!hasVideo && !hasAudio) continue;
 
                 if (!hasVideo) {
-                    if (pass == 0) {
-                        final double abr = num(f, "abr");
-                        final int rate = (int) Math.round(abr > 0 ? abr : num(f, "tbr"));
-                        if (rate > bestAudioRate) { bestAudio = f; bestAudioRate = rate; }
-                    }
+                    if (pass == 0) audios.merge(Objects.requireNonNullElse(str(f, "language"), ""), f, (kept, next) -> bitrate(next) > bitrate(kept) ? next : kept);
                     continue;
                 }
                 final boolean videoOnly = !hasAudio;
@@ -275,16 +275,35 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
             }
         }
 
+        // ONE AUDIO PER LANGUAGE, THE ORIGINAL FIRST: yt-dlp RANKS LANGUAGES BY language_preference (YOUTUBE: 10 ORIGINAL, 5
+        // DEFAULT, -1 OTHER, -10 DESCRIPTIVE), THEN THE BITRATE BREAKS TIES. ONCE ANY FORMAT NAMES ITS LANGUAGE, ONE THAT NAMES
+        // NONE IS THE SAME AUDIO THROUGH ANOTHER PROTOCOL, NOT A TRACK OF ITS OWN
+        if (audios.size() > 1) audios.remove("");
+        final List<JsonObject> ranked = new ArrayList<>(audios.values());
+        ranked.sort(Comparator.comparingInt((final JsonObject a) -> intOr(a, "language_preference", -1))
+                .thenComparingDouble(YtDlpPlatform::bitrate).reversed());
+        final JsonObject bestAudio = ranked.isEmpty() ? null : ranked.get(0);
         final HttpHeaders headers = headers(headerSource != null ? headerSource : bestAudio, sourceUri);
 
         if (!variants.isEmpty()) {
-            final URI bestAudioUri = DataTool.uri(str(bestAudio, "url"));
-            final List<Track> audioTracks = bestAudioUri == null ? null : List.of(new Track(null, null, bestAudioUri));
+            final List<Track> audioTracks = new ArrayList<>();
+            for (final JsonObject audio: ranked) {
+                final URI url = DataTool.uri(str(audio, "url"));
+                if (url == null) continue;
+                // YOUTUBE STARTS format_note WITH THE TRACK'S DISPLAY NAME ("English (US) original (default), medium"): IT KEEPS
+                // THAT HEAD WITHOUT yt-dlp'S FLAGS, AND NONE FOR A NOTE THAT IS ONLY A QUALITY ("medium", AS WITHOUT LANGUAGES)
+                final String lang = str(audio, "language");
+                final String note = str(audio, "format_note");
+                String name = lang == null || note == null ? "" : note.split(",", 2)[0].strip();
+                while (name.endsWith(" (default)") || name.endsWith(" (original)")) name = name.substring(0, name.lastIndexOf(" (")).strip();
+                if (name.isEmpty() || DataTool.equalsAnyIgnoreCase(name, "ultralow", "low", "medium", "high")) name = null;
+                audioTracks.add(new Track(name, lang, url));
+            }
             final Source source = new Source(MediaType.VIDEO, thumbnail, metadata, headers, variants, audioTracks, subtitles);
             return new Result(expiry(variants.get(0).uri(), live), source);
         }
 
-        // AUDIO-ONLY (SOUNDCLOUD, YOUTUBE MUSIC)
+        // AUDIO-ONLY (SOUNDCLOUD, YOUTUBE MUSIC): THE ORIGINAL LANGUAGE'S BEST FORMAT
         if (bestAudio != null) {
             final URI audio = DataTool.uri(str(bestAudio, "url"));
             if (audio != null) {
@@ -307,6 +326,12 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         } catch (final IOException e) {
             return "";
         }
+    }
+
+    // A FORMAT'S AUDIO BITRATE, ELSE ITS TOTAL ONE; 0 WHEN yt-dlp KNOWS NEITHER, AS ON HLS AUDIO RENDITIONS
+    private static double bitrate(final JsonObject format) {
+        final double abr = num(format, "abr");
+        return abr > 0 ? abr : num(format, "tbr");
     }
 
     private static int heightOf(final JsonObject f) {

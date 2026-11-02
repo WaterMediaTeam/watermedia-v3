@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -102,7 +103,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // STATUS + SYNCHRONIZATION
     private final MasterClock clock = new MasterClock();
-    private volatile boolean qualityRequest = false;
+    private volatile boolean switchRequest = false; // A QUALITY OR AUDIO TRACK CHANGE THE CONSUMPTION LOOP APPLIES WITH A NEW DECODER
     private volatile boolean released = false; // ONCE release() RUNS THE ENGINES ARE FREED: REJECT NEW start()s
     private volatile boolean releaseDone; // SET ONCE THE ENGINES ARE FREED, SO A REPEATED release() IS A NO-OP
     private volatile boolean releasing; // A release() IS JOINING THE PIPELINE: STATUS DELIVERY WAITS FOR IT (SEE holdStatus)
@@ -116,6 +117,12 @@ public final class FFMediaPlayer extends MediaPlayer {
     // LIFECYCLE THREAD MAY BE CLOSING THE DECODER, AND READING ITS NATIVE STRUCTS THERE IS A USE-AFTER-FREE (JVM CRASH)
     private volatile boolean opened;
     private volatile long mediaDurationMs = NO_DURATION;
+
+    // AUDIO TRACKS: THE LIST HOSTS READ (IMMUTABLE, REPLACED WHOLE ON EACH OPEN BY THE DECODER'S DEMUX THREAD), THE TRACK THE
+    // CURRENT OR LAST RUN DECODES AND THE HOST'S PICK, WHICH SURVIVES QUALITY SWITCHES AND RESTARTS (null LETS THE DECODER CHOOSE)
+    private volatile List<AudioTrack> audioTracks;
+    private volatile AudioTrack audioTrack;
+    private volatile AudioTrack audioPick;
 
     // SWS DESTINATION FRAME (LAZY-INIT, ONLY WHEN sws_scale IS NEEDED)
     private AVFrame scaledFrame;
@@ -176,6 +183,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         synchronized (THREADS) {
             this.group = "FFThread-" + players++;
         }
+        // EVERY SEPARATE TRACK IS A PROVISIONAL ENTRY UNTIL A RUN OPENS IT; WITHOUT AN AUDIO ENGINE THERE IS NOTHING TO PICK
+        final List<AudioTrack> provisional = new ArrayList<>();
+        final List<Track> tracks = sfx == null ? List.of() : this.source.audioTracks();
+        for (int i = 0; i < tracks.size(); i++) provisional.add(new AudioTrack(i, -1, tracks.get(i).name(), tracks.get(i).lang()));
+        this.audioTracks = List.copyOf(provisional);
         // EVERY CLOCK TRANSITION (INCLUDING THE ONES THE PIPELINE MAKES INTERNALLY) REACHES THE LISTENERS, HELD WHILE A RELEASE
         // JOINS THE PIPELINE (SEE holdStatus)
         this.clock.listener((previous, current) -> {
@@ -331,9 +343,35 @@ public final class FFMediaPlayer extends MediaPlayer {
         super.quality(quality);
         final Thread lifecycle = this.lifecycleThread;
         if (lifecycle != null && lifecycle.isAlive() && !lifecycle.isInterrupted()) {
-            this.qualityRequest = true;
+            this.switchRequest = true;
             LOGGER.debug(IT, "Quality switch requested -> {}", quality);
         }
+    }
+
+    @Override
+    public List<AudioTrack> audioTracks() { return this.audioTracks; }
+
+    @Override
+    public AudioTrack audioTrack() { return this.audioTrack; }
+
+    @Override
+    public boolean audioTrack(final AudioTrack track) {
+        if (track == null) throw new IllegalArgumentException("Audio track cannot be null");
+        if (this.sfx == null || this.released) return false;
+        // ONLY AN ENTRY OF THE LIST COUNTS, FOUND BY ORIGIN AND STREAM; A PROVISIONAL PICK IS THE STREAM ITS ORIGIN PLAYS ONCE OPEN
+        AudioTrack entry = null;
+        for (final AudioTrack listed: this.audioTracks)
+            if (listed.track() == track.track() && listed.stream() == track.stream()) entry = listed;
+        final AudioTrack pick = this.audioPick;
+        final AudioTrack playing = this.audioTrack;
+        final AudioTrack current = pick == null || pick.provisional() && playing != null && playing.track() == pick.track() ? playing : pick;
+        if (entry == null || current != null && current.track() == entry.track() && current.stream() == entry.stream()) return false;
+        this.audioPick = entry;
+        // A RUNNING PIPELINE SWITCHES ON ITS LOOP; ANY OTHER PLAYS THE PICK FROM ITS NEXT START
+        final Thread lifecycle = this.lifecycleThread;
+        if (lifecycle != null && lifecycle.isAlive() && !lifecycle.isInterrupted()) this.switchRequest = true;
+        LOGGER.debug(IT, "Audio track switch requested -> {}", entry);
+        return true;
     }
 
     @Override
@@ -644,7 +682,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.totalSkippedFrames = 0;
             this.totalRenderedFrames = 0;
             double renderDebtSec = 0; // ADAPTIVE FRAME DROPPING: CONVERT+UPLOAD TIME OWED TO THE FRAME BUDGET
-            this.qualityRequest = false; // this.quality IS ALREADY THE LATEST; A STALE SWITCH WOULD REBUILD THE FRESH PIPELINE
+            this.switchRequest = false; // THE QUALITY AND AUDIO PICK ARE ALREADY THE LATEST; A STALE SWITCH WOULD REBUILD THE FRESH PIPELINE
             // STARVATION DETECTION
             long starvationStartMs = 0;
             long lastStarvationRecoveryMs = Long.MIN_VALUE / 4; // "NEVER", FAR ENOUGH FROM ANY MONOTONIC STAMP
@@ -662,9 +700,9 @@ public final class FFMediaPlayer extends MediaPlayer {
             while (!Thread.currentThread().isInterrupted()) {
                 final Status current = this.clock.status();
 
-                if (this.qualityRequest) {
-                    this.qualityRequest = false;
-                    this.switchQuality();
+                if (this.switchRequest) {
+                    this.switchRequest = false;
+                    this.switchSource();
                     if (this.clock.status() == Status.ERROR) break;
                     continue;
                 }
@@ -1057,14 +1095,17 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
     }
 
-    // OPENS THE DECODER OF THE CURRENT QUALITY, PLAYING THE SOURCE'S FIRST SEPARATE AUDIO TRACK WHEN IT HAS ONE
+    // OPENS THE DECODER OF THE CURRENT QUALITY AND AUDIO: THE HOST'S PICK, WHOSE LANGUAGE FINDS ITS STREAM AGAIN WHEN THE INDEX
+    // MOVED, ELSE THE DECODER'S CHOICE BY THE PREFERRED LANGUAGE AMONG THE SEPARATE TRACKS, OR THE MAIN INPUT'S STREAMS WITHOUT ANY
     private void open() {
         final URI uri = this.source.uri(this.quality);
         super.quality(this.source.qualityOf(uri));
         LOGGER.debug(IT, "Resolved quality {}", this.quality);
-        final List<Track> tracks = this.source.audioTracks();
-        final Track track = this.sfx != null && !tracks.isEmpty() ? tracks.get(0) : null;
-        final FFDecoder decoder = new FFDecoder(this.group, uri, track, this.source.headers(), this.gfx != null, this.sfx != null, this.clock, this.host);
+        final AudioTrack pick = this.audioPick;
+        final FFDecoder.AudioChoice audio = this.sfx == null ? null : pick == null
+                ? new FFDecoder.AudioChoice(this.source.audioTracks(), FFDecoder.AudioChoice.AUTO, -1, this.audioLanguage())
+                : new FFDecoder.AudioChoice(this.source.audioTracks(), pick.track(), pick.stream(), pick.lang() != null ? pick.lang() : this.audioLanguage());
+        final FFDecoder decoder = new FFDecoder(this.group, uri, this.source.headers(), this.gfx != null, audio, this.clock, this.host);
         this.decoder = decoder; // PUBLISHED BEFORE IT RUNS, SO abort() ALWAYS REACHES ITS NATIVE I/O
         decoder.start();
     }
@@ -1075,13 +1116,13 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (decoder != null) decoder.stop();
     }
 
-    // QUALITY SWITCH: A NEW DECODER RESUMES WHERE THE OLD ONE WAS; LIVE STREAMS START AT THE LIVE EDGE INSTEAD, WHERE A SEEK
-    // FAILS AND FEEDS BACK
-    private void switchQuality() throws InterruptedException {
+    // SOURCE SWITCH (QUALITY OR AUDIO TRACK): A NEW DECODER RESUMES WHERE THE OLD ONE WAS; LIVE STREAMS START AT THE LIVE EDGE
+    // INSTEAD, WHERE A SEEK FAILS AND FEEDS BACK
+    private void switchSource() throws InterruptedException {
         final long currentMs = this.clock.timeMs();
         final boolean live = this.live();
 
-        LOGGER.info(IT, "Switching quality to {} at {}ms (live={})", this.quality, currentMs, live);
+        LOGGER.info(IT, "Switching to quality {} and audio {} at {}ms (live={})", this.quality, this.audioPick, currentMs, live);
 
         // THE OLD DECODER STAYS IN THE FIELD UNTIL open() REPLACES IT, AS IN THE LIFECYCLE'S TEARDOWN
         this.clock.transition(Status.BUFFERING);
@@ -1105,7 +1146,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         // SETS PLAYING AT PTS=0 AND STARVATION DETECTION FIRES BEFORE FRAMES ARRIVE
         if (live) this.clock.transition(Status.BUFFERING);
 
-        LOGGER.info(IT, "Successfully switched quality to {}", this.quality);
+        LOGGER.info(IT, "Switched to quality {} and audio {}", this.quality, this.audioTrack);
     }
 
     // SWS CONTEXT (FORMAT CONVERSION AND/OR DOWNSCALE)
@@ -1337,6 +1378,27 @@ public final class FFMediaPlayer extends MediaPlayer {
                     player.lastFrameHeight = targetH;
                     player.lastColor = color;
                 }
+            }
+
+            // AUDIO TRACKS: THE STREAMS THIS DECODER FOUND REPLACE THEIR ORIGIN'S ENTRIES, THE MAIN INPUT'S ALWAYS (A QUALITY SWITCH
+            // MAY CHANGE THEM); EVERY OTHER ORIGIN KEEPS WHAT AN EARLIER RUN FOUND OR ITS PROVISIONAL ENTRY. RUNS NEVER OVERLAP, AND
+            // EACH DEMUX THREAD STARTS AFTER THE PREVIOUS ONE WAS JOINED, SO THESE WRITES NEVER RACE
+            if (player.sfx != null) {
+                final List<FFDecoder.AudioStream> found = decoder.audioStreams();
+                final List<AudioTrack> previous = player.audioTracks;
+                final List<AudioTrack> next = new ArrayList<>();
+                for (int origin = AudioTrack.MAIN; origin < player.source.audioTracks().size(); origin++) {
+                    final int size = next.size();
+                    for (final FFDecoder.AudioStream stream: found)
+                        if (stream.track() == origin) next.add(new AudioTrack(origin, stream.stream(), stream.name(), stream.lang()));
+                    if (origin == AudioTrack.MAIN || next.size() > size) continue;
+                    for (final AudioTrack kept: previous)
+                        if (kept.track() == origin) next.add(kept);
+                }
+                final FFDecoder.AudioStream playing = decoder.audioStream();
+                player.audioTracks = List.copyOf(next);
+                player.audioTrack = playing == null ? null : new AudioTrack(playing.track(), playing.stream(), playing.name(), playing.lang());
+                LOGGER.debug(IT, "Audio track {} of {}", player.audioTrack, player.audioTracks);
             }
 
             player.opened = true;

@@ -70,6 +70,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     final SFXEngine sfx;
     // WRITTEN BY THE CALLER AND BY THE PIPELINE THREADS WHEN THEY RESOLVE THE REAL RENDITION
     volatile MediaQuality quality = WaterMediaConfig.player.defaultQuality;
+    // BCP 47 TAG THE AUDIO PICK PREFERS AT EACH OPEN; null FOR NONE (NEVER THE SYSTEM LOCALE)
+    private volatile String audioLanguage;
 
     // AUDIO PROPERTIES
     private volatile boolean repeat;
@@ -246,6 +248,50 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /** Returns the selected quality, possibly {@link MediaQuality#UNKNOWN} until the source dimensions are known. */
     public MediaQuality quality() { return this.quality; }
 
+    /**
+     * Sets the language this player prefers when it picks its audio, as a BCP 47 tag such as {@code "es-MX"} or
+     * {@code "en"}. The same tag wins first, then the same primary language ({@code "es-MX"} takes {@code "es-419"},
+     * {@code "es"} or the {@code "spa"} a container carries), then the source's original or default audio, then the first.
+     * It applies from the next start or source switch, never switching by itself, and an {@link #audioTrack(AudioTrack)}
+     * pick outranks it.
+     * @param language the preferred language tag, or null (or blank) for no preference, the default
+     */
+    public final void audioLanguage(final String language) {
+        this.audioLanguage = language == null || language.isBlank() ? null : language.strip();
+    }
+
+    /** Returns the preferred audio language set by {@link #audioLanguage(String)}, or null when none. */
+    public final String audioLanguage() { return this.audioLanguage; }
+
+    /**
+     * Lists the audio this player can switch to: one entry per audio stream FFmpeg found in each input a run opened, the main
+     * input's first, then those of each separate track of {@link MRL.Source#audioTracks()} in order. A separate track no run
+     * opened yet is a single {@link AudioTrack#provisional() provisional} entry built from the track itself, so the list never
+     * opens every track up front; once a run opens it, its real streams take that place for the life of the player. The main
+     * input's entries are refreshed on every open, since a quality switch may change them. Empty on players without an
+     * audio engine and on image and server players.
+     * @return an immutable snapshot, safe to read from any thread
+     */
+    public List<AudioTrack> audioTracks() { return List.of(); }
+
+    /** Returns the entry of {@link #audioTracks()} the current or last run decodes, or null before the first open and when it decodes no audio. */
+    public AudioTrack audioTrack() { return null; }
+
+    /**
+     * Switches the audio to an entry of {@link #audioTracks()}, matched by its {@link AudioTrack#track() origin} and
+     * {@link AudioTrack#stream() stream}. A running player rebuilds its pipeline at the current time (a live stream restarts
+     * at its edge) and any other plays it from its next start. The pick outranks {@link #audioLanguage(String)} and survives
+     * quality switches and restarts.
+     * @param track the entry to play
+     * @return true if the pick changed, false when the entry is unknown or already picked, or the player has no audio
+     *         engine, cannot switch audio or was released
+     * @throws IllegalArgumentException if {@code track} is null
+     */
+    public boolean audioTrack(final AudioTrack track) {
+        if (track == null) throw new IllegalArgumentException("Audio track cannot be null");
+        return false;
+    }
+
     /** The media reference this player renders. */
     public MRL mrl() { return this.mrl; }
     /** Index of the {@link MRL.Source} within {@link #mrl()} this player renders. */
@@ -333,8 +379,22 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /** Returns the audio source handle of the {@link SFXEngine} (an OpenAL source id, 0 on Java Sound), or {@link #NO_SOURCE} without audio. */
     public int audioSource() { return this.sfx != null ? this.sfx.source() : NO_SOURCE; }
 
-    /** Whether the audio engine was created for mono spatial playback. */
+    /** Whether the audio engine plays through positional mono sinks, see {@link #sinks()}. */
     public boolean spatial() { return this.sfx != null && this.sfx.spatial(); }
+
+    /** Returns the sinks of a spatial OpenAL engine, the primary first (it owns {@link #audioSource()}); empty without one or after release. */
+    public List<ALEngine.Sink> sinks() { return this.sfx instanceof final ALEngine al ? al.sinks() : List.of(); }
+
+    /**
+     * Adds a sink playing {@code mix} of this player's audio, in step with the others, on the host's sound executor
+     * with the engine's OpenAL context current; see {@link ALEngine#addSink(ALEngine.Mix)}.
+     * @return the new sink, or null without a spatial OpenAL engine or after release
+     * @throws IllegalArgumentException when {@code mix} is null
+     */
+    public ALEngine.Sink addSink(final ALEngine.Mix mix) {
+        if (mix == null) throw new IllegalArgumentException("A sink needs a mix");
+        return this.sfx instanceof final ALEngine al ? al.addSink(mix) : null;
+    }
 
     /** Last applied spatial state, or null when no spatial environment is active. */
     public SFXEngine.SpatialAudio spatialAudio() { return this.sfx != null ? this.sfx.spatialAudio() : null; }
@@ -985,6 +1045,24 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
         /** Returns the percentage (1-100) of the maximum video dimensions this level keeps. */
         public int percent() { return this.percent; }
+    }
+
+    /**
+     * One audio a player can play, as {@link MediaPlayer#audioTracks()} lists it.
+     *
+     * @param track  where the audio comes from: {@link #MAIN} for the main input, else the index of the separate track in
+     *               {@link MRL.Source#audioTracks()}
+     * @param stream the FFmpeg stream index inside that input, or -1 while no run opened it ({@link #provisional()})
+     * @param name   display name from the stream's title or the separate track, or null when neither gives one
+     * @param lang   language tag from the stream (BCP 47, or the ISO 639-2 code a container carries) or the separate track,
+     *               or null when unknown
+     */
+    public record AudioTrack(int track, int stream, String name, String lang) {
+        /** Origin of the audio streams the main input carries. */
+        public static final int MAIN = -1;
+
+        /** Whether this entry stands for a separate track no run opened yet, whose streams are still unknown. */
+        public boolean provisional() { return this.stream < 0; }
     }
 
     /**

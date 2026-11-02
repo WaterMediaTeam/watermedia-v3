@@ -202,12 +202,12 @@ public final class PlayerAPI {
         return new ALEngine(buffers);
     }
 
-    /** Creates an OpenAL engine; spatial mode negotiates mono and accepts host sound-thread updates. */
+    /** Creates an OpenAL engine; spatial mode plays through positional mono sinks ({@link ALEngine#addSink}) and accepts host sound-thread updates. */
     public static ALEngine alEngine(final boolean spatial) {
         return new ALEngine(ALEngine.DEFAULT_BUFFER_COUNT, spatial);
     }
 
-    /** Creates an OpenAL engine with explicit buffer depth and optional mono spatial playback. */
+    /** Creates an OpenAL engine with explicit buffer depth (per sink) and optional spatial playback through sinks. */
     public static ALEngine alEngine(final int buffers, final boolean spatial) {
         return new ALEngine(buffers, spatial);
     }

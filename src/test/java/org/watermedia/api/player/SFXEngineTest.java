@@ -339,7 +339,7 @@ public class SFXEngineTest {
         }
 
         @Test
-        @DisplayName("format() accepts exactly the channel-support table the context's extensions build, mono alone in spatial mode")
+        @DisplayName("format() accepts exactly the channel-support table the context's extensions build, mono and stereo alone in spatial mode")
         void formatFollowsTheTable() {
             final ALCapabilities caps = AL.getCapabilities();
             for (final boolean spatial: new boolean[] { false, true }) {
@@ -368,9 +368,9 @@ public class SFXEngineTest {
                     }
                     for (int channels = 1; channels <= 8; channels++) {
                         assertFalse(engine.format(SampleType.S32, channels, RATE_HZ), "OpenAL has no native S32 PCM");
-                        if (spatial && channels > 1) assertNull(engine.channelSupport(channels), "a spatial source is mono");
+                        if (spatial && channels > 2) assertNull(engine.channelSupport(channels), "spatial sinks split a stereo decode at most");
                     }
-                    if (spatial) assertEquals(1, engine.closestChannelSupport(8).channels(), "a spatial source downmixes every layout to mono");
+                    if (spatial) assertEquals(2, engine.closestChannelSupport(8).channels(), "a spatial engine folds every layout into stereo");
                     // A REFUSAL NEVER REACHES THE BACKEND, SO THE LAST ACCEPTED LAYOUT STAYS
                     assertTrue(engine.format(SampleType.S16, 1, RATE_HZ));
                     assertFalse(engine.format(SampleType.S32, 1, RATE_HZ));
@@ -446,23 +446,26 @@ public class SFXEngineTest {
             final ALEngine engine = PlayerAPI.alEngine(2);
             final ByteBuffer pcm = ByteBuffer.allocateDirect(64);
             final Field nativeFormat = ALEngine.class.getDeclaredField("alFormat");
-            final Field free = ALEngine.class.getDeclaredField("freeCount");
+            final Field primary = ALEngine.class.getDeclaredField("primary");
+            final Field freeCount = ALEngine.Sink.class.getDeclaredField("freeCount");
             nativeFormat.setAccessible(true);
-            free.setAccessible(true);
+            primary.setAccessible(true);
+            freeCount.setAccessible(true);
+            final Object free = primary.get(engine);
             try {
                 assertTrue(engine.format(SampleType.S16, 1, RATE_HZ));
                 nativeFormat.setInt(engine, 0x7FFFFFFF);
                 assertThrows(IllegalStateException.class, () -> engine.upload(pcm));
-                assertEquals(2, free.getInt(engine));
+                assertEquals(2, freeCount.getInt(free));
                 assertEquals(0, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED));
                 assertTrue(engine.format(SampleType.S16, 1, RATE_HZ));
                 assertTrue(engine.upload(pcm));
                 // A LAYOUT CHANGE WITH QUEUED AUDIO FLUSHES THE QUEUE, SO THE NEXT UPLOAD IS ACCEPTED
                 assertTrue(engine.format(SampleType.S16, 2, RATE_HZ));
-                assertEquals(2, free.getInt(engine));
+                assertEquals(2, freeCount.getInt(free));
                 assertEquals(0, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED));
                 assertTrue(engine.upload(pcm));
-                assertEquals(1, free.getInt(engine));
+                assertEquals(1, freeCount.getInt(free));
                 assertEquals(1, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED));
                 engine.flush();
                 assertTrue(engine.format(SampleType.S16, 1, RATE_HZ));

@@ -260,8 +260,8 @@ public class SpatialAudioTest {
         }
 
         @Test
-        @DisplayName("FFmpeg downmixes stereo to mono before a spatial upload")
-        void ffmpegDownmixesStereoBeforeOpenALUpload(@TempDir final Path directory) throws Exception {
+        @DisplayName("A spatial player keeps the stereo decode and queues a mono buffer on every sink")
+        void spatialPlayerQueuesMonoBuffersOnEverySink(@TempDir final Path directory) throws Exception {
             assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
             final int samples = 48_000;
             final ByteBuffer pcm = ByteBuffer.allocate(samples * 4).order(ByteOrder.LITTLE_ENDIAN);
@@ -281,8 +281,9 @@ public class SpatialAudioTest {
                 assertTrue(player.start());
                 assertTrue(PlayerWait.awaitCondition(() -> AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED) > 0, 15_000),
                         () -> "Audio failed to queue: " + player.status());
+                final ALEngine.Sink right = engine.addSink(ALEngine.Mix.RIGHT);
                 player.pause(true);
-                assertEquals(1, engine.channels());
+                assertEquals(2, engine.channels(), "FFmpeg keeps the stereo decode for the sinks to split");
                 boolean uploaded = false;
                 for (final int buffer: engine.buffers()) {
                     if (AL10.alGetBufferi(buffer, AL10.AL_SIZE) > 0) {
@@ -291,6 +292,9 @@ public class SpatialAudioTest {
                     }
                 }
                 assertTrue(uploaded);
+                assertEquals(List.of(engine.sinks().get(0), right), engine.sinks());
+                assertTrue(AL10.alGetSourcei(right.source(), AL10.AL_BUFFERS_QUEUED) > 0, "the new sink joined the queued audio");
+                assertEquals(1, AL10.alGetBufferi(AL10.alGetSourcei(right.source(), AL10.AL_BUFFER), AL10.AL_CHANNELS));
                 assertEquals(AL10.AL_NO_ERROR, AL10.alGetError());
             } finally {
                 player.release();

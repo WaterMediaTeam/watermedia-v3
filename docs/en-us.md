@@ -203,6 +203,22 @@ Every boolean control answers one question: did this call change the player's ow
 
 `Status.allows(next)` tells whether a pause, resume, buffering, end, stop or failure can move a status straight to `next`. Starting, seeking and restarting take their own paths: a player leaves `LOADING` only when its pipeline opens (or it stops or fails), a seek on `ENDED` or `STOPPED` restarts it, and `STOPPED` allows no direct move.
 
+### Audio tracks and languages
+
+Dubbed videos and files with several audio streams play their original (or default) audio unless you ask for something else. Platforms list a source's separate audio tracks with the original first, and inside a file or an HLS stream the stream flagged as default wins.
+
+```java
+player.audioLanguage("es-MX"); // PREFERRED FROM THE NEXT START; null CLEARS IT
+for (final MediaPlayer.AudioTrack track: player.audioTracks()) {
+    if ("es".equals(track.lang())) player.audioTrack(track); // SWITCHES RIGHT AWAY ON A RUNNING PLAYER
+}
+```
+
+- The pick order is: your `audioTrack(...)` pick, then `audioLanguage(...)`, then the original or default audio, then the first one. A language tag matches the same tag first, then the same language, so `es-MX` takes `es-419`, `es` or the `spa` a file carries. There's no automatic language: without `audioLanguage(...)` the original plays, never an automatic dub.
+- `audioTracks()` lists one `AudioTrack(track, stream, name, lang)` per audio stream: the main input's first, then each separate track of `source().audioTracks()`. `track` is `AudioTrack.MAIN` or the separate track's index and `stream` is the _FFmpeg_ stream index inside it.
+- A separate track that hasn't played yet shows as one `provisional()` entry (`stream` is -1) built from the platform's name and language, so listing never opens every dub up front. Once it plays, its real streams take its place. The list is an immutable snapshot any thread can read.
+- `audioTrack(track)` returns `true` when the pick changed. A running player rebuilds its pipeline at the current time (a live stream restarts at its edge), and the pick survives quality switches and restarts. `audioTrack()` returns what plays now. Image and server players, and players without an audio engine, list nothing.
+
 ## HTTPS trust
 
 HTTPS playback needs the native verification capabilities of the bundled build or a compatible custom one. _FFmpeg_ verifies certificate chains and DNS/IP identities against a snapshot of the JVM truststore taken at startup.
@@ -243,7 +259,7 @@ The standalone app renders with Vulkan unless the user picks OpenGL; when Vulkan
 | `PlayerAPI.jfxEngine(onFrame)` | Needs a JavaFX 13+ runtime; bind the engine's image to your UI. Without it the factory throws `IllegalStateException` instead of a linkage error. |
 | `PlayerAPI.headlessEngine()` / `headlessEngine(preload)` | Captures uploaded frames without a graphics context, handy for tests and image processing. Like every engine and media player it only exists on a client; a dedicated server can only create `ServerMediaPlayer` clocks. |
 | `PlayerAPI.alEngine()` | The OpenAL context is already current and stays valid on the threads doing audio work. |
-| `PlayerAPI.alEngine(true)` | Same OpenAL contract, advertising mono output for positional sound. |
+| `PlayerAPI.alEngine(true)` | Same OpenAL contract, playing through positional mono sinks (stereo pairs and extra speakers). |
 | `PlayerAPI.jsEngine()` | A Java Sound device and line are available; no positional audio. |
 
 Spatial audio uses `SpatialAudio` and an optional environment processor; see [spatial audio and Sound Physics Remastered](#spatial-audio-and-sound-physics-remastered) for the adapter, source and context ownership, update cadence and feature gates.
@@ -269,9 +285,9 @@ OpenAL needs its original context current on every thread driving the player, th
 
 ## Spatial audio and Sound Physics Remastered
 
-Create an OpenAL engine with `PlayerAPI.alEngine(true)` before building the player. Spatial mode is fixed for the engine's lifetime: its channel table advertises mono, so _FFmpeg_'s resampler downmixes stereo and surround sources before upload. The plain `alEngine()` factory negotiates channels normally without forcing mono, though layouts the device can't play may still be converted to the closest channel count. Java Sound returns `false` from spatial updates and exposes no native source.
+Create an OpenAL engine with `PlayerAPI.alEngine(true)` before building the player. Spatial mode is fixed for the engine's lifetime: _FFmpeg_ folds stereo and surround sources into stereo (the center channel reaches both sides, mono sources stay mono) and the engine plays them through sinks, which are positional mono sources. The plain `alEngine()` factory plays every channel on one dry, listener-relative source, though layouts the device can't play may still be converted to the closest channel count. Java Sound returns `false` from spatial updates and exposes no native source.
 
-The engine starts with dry, listener-relative mono audio. Pass a `SpatialAudio` state to place it in the world, or `null` to go back to dry, listener-relative playback (decoding stays mono). Volume, mute, speed, pause and sync don't depend on spatial settings.
+The engine starts with one sink, the primary, playing dry, listener-relative `Mix.MONO` audio. Pass a `SpatialAudio` state to place it in the world, or `null` to go back to dry, listener-relative playback. Volume, mute, speed, pause and sync don't depend on spatial settings and reach every sink.
 
 ```java
 import org.watermedia.api.player.SFXEngine.SpatialAudio;
@@ -291,6 +307,30 @@ Create the engine, update it and release it on the host's sound executor, with t
 - `FFMediaPlayer.release()` interrupts and joins its playback pipeline before deleting the audio source; run it before the context is destroyed, never as a callback from that pipeline.
 
 `SpatialAudio` validates finite positions OpenAL floats can hold, `0 < referenceDistance < maxDistance` and a finite, non-negative rolloff; zero rolloff turns distance attenuation off. The host's distance model decides how these parameters attenuate audio, and the API never touches the global distance model, the listener or the source velocity, so `maxDistance` isn't a universal silence radius under every OpenAL model.
+
+### Sinks: stereo pairs and extra speakers
+
+One decode feeds every sink of a spatial engine, so a stereo picture or a speaker placed somewhere else costs no second download or decode. Each sink plays one `ALEngine.Mix` of the decoded audio: `LEFT`, `RIGHT` or `MONO` (the average of both). A mono source plays the same samples on every mix, so a stereo pair never goes silent on mono media.
+
+```java
+// A STEREO PICTURE: THE PRIMARY TURNS INTO THE LEFT EDGE AND A NEW SINK PLAYS THE RIGHT ONE
+final ALEngine.Sink left = player.sinks().get(0);
+left.mix(ALEngine.Mix.LEFT);
+final ALEngine.Sink right = player.addSink(ALEngine.Mix.RIGHT);
+left.spatialAudio(new SpatialAudio(leftX, y, z, 8.0f, 64.0f, 1.0f, false, environment));
+right.spatialAudio(new SpatialAudio(rightX, y, z, 8.0f, 64.0f, 1.0f, false, environment));
+
+// A SPEAKER BLOCK: ONE MORE SINK AT ITS OWN POSITION, RELEASED WHEN THE BLOCK GOES AWAY
+final ALEngine.Sink speaker = player.addSink(ALEngine.Mix.MONO);
+speaker.spatialAudio(new SpatialAudio(speakerX, speakerY, speakerZ, 8.0f, 64.0f, 1.0f, false, environment));
+speaker.release();
+```
+
+- The primary sink owns `player.audioSource()`. It drives the media clock and lives as long as the engine; its `release()` returns `false`. `player.sinks()` lists the primary first, and both `sinks()` and `addSink(...)` give an empty list or `null` without a spatial OpenAL engine.
+- Every sink queues the same samples, and play, pause, flush, speed and volume run as one batch on all of them, so a stereo pair stays sample aligned. Adding a sink or changing a mix during playback rebuilds every queue on the primary's sample, which pauses the sinks for about one mixer update.
+- Each sink has its own `spatialAudio(...)`: the environment adapter gets that sink's source in `process` and `reset`, and `sink.release()` resets it before deleting the source. Releasing the player releases every sink.
+- Add, change and release sinks on the host's sound executor with the engine's context current, like every other spatial update. Their queries (`source()`, `mix()`, `spatialAudio()`, `released()`) need no context.
+- A host may adopt a sink's source into its own sound system and write its gain, pitch and position, but it must never play, queue, unqueue or delete it: the engine owns its transport and buffers. A new sink starts at the engine's current gain and pitch.
 
 ### Sound Physics Remastered adapter
 
@@ -371,7 +411,7 @@ Verified _Sound Physics_ prerequisites and related settings in the reviewed sour
 
 ### Verification
 
-`SpatialAudioTest` covers invalid state rejection, Java Sound refusal, real OpenAL source coordinates and attenuation, callback origin restore, effect clearing, exception handling, mismatched contexts and late calls after release. It also generates a stereo WAV and plays it through `FFMediaPlayer`, checking for mono PCM in real OpenAL buffers. The device tests need an OpenAL output device, and the decode case also needs the _FFmpeg_ natives.
+`SpatialAudioTest` covers invalid state rejection, Java Sound refusal, real OpenAL source coordinates and attenuation, callback origin restore, effect clearing, exception handling, mismatched contexts and late calls after release. It also generates a stereo WAV and plays it through `FFMediaPlayer`, checking that the stereo decode reaches every sink as mono PCM in real OpenAL buffers. `ALSinkTest` covers the sink set, the mixes in every sample type, batched controls, backpressure, sinks joining on the primary's sample and underrun recovery. The device tests need an OpenAL output device, and the decode case also needs the _FFmpeg_ natives.
 
 An in-game check is still pending for how occlusion and reflections sound, host sound-executor serialization, listener movement, category settings and device reloads: the reference sources were reviewed, but this checkout has no runnable Minecraft plus _Sound Physics_ environment.
 

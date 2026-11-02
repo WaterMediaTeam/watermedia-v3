@@ -203,6 +203,22 @@ Cada control booleano responde una sola pregunta: ¿esta llamada cambió el esta
 
 `Status.allows(next)` dice si una pausa, reanudación, almacenamiento en búfer, final, detención o falla puede llevar un estado directo a `next`. Arrancar, hacer seek y reiniciar van por su propio camino: un reproductor sale de `LOADING` sólo cuando abre su tubería (o se detiene o falla), un seek en `ENDED` o `STOPPED` lo reinicia, y `STOPPED` no permite ningún movimiento directo.
 
+### Pistas de audio e idiomas
+
+Los videos doblados y los archivos con varios streams de audio reproducen su audio original (o el predeterminado) a menos que pidas otro. Las plataformas listan las pistas de audio separadas de una fuente con la original primero, y dentro de un archivo o un stream HLS gana el stream marcado como predeterminado.
+
+```java
+player.audioLanguage("es-MX"); // PREFERIDO DESDE EL SIGUIENTE ARRANQUE; null LO QUITA
+for (final MediaPlayer.AudioTrack track: player.audioTracks()) {
+    if ("es".equals(track.lang())) player.audioTrack(track); // CAMBIA AL MOMENTO EN UN REPRODUCTOR QUE CORRE
+}
+```
+
+- El orden de elección es: tu elección con `audioTrack(...)`, luego `audioLanguage(...)`, luego el audio original o predeterminado y al final el primero. Una etiqueta de idioma coincide primero con la misma etiqueta y luego con el mismo idioma, así que `es-MX` toma `es-419`, `es` o el `spa` que trae un archivo. No hay idioma automático: sin `audioLanguage(...)` suena el original, nunca un doblaje automático.
+- `audioTracks()` lista un `AudioTrack(track, stream, name, lang)` por cada stream de audio: primero los de la entrada principal y luego los de cada pista separada de `source().audioTracks()`. `track` es `AudioTrack.MAIN` o el índice de la pista separada, y `stream` es el índice del stream de _FFmpeg_ dentro de ella.
+- Una pista separada que todavía no ha sonado aparece como una sola entrada `provisional()` (`stream` vale -1) armada con el nombre y el idioma de la plataforma, así que listar nunca abre todos los doblajes por adelantado. Cuando suena, sus streams reales toman su lugar. La lista es una instantánea inmutable que cualquier hilo puede leer.
+- `audioTrack(track)` devuelve `true` cuando la elección cambió. Un reproductor que corre reconstruye su tubería en el tiempo actual (una transmisión en vivo vuelve a su borde), y la elección sobrevive a los cambios de calidad y a los reinicios. `audioTrack()` devuelve lo que suena ahora. Los reproductores de imágenes y de servidor, y los que no tienen motor de audio, no listan nada.
+
 ## HTTPS y certificados
 
 La reproducción HTTPS necesita las capacidades nativas de verificación de la compilación incluida o de una personalizada compatible. _FFmpeg_ verifica las cadenas de certificados y las identidades DNS/IP contra una copia del truststore de la JVM tomada al arrancar.
@@ -243,7 +259,7 @@ La app independiente dibuja con Vulkan salvo que el usuario elija OpenGL; cuando
 | `PlayerAPI.jfxEngine(onFrame)` | Necesita un runtime de JavaFX 13+; enlaza la imagen del motor con tu interfaz. Sin él, la fábrica lanza `IllegalStateException` en lugar de un error de enlace. |
 | `PlayerAPI.headlessEngine()` / `headlessEngine(preload)` | Captura los cuadros subidos sin contexto gráfico, útil para pruebas y procesamiento de imágenes. Como todo motor y reproductor multimedia, sólo existe en un cliente; un servidor dedicado sólo puede crear relojes `ServerMediaPlayer`. |
 | `PlayerAPI.alEngine()` | El contexto OpenAL ya está activo y sigue válido en los hilos que hacen trabajo de audio. |
-| `PlayerAPI.alEngine(true)` | El mismo contrato de OpenAL, anunciando salida mono para sonido posicional. |
+| `PlayerAPI.alEngine(true)` | El mismo contrato de OpenAL, reproduciendo con sinks: fuentes mono posicionales (pares estéreo y bocinas extra). |
 | `PlayerAPI.jsEngine()` | Hay un dispositivo y una línea de Java Sound disponibles; sin audio posicional. |
 
 El audio espacial usa `SpatialAudio` y un procesador de entorno opcional; consulta [audio espacial y Sound Physics Remastered](#audio-espacial-y-sound-physics-remastered) para el adaptador, la propiedad de la fuente y el contexto, la frecuencia de actualización y las condiciones que habilitan los efectos.
@@ -269,9 +285,9 @@ OpenAL necesita su contexto original activo en cada hilo que opera el reproducto
 
 ## Audio espacial y Sound Physics Remastered
 
-Crea un motor OpenAL con `PlayerAPI.alEngine(true)` antes de construir el reproductor. El modo espacial queda fijo durante toda la vida del motor: su tabla de canales anuncia mono, así que el remuestreador de _FFmpeg_ mezcla a mono las fuentes estéreo y envolventes antes de subirlas. La fábrica `alEngine()` normal negocia los canales como siempre sin forzar mono, aunque los formatos que el dispositivo no puede reproducir aún pueden convertirse a la cantidad de canales más cercana. Java Sound devuelve `false` en las actualizaciones espaciales y no expone una fuente nativa.
+Crea un motor OpenAL con `PlayerAPI.alEngine(true)` antes de construir el reproductor. El modo espacial queda fijo durante toda la vida del motor: _FFmpeg_ lleva las fuentes estéreo y envolventes a estéreo (el canal central llega a ambos lados y las fuentes mono siguen en mono) y el motor las reproduce con sinks, que son fuentes mono posicionales. La fábrica `alEngine()` normal reproduce todos los canales en una sola fuente seca y relativa al oyente, aunque los formatos que el dispositivo no puede reproducir aún pueden convertirse a la cantidad de canales más cercana. Java Sound devuelve `false` en las actualizaciones espaciales y no expone una fuente nativa.
 
-El motor arranca con audio mono seco y relativo al oyente. Pasa un estado `SpatialAudio` para ubicarlo en el mundo, o `null` para volver a la reproducción seca y relativa al oyente (la decodificación sigue en mono). El volumen, el silencio, la velocidad, la pausa y la sincronización no dependen de la configuración espacial.
+El motor arranca con un solo sink, el primario, que reproduce audio `Mix.MONO` seco y relativo al oyente. Pasa un estado `SpatialAudio` para ubicarlo en el mundo, o `null` para volver a la reproducción seca y relativa al oyente. El volumen, el silencio, la velocidad, la pausa y la sincronización no dependen de la configuración espacial y llegan a todos los sinks.
 
 ```java
 import org.watermedia.api.player.SFXEngine.SpatialAudio;
@@ -291,6 +307,30 @@ Crea el motor, actualízalo y libéralo en el ejecutor de sonido del host, con e
 - `FFMediaPlayer.release()` interrumpe y espera a su tubería de reproducción antes de borrar la fuente de audio; córrelo antes de destruir el contexto, nunca como callback de esa tubería.
 
 `SpatialAudio` valida posiciones finitas que quepan en un float de OpenAL, `0 < referenceDistance < maxDistance` y un rolloff finito y no negativo; un rolloff de cero apaga la atenuación por distancia. El modelo de distancia del host decide cómo atenúan el audio estos parámetros, y la API nunca cambia el modelo global de distancia, el oyente ni la velocidad de la fuente, así que `maxDistance` no es un radio de silencio universal en todos los modelos de OpenAL.
+
+### Sinks: pares estéreo y bocinas extra
+
+Una sola decodificación alimenta todos los sinks de un motor espacial, así que una imagen estéreo o una bocina puesta en otro lugar no cuesta una segunda descarga ni decodificación. Cada sink reproduce una `ALEngine.Mix` del audio decodificado: `LEFT`, `RIGHT` o `MONO` (el promedio de ambos). Una fuente mono suena igual en todas las mezclas, así que un par estéreo nunca se queda callado con medios mono.
+
+```java
+// UNA IMAGEN ESTÉREO: EL PRIMARIO PASA AL BORDE IZQUIERDO Y UN SINK NUEVO REPRODUCE EL DERECHO
+final ALEngine.Sink left = player.sinks().get(0);
+left.mix(ALEngine.Mix.LEFT);
+final ALEngine.Sink right = player.addSink(ALEngine.Mix.RIGHT);
+left.spatialAudio(new SpatialAudio(leftX, y, z, 8.0f, 64.0f, 1.0f, false, environment));
+right.spatialAudio(new SpatialAudio(rightX, y, z, 8.0f, 64.0f, 1.0f, false, environment));
+
+// UN BLOQUE BOCINA: UN SINK MÁS EN SU PROPIA POSICIÓN, LIBERADO CUANDO EL BLOQUE DESAPARECE
+final ALEngine.Sink speaker = player.addSink(ALEngine.Mix.MONO);
+speaker.spatialAudio(new SpatialAudio(speakerX, speakerY, speakerZ, 8.0f, 64.0f, 1.0f, false, environment));
+speaker.release();
+```
+
+- El sink primario es dueño de `player.audioSource()`. Lleva el reloj del medio y vive lo mismo que el motor; su `release()` devuelve `false`. `player.sinks()` lista primero al primario, y `sinks()` y `addSink(...)` dan una lista vacía o `null` sin un motor OpenAL espacial.
+- Todos los sinks encolan las mismas muestras, y reproducir, pausar, vaciar, la velocidad y el volumen corren en un solo lote sobre todos, así que un par estéreo queda alineado muestra por muestra. Agregar un sink o cambiar una mezcla durante la reproducción reconstruye todas las colas sobre la muestra del primario, lo que pausa los sinks cerca de una actualización del mezclador.
+- Cada sink tiene su propio `spatialAudio(...)`: el adaptador de entorno recibe la fuente de ese sink en `process` y `reset`, y `sink.release()` lo reinicia antes de borrar la fuente. Liberar el reproductor libera todos los sinks.
+- Agrega, cambia y libera sinks en el ejecutor de sonido del host con el contexto del motor activo, como cualquier otra actualización espacial. Sus consultas (`source()`, `mix()`, `spatialAudio()`, `released()`) no necesitan contexto.
+- Un host puede adoptar la fuente de un sink en su propio sistema de sonido y escribir su ganancia, tono y posición, pero nunca debe reproducirla, encolar, desencolar ni borrarla: el motor es dueño de su transporte y sus búferes. Un sink nuevo arranca con la ganancia y el tono actuales del motor.
 
 ### Adaptador para Sound Physics Remastered
 
@@ -371,7 +411,7 @@ Requisitos de _Sound Physics_ y ajustes relacionados, verificados en el código 
 
 ### Verificación
 
-`SpatialAudioTest` cubre el rechazo de estados inválidos, la negativa de Java Sound, las coordenadas y la atenuación de una fuente OpenAL real, la restauración del origen antes del callback, la limpieza de efectos, el manejo de excepciones, los contextos que no coinciden y las llamadas tardías después de liberar. También genera un WAV estéreo y lo reproduce con `FFMediaPlayer`, revisando que haya PCM mono en búferes reales de OpenAL. Las pruebas de dispositivo necesitan una salida OpenAL, y el caso de decodificación también necesita los nativos de _FFmpeg_.
+`SpatialAudioTest` cubre el rechazo de estados inválidos, la negativa de Java Sound, las coordenadas y la atenuación de una fuente OpenAL real, la restauración del origen antes del callback, la limpieza de efectos, el manejo de excepciones, los contextos que no coinciden y las llamadas tardías después de liberar. También genera un WAV estéreo y lo reproduce con `FFMediaPlayer`, revisando que la decodificación estéreo llegue a cada sink como PCM mono en búferes reales de OpenAL. `ALSinkTest` cubre el conjunto de sinks, las mezclas en cada tipo de muestra, los controles en lote, la contrapresión, los sinks que se unen sobre la muestra del primario y la recuperación tras un vaciado de búfer. Las pruebas de dispositivo necesitan una salida OpenAL, y el caso de decodificación también necesita los nativos de _FFmpeg_.
 
 Todavía falta una prueba dentro del juego para cómo suenan la oclusión y las reflexiones, la serialización del ejecutor de sonido del host, el movimiento del oyente, los ajustes de categoría y las recargas del dispositivo: el código de referencia se revisó, pero este checkout no tiene un entorno ejecutable de Minecraft con _Sound Physics_.
 

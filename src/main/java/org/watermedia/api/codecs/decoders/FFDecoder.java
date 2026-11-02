@@ -26,7 +26,13 @@ import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.MissingResourceException;
 import java.util.Objects;
 import java.util.concurrent.ThreadFactory;
 
@@ -38,7 +44,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  * FFmpeg demuxer and decoders of one input. A demux thread opens the input, then fills one packet queue per stream; a
  * video and an audio thread decode them into the {@link #videoFrames()} and {@link #audioFrames()} queues a player
  * consumes. Hardware decoders download to RAM, except on the player's Vulkan device, whose frames stay on the GPU and
- * may pass through libplacebo. The player's clock drives it through a {@link Timeline}; one decoder serves one run.
+ * may pass through libplacebo. The audio is the stream an {@link AudioChoice} picks in a separate track or in the main
+ * input, and the streams nobody decodes are discarded. The player's clock drives it through a {@link Timeline}; one
+ * decoder serves one run.
  */
 public final class FFDecoder {
     private static final Marker IT = MarkerManager.getMarker(FFDecoder.class.getSimpleName());
@@ -93,13 +101,20 @@ public final class FFDecoder {
             AV_HWDEVICE_TYPE_VULKAN         // VULKAN
     };
 
+    // LANGUAGES: THE ISO 639-2/B CODES CONTAINERS MAY CARRY, MAPPED TO THE 639-2/T ONES Locale REPORTS
+    private static final Map<String, String> BIBLIOGRAPHIC = Map.ofEntries(
+            Map.entry("alb", "sqi"), Map.entry("arm", "hye"), Map.entry("baq", "eus"), Map.entry("bur", "mya"),
+            Map.entry("chi", "zho"), Map.entry("cze", "ces"), Map.entry("dut", "nld"), Map.entry("fre", "fra"),
+            Map.entry("geo", "kat"), Map.entry("ger", "deu"), Map.entry("gre", "ell"), Map.entry("ice", "isl"),
+            Map.entry("mac", "mkd"), Map.entry("mao", "mri"), Map.entry("may", "msa"), Map.entry("per", "fas"),
+            Map.entry("rum", "ron"), Map.entry("slo", "slk"), Map.entry("tib", "bod"), Map.entry("wel", "cym"));
+
     // INPUT
     private final String group;
     private final URI uri;
-    private final Track track;
     private final HttpHeaders headers;
     private final boolean videoWanted;
-    private final boolean audioWanted;
+    private final AudioChoice audioChoice; // null: NO AUDIO WANTED
     private final Timeline timeline;
     private final Host host;
 
@@ -124,6 +139,9 @@ public final class FFDecoder {
     private boolean useAudioTrack;
     private double videoTimeBase;
     private double audioTimeBase;
+    // EVERY AUDIO STREAM OF THE OPENED INPUTS AND THE ONE DECODING, READ BY THE PLAYER ONCE THE INPUT OPENED
+    private volatile List<AudioStream> audioStreams = List.of();
+    private volatile AudioStream audioStream;
 
     // THREADS: THE DECODERS ARE (RE)STARTED BY THE DEMUXER'S SEEK PATH, SO THEIR CREATION AND TEARDOWN SHARE decodeLock: TWO
     // DECODERS ON ONE CODEC CONTEXT CRASH NATIVELY
@@ -174,15 +192,14 @@ public final class FFDecoder {
     private boolean audioUnusableWarned;
     private boolean audioChangeWarned;
 
-    /** Prepares a decoder of the wanted streams of {@code uri}, with its threads named after {@code group} and the audio of {@code track} when not null; nothing opens until {@link #start()}. */
-    public FFDecoder(final String group, final URI uri, final Track track, final HttpHeaders headers, final boolean video,
-                     final boolean audio, final Timeline timeline, final Host host) {
+    /** Prepares a decoder of {@code uri}, its video when {@code video} and the audio {@code audio} chooses when not null, with its threads named after {@code group}; nothing opens until {@link #start()}. */
+    public FFDecoder(final String group, final URI uri, final HttpHeaders headers, final boolean video, final AudioChoice audio,
+                     final Timeline timeline, final Host host) {
         this.group = group;
         this.uri = uri;
-        this.track = track;
         this.headers = headers;
         this.videoWanted = video;
-        this.audioWanted = audio;
+        this.audioChoice = audio;
         this.timeline = timeline;
         this.host = host;
     }
@@ -249,6 +266,11 @@ public final class FFDecoder {
     public boolean video() { return this.videoStreamIndex >= 0; }
     /** Returns whether an audio stream decodes. */
     public boolean audio() { return this.audioStreamIndex >= 0; }
+
+    /** Returns every audio stream of the inputs this decoder opened, the main input's first; empty without audio wanted, valid from {@code opened}. */
+    public List<AudioStream> audioStreams() { return this.audioStreams; }
+    /** Returns the audio stream that decodes, or null when none does; valid from {@code opened}. */
+    public AudioStream audioStream() { return this.audioStream; }
 
     /** Returns whether a decode thread is still running. */
     public boolean decoding() {
@@ -318,8 +340,8 @@ public final class FFDecoder {
         av_dict_set(options, "max_delay", "5000000", 0);
     }
 
-    // OPENS THE SEPARATE AUDIO TRACK AND TAKES ITS FIRST AUDIO STREAM; FALSE WHEN IT CANNOT PLAY OR AN ABORT CUT THE OPEN SHORT
-    boolean initAudioTrack(final Track track) {
+    // OPENS THE SEPARATE AUDIO TRACK AND PICKS ITS STREAM (SEE audioIndex); FALSE WHEN IT CANNOT PLAY OR AN ABORT CUT THE OPEN SHORT
+    boolean initAudioTrack(final Track track, final int stream, final String language) {
         final URI trackUri = track.uri();
         if (trackUri == null) {
             LOGGER.error(IT, "Audio track {} has no URI", track.name());
@@ -352,14 +374,12 @@ public final class FFDecoder {
             return false;
         }
 
-        for (int i = 0; i < this.trackFormatContext.nb_streams(); i++) {
-            final AVStream stream = this.trackFormatContext.streams(i);
-            if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO) {
-                this.audioStreamIndex = i;
-                this.audioTimeBase = av_q2d(stream.time_base());
-                LOGGER.debug(IT, "Audio track opened: {}", trackUrl);
-                return true;
-            }
+        final int index = audioIndex(this.trackFormatContext, stream, language, track);
+        if (index >= 0) {
+            this.audioStreamIndex = index;
+            this.audioTimeBase = av_q2d(this.trackFormatContext.streams(index).time_base());
+            LOGGER.debug(IT, "Audio track opened: {}", trackUrl);
+            return true;
         }
 
         LOGGER.error(IT, "No audio stream found in audio track: {}", trackUrl);
@@ -942,7 +962,7 @@ public final class FFDecoder {
 
         slot.frame.format(this.audioOutputAvFormat);
         slot.frame.ch_layout().nb_channels(this.audioOutputChannels);
-        av_channel_layout_default(slot.frame.ch_layout(), this.audioOutputChannels);
+        engineLayout(slot.frame.ch_layout(), this.audioOutputChannels);
         slot.frame.sample_rate(this.audioOutputSampleRate);
         slot.frame.nb_samples(AUDIO_SAMPLES);
 
@@ -986,7 +1006,7 @@ public final class FFDecoder {
         av_frame_unref(slot.frame);
         slot.frame.format(this.audioOutputAvFormat);
         slot.frame.ch_layout().nb_channels(this.audioOutputChannels);
-        av_channel_layout_default(slot.frame.ch_layout(), this.audioOutputChannels);
+        engineLayout(slot.frame.ch_layout(), this.audioOutputChannels);
         slot.frame.sample_rate(this.audioOutputSampleRate);
         slot.frame.nb_samples(AUDIO_SAMPLES);
 
@@ -1042,7 +1062,7 @@ public final class FFDecoder {
         final AVChannelLayout outputLayout = new AVChannelLayout();
         try {
             avutil.av_channel_layout_copy(inputLayout, frame.ch_layout());
-            avutil.av_channel_layout_default(outputLayout, this.audioOutputChannels);
+            engineLayout(outputLayout, this.audioOutputChannels);
 
             avutil.av_opt_set_chlayout(fresh, "in_chlayout", inputLayout, 0);
             avutil.av_opt_set_int(fresh, "in_sample_rate", rate, 0);
@@ -1258,11 +1278,8 @@ public final class FFDecoder {
         // RE-RESOLVE STREAM INDICES: A REOPENED INPUT MAY EXPOSE STREAMS IN A DIFFERENT ORDER (COMMON WITH HLS), AND THE CODEC
         // CONTEXTS ARE KEPT, SO THE NEW STREAMS MUST MATCH THE CODECS THEY WERE OPENED FOR
         int newVideoIndex = -1;
-        int newAudioIndex = -1;
-        for (int i = 0; i < this.formatContext.nb_streams(); i++) {
-            final int codecType = this.formatContext.streams(i).codecpar().codec_type();
-            if (codecType == avutil.AVMEDIA_TYPE_VIDEO && newVideoIndex < 0) newVideoIndex = i;
-            else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && newAudioIndex < 0) newAudioIndex = i;
+        for (int i = 0; i < this.formatContext.nb_streams() && newVideoIndex < 0; i++) {
+            if (this.formatContext.streams(i).codecpar().codec_type() == avutil.AVMEDIA_TYPE_VIDEO) newVideoIndex = i;
         }
         if (this.videoCodecContext != null) {
             if (newVideoIndex < 0 || this.formatContext.streams(newVideoIndex).codecpar().codec_id() != this.videoCodecContext.codec_id()) {
@@ -1274,13 +1291,19 @@ public final class FFDecoder {
             this.videoTimeBase = av_q2d(this.videoStream.time_base());
         }
         if (!this.useAudioTrack && this.audioCodecContext != null) {
+            // THE AUDIO THAT PLAYED: ITS INDEX WHILE IT KEEPS ITS LANGUAGE, ELSE THAT LANGUAGE, THE DEFAULT OR THE FIRST STREAM
+            final AudioStream played = this.audioStream;
+            final int newAudioIndex = audioIndex(this.formatContext, played == null ? -1 : played.stream(), played == null ? null : played.lang(), null);
             if (newAudioIndex < 0 || this.formatContext.streams(newAudioIndex).codecpar().codec_id() != this.audioCodecContext.codec_id()) {
                 LOGGER.error(IT, "reopenFormat: audio stream missing or codec mismatch (index={})", newAudioIndex);
                 return false;
             }
+            final AVStream stream = this.formatContext.streams(newAudioIndex);
             this.audioStreamIndex = newAudioIndex;
-            this.audioTimeBase = av_q2d(this.formatContext.streams(newAudioIndex).time_base());
+            this.audioTimeBase = av_q2d(stream.time_base());
+            this.audioStream = new AudioStream(AudioChoice.MAIN, newAudioIndex, tag(stream, "title", tag(stream, "comment", null)), tag(stream, "language", null));
         }
+        discard(this.formatContext, this.videoStreamIndex, this.useAudioTrack ? -1 : this.audioStreamIndex);
 
         if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
         if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
@@ -1320,34 +1343,60 @@ public final class FFDecoder {
             final String fmtName = this.formatContext.iformat() != null ? this.formatContext.iformat().name().getString() : "";
             this.hls = url.contains(".m3u8") || fmtName.contains("hls");
 
-            for (int i = 0; i < this.formatContext.nb_streams(); i++) {
+            for (int i = 0; i < this.formatContext.nb_streams() && this.videoWanted && this.videoStreamIndex < 0; i++) {
                 final AVStream stream = this.formatContext.streams(i);
-                final int codecType = stream.codecpar().codec_type();
-
-                if (codecType == avutil.AVMEDIA_TYPE_VIDEO && this.videoStreamIndex < 0 && this.videoWanted) {
-                    this.videoStreamIndex = i;
-                    this.videoStream = stream;
-                    this.videoTimeBase = av_q2d(stream.time_base());
-                } else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0 && this.audioWanted && this.track == null) {
-                    this.audioStreamIndex = i;
-                    this.audioTimeBase = av_q2d(stream.time_base());
-                }
+                if (stream.codecpar().codec_type() != avutil.AVMEDIA_TYPE_VIDEO) continue;
+                this.videoStreamIndex = i;
+                this.videoStream = stream;
+                this.videoTimeBase = av_q2d(stream.time_base());
             }
 
-            if (this.audioWanted && this.track != null) {
-                this.useAudioTrack = this.initAudioTrack(this.track);
-                if (!this.useAudioTrack) {
-                    // A stop()/RESTART CUT THE TRACK OPEN SHORT: THE WHOLE SETUP IS ABANDONED, THERE IS NOTHING TO FALL BACK TO
-                    if (this.aborted) return false;
-                    LOGGER.warn(IT, "Audio track failed to open, falling back to main audio stream");
-                    for (int i = 0; i < this.formatContext.nb_streams(); i++) {
-                        final AVStream stream = this.formatContext.streams(i);
-                        if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0) {
-                            this.audioStreamIndex = i;
-                            this.audioTimeBase = av_q2d(stream.time_base());
-                        }
+            // AUDIO: THE PICKED ORIGIN, ELSE THE SEPARATE TRACK OF THE PREFERRED LANGUAGE, ELSE THE FIRST ONE (THE PLATFORM'S
+            // ORIGINAL), ELSE THE MAIN INPUT. A TRACK THAT FAILS TO OPEN FALLS BACK TO THE MAIN INPUT'S OWN AUDIO
+            final AudioChoice choice = this.audioChoice;
+            int origin = AudioChoice.MAIN;
+            if (choice != null) {
+                final List<Track> tracks = choice.tracks();
+                origin = choice.track();
+                if (origin < AudioChoice.MAIN || origin >= tracks.size()) {
+                    origin = AudioChoice.MAIN;
+                    int best = -1;
+                    for (int i = 0; i < tracks.size(); i++) {
+                        final int score = match(choice.language(), tracks.get(i).lang());
+                        if (score <= best) continue;
+                        best = score;
+                        origin = i;
                     }
                 }
+                // THE PICKED STREAM BELONGS TO THE PICKED ORIGIN ONLY
+                final int wanted = origin == choice.track() ? choice.stream() : -1;
+                if (origin >= 0) {
+                    this.useAudioTrack = this.initAudioTrack(tracks.get(origin), wanted, choice.language());
+                    // A stop()/RESTART CUT THE TRACK OPEN SHORT: THE WHOLE SETUP IS ABANDONED, THERE IS NOTHING TO FALL BACK TO
+                    if (!this.useAudioTrack && this.aborted) return false;
+                    if (!this.useAudioTrack) LOGGER.warn(IT, "Audio track failed to open, falling back to main audio stream");
+                }
+                if (!this.useAudioTrack) {
+                    this.audioStreamIndex = audioIndex(this.formatContext, origin == AudioChoice.MAIN ? wanted : -1, choice.language(), null);
+                    if (this.audioStreamIndex >= 0) this.audioTimeBase = av_q2d(this.formatContext.streams(this.audioStreamIndex).time_base());
+                }
+
+                // EVERY AUDIO STREAM OF THE OPENED INPUTS: NAMED BY ITS TITLE (THE HLS DEMUXER KEEPS A RENDITION'S NAME AS ITS
+                // comment) AND TAGGED BY ITS LANGUAGE, A SEPARATE TRACK FILLING WHAT ITS STREAMS LEAVE UNSAID
+                final List<AudioStream> streams = new ArrayList<>();
+                final AVFormatContext[] inputs = { this.formatContext, this.useAudioTrack ? this.trackFormatContext : null };
+                for (int n = 0; n < inputs.length; n++) {
+                    if (inputs[n] == null) continue;
+                    final Track track = n == 0 ? null : tracks.get(origin);
+                    for (int i = 0; i < inputs[n].nb_streams(); i++) {
+                        final AVStream stream = inputs[n].streams(i);
+                        if (stream.codecpar().codec_type() != avutil.AVMEDIA_TYPE_AUDIO) continue;
+                        streams.add(new AudioStream(n == 0 ? AudioChoice.MAIN : origin, i,
+                                tag(stream, "title", tag(stream, "comment", track == null ? null : track.name())),
+                                tag(stream, "language", track == null ? null : track.lang())));
+                    }
+                }
+                this.audioStreams = List.copyOf(streams);
             }
 
             final boolean videoInit = this.initVideo();
@@ -1378,6 +1427,13 @@ public final class FFDecoder {
 
             if (!videoInit && !audioInit)
                 throw new IllegalStateException("Video and Audio failed to initialize");
+
+            // ONLY THE DECODED STREAMS ARE READ: THE DEMUXER SKIPS THE REST, AND AN HLS MASTER STOPS FETCHING EVERY OTHER RENDITION
+            discard(this.formatContext, this.videoStreamIndex, this.useAudioTrack ? -1 : this.audioStreamIndex);
+            if (this.useAudioTrack) discard(this.trackFormatContext, this.audioStreamIndex, -1);
+            final int decoded = this.useAudioTrack ? origin : AudioChoice.MAIN;
+            for (final AudioStream stream: this.audioStreams)
+                if (stream.track() == decoded && stream.stream() == this.audioStreamIndex) this.audioStream = stream;
             return true;
         } catch (final Exception e) {
             // A SETUP CUT SHORT BY stop()/RESTART IS NOT A FAILURE WORTH RECORDING
@@ -1563,7 +1619,7 @@ public final class FFDecoder {
     }
 
     private boolean initAudio() {
-        if (!this.audioWanted || this.audioStreamIndex < 0)
+        if (this.audioChoice == null || this.audioStreamIndex < 0)
             return false;
 
         final AVFormatContext audioContext = this.useAudioTrack ? this.trackFormatContext : this.formatContext;
@@ -1623,8 +1679,13 @@ public final class FFDecoder {
         // THIS FORMAT (THE ENGINE FORMAT CANNOT CHANGE)
         this.audioOutputAvFormat = FFTool.avSampleFormat(target.type());
 
-        // PASSTHROUGH: AN INTERLEAVED SOURCE THE ENGINE TAKES AS IT IS
-        if (!srcPlanar && target.type() == srcType && target.channels() == srcChannels) {
+        // PASSTHROUGH: AN INTERLEAVED SOURCE THE ENGINE TAKES AS IT IS, ALREADY IN THE ENGINE'S CHANNEL ORDER (AN UNSPECIFIED ORDER
+        // COUNTS AS IT, AS THE RESAMPLER WOULD ASSUME THE DEFAULT ONE TOO)
+        final AVChannelLayout engineOrder = new AVChannelLayout();
+        engineLayout(engineOrder, target.channels());
+        final boolean ordered = codecParams.ch_layout().order() == AV_CHANNEL_ORDER_UNSPEC || av_channel_layout_compare(codecParams.ch_layout(), engineOrder) == 0;
+        av_channel_layout_uninit(engineOrder);
+        if (!srcPlanar && target.type() == srcType && target.channels() == srcChannels && ordered) {
             this.audioPassthrough = true;
             LOGGER.debug(IT, "Audio passthrough: type={}, channels={}, rate={}", srcType, srcChannels, this.audioOutputSampleRate);
             return true;
@@ -1653,7 +1714,7 @@ public final class FFDecoder {
                 avutil.av_channel_layout_default(inputLayout, 2);
             }
 
-            avutil.av_channel_layout_default(outputLayout, this.audioOutputChannels);
+            engineLayout(outputLayout, this.audioOutputChannels);
 
             avutil.av_opt_set_chlayout(this.swrContext, "in_chlayout", inputLayout, 0);
             avutil.av_opt_set_int(this.swrContext, "in_sample_rate", this.audioOutputSampleRate, 0);
@@ -1769,10 +1830,74 @@ public final class FFDecoder {
         LOGGER.debug(IT, "Decoder threading: {} threads for {}x{}", threads, width, height);
     }
 
+    // THE CHANNEL ORDER THE ENGINES PLAY FOR channels: FFMPEG'S DEFAULT LAYOUT, BUT QUAD FOR 4, BECAUSE OPENAL'S QUAD IS FL FR BL BR
+    // WHILE THE DEFAULT 4.0 (FL FR FC BC) WOULD PLAY THE CENTER FROM THE BACK LEFT
+    private static void engineLayout(final AVChannelLayout layout, final int channels) {
+        if (channels == 4) av_channel_layout_from_mask(layout, AV_CH_LAYOUT_QUAD);
+        else av_channel_layout_default(layout, channels);
+    }
+
     // LOGS THE FIRST UNEXPECTED send/receive FAILURE OF A DECODE LOOP WITH ITS CODEC AND NATIVE DETAIL
     private static void logCodecError(final String media, final String operation, final AVCodecContext codec, final int stream, final int code) {
         LOGGER.warn(IT, "{} decoder {} failed: codec={}, stream={}, code={} ({})",
                 media, operation, FFTool.string(avcodec_get_name(codec.codec_id()), "unknown"), stream, code, FFTool.error(code));
+    }
+
+    // THE AUDIO STREAM OF ctx TO DECODE, -1 WITHOUT ONE: wanted WHEN IT IS AN AUDIO STREAM OF language (ANY WITHOUT ONE), ELSE THE
+    // BEST BY language (THE SAME TAG, THEN THE SAME LANGUAGE), THEN THE DEFAULT DISPOSITION, THEN THE ORDER. A STREAM WITHOUT
+    // A language TAG TAKES THE ONE OF track, THE SEPARATE TRACK ctx OPENED
+    private static int audioIndex(final AVFormatContext ctx, final int wanted, final String language, final Track track) {
+        int best = -1;
+        int bestScore = -1;
+        for (int i = 0; i < ctx.nb_streams(); i++) {
+            final AVStream stream = ctx.streams(i);
+            if (stream.codecpar().codec_type() != avutil.AVMEDIA_TYPE_AUDIO) continue;
+            final int match = match(language, tag(stream, "language", track == null ? null : track.lang()));
+            if (i == wanted && (language == null || match > 0)) return i;
+            // A LANGUAGE MATCH OUTRANKS THE DEFAULT FLAG, WHICH ONLY BREAKS TIES
+            final int score = match * 2 + ((stream.disposition() & avformat.AV_DISPOSITION_DEFAULT) != 0 ? 1 : 0);
+            if (score <= bestScore) continue;
+            best = i;
+            bestScore = score;
+        }
+        return best;
+    }
+
+    // THE NON-BLANK METADATA VALUE OF key ("und", AN UNDETERMINED LANGUAGE, COUNTS AS NONE), ELSE fallback
+    private static String tag(final AVStream stream, final String key, final String fallback) {
+        final AVDictionaryEntry entry = av_dict_get(stream.metadata(), key, null, 0);
+        final String value = entry == null || FFTool.isNull(entry.value()) ? null : entry.value().getString(StandardCharsets.UTF_8).strip();
+        return value == null || value.isEmpty() || value.equalsIgnoreCase("und") ? fallback : value;
+    }
+
+    // DISCARDS EVERY STREAM OF ctx BUT THE DECODED ONES (-1 KEEPS NONE)
+    private static void discard(final AVFormatContext ctx, final int video, final int audio) {
+        for (int i = 0; i < ctx.nb_streams(); i++) ctx.streams(i).discard(i == video || i == audio ? AVDISCARD_DEFAULT : AVDISCARD_ALL);
+    }
+
+    // HOW WELL tag MATCHES preference: 2 THE SAME TAG, 1 THE SAME LANGUAGE, 0 NEITHER OR ONE IS MISSING. BCP 47 TAGS ("es-419")
+    // AND THE ISO 639-2 CODES CONTAINERS CARRY ("spa", "fre") MEET AS ISO 639-2/T; AN HLS "en,fr" PAIR COUNTS BY ITS FIRST
+    static int match(final String preference, final String tag) {
+        final String wanted = iso(preference);
+        final String found = iso(tag);
+        if (wanted == null || found == null) return 0;
+        if (wanted.equals(found)) return 2;
+        return wanted.split("-", 2)[0].equals(found.split("-", 2)[0]) ? 1 : 0;
+    }
+
+    // tag LOWERCASED WITH ITS PRIMARY LANGUAGE AS ISO 639-2/T ("es-MX" → "spa-mx", "fre" → "fra"), OR NULL WHEN IT NAMES NONE
+    private static String iso(final String tag) {
+        if (tag == null) return null;
+        final String first = tag.split(",", 2)[0].strip().replace('_', '-').toLowerCase(Locale.ROOT);
+        final int dash = first.indexOf('-');
+        final String primary = dash < 0 ? first : first.substring(0, dash);
+        if (primary.length() < 2 || primary.length() > 3 || primary.equals("und")) return null;
+        String code = BIBLIOGRAPHIC.getOrDefault(primary, primary);
+        if (primary.length() == 2) {
+            try { code = Locale.forLanguageTag(primary).getISO3Language(); }
+            catch (final MissingResourceException unknown) { code = primary; }
+        }
+        return dash < 0 ? code : code + first.substring(dash);
     }
 
     // ==========================================================================
@@ -1824,4 +1949,22 @@ public final class FFDecoder {
 
     /** Interleaved PCM layout an audio engine takes. */
     public record Pcm(SampleType type, int channels) {}
+
+    /**
+     * The audio a player wants from a run: the source's separate {@code tracks}, the origin to play ({@link #MAIN}, a track
+     * index or {@link #AUTO}), the {@code stream} inside it (-1 for the best one) and the {@code language} the pick matches.
+     */
+    public record AudioChoice(List<Track> tracks, int track, int stream, String language) {
+        /** Origin of the main input's own audio. */
+        public static final int MAIN = -1;
+        /** Origin left to the decoder: the separate track of the language, else the first one, else the main input. */
+        public static final int AUTO = -2;
+
+        public AudioChoice {
+            tracks = tracks == null ? List.of() : List.copyOf(tracks);
+        }
+    }
+
+    /** An audio stream of an opened input: its origin ({@link AudioChoice#MAIN} or a track index), its index there, name and language tag, or null. */
+    public record AudioStream(int track, int stream, String name, String lang) {}
 }

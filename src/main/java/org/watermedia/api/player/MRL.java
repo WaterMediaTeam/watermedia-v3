@@ -468,6 +468,8 @@ public final class MRL {
      * A URI Source container with multiple quality support and optional secondary tracks. Each
      * {@link MediaQuality} bucket keeps one URL: the widest rendition the platform listed, then the
      * tallest, then the one with the highest frame rate, then the first listed. The headers are frozen.
+     * The {@code audioTracks} are separate audio inputs played instead of the qualities' own audio, the
+     * original (or default) one first (see {@link MediaPlayer#audioTracks()}).
      */
     public record Source(MediaType type, URI thumbnail, Metadata metadata, HttpHeaders headers,
                          Map<MediaQuality, URI> qualities, List<Track> audioTracks,
