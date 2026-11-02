@@ -507,7 +507,7 @@ The clock holds at zero until `syncDuration(ms)` or `live(true)` tells it which 
 
 The project loggers are `watermedia` and `watermedia_binaries`; set those names to DEBUG for diagnostics.
 
-- Project log messages reduce media URLs to their origin, hide header values and mask bare access tokens, `Authorization` values, Minecraft session arguments and secret-looking `key=value` pairs (`DataTool.redact` applies the same filter to the app's log uploads). Exception traces with private URLs keep their type, stack, causes and suppressed failures as sanitized text.
+- Project log messages show media links in full, so paths and IDs stay useful for debugging. They hide header values and mask link passwords (`user:password@`), bare access tokens, `Authorization` and `Cookie` values, Minecraft session arguments and secret-looking `key=value` pairs (`DataTool.redact` applies the same filter to the app's log uploads). Exception traces carrying a secret keep their type, stack, causes and suppressed failures as sanitized text.
 - Nothing is aggregated per time window: an anomaly that can repeat (a short frame buffer, a refused layout, a failing callback, a rejected upload) is logged on its first occurrence in each engine, player, server or playlist and then stays quiet, and slow playback iterations are counted and reported once when the run ends.
 - _FFmpeg_ still writes its own native log lines to the process error output, outside the project loggers and their redaction; routing them through the project logger is ready but disabled until macOS and Linux are validated.
 
